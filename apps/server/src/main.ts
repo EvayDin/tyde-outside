@@ -1,4 +1,4 @@
-import { createApp } from './app.js';
+import { createApp } from './application.js';
 import { readConfig } from './config/index.js';
 const config = readConfig();
 const app = await createApp(config);

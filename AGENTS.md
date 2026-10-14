@@ -12,19 +12,19 @@ Web 与 Electron 共用一份 React 前端，连接独立 Fastify 后端；后�
 
 ## 模块边界与入口
 
-| 路径                           | 职责与关键入口                                                                                                                                 |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/web/src`                 | 唯一业务 UI。`app/App.tsx` 管理 HashRouter 与登录守卫；`app/providers/index.tsx` 配置 React Query、中文 Ant Design；`modules/auth/` 放认证页面 |
-| `apps/web/src/services/api.ts` | 页面调用入口，当前导出 `platform.auth`；`hooks/useSession.ts` 用 React Query 的 `['session']` 管理会话查询                                     |
-| `packages/platform/src`        | 双端适配。`index.ts` 根据 `window.tydeDesktop` 选择 Web fetch（`web.ts`）或桌面 bridge（`electron.ts`）                                        |
-| `packages/shared/src`          | 公共 DTO、TypeBox 请求 schema、API 常量、错误类型与 bridge 契约在 `index.ts`；IPC 通道在 `ipc.ts`                                              |
-| `apps/electron/src`            | `main/index.ts` 启动与静态资源协议；`main/windows.ts` 安全窗口；`preload/index.ts` 暴露受限 bridge；`main/ipc/index.ts` 校验并调用后端         |
-| `apps/electron/src/main`       | `transport.ts` 发 HTTP 请求；`session.ts` 加密持久化令牌；`config.ts` 校验可信后端地址                                                         |
-| `apps/server/src`              | `main.ts` 启动；`app.ts` 装配 Fastify、Prisma、路由、统一错误与健康检查；`config/index.ts` 校验服务端环境变量；`docs.ts` 注册 Swagger          |
-| `apps/server/src/modules/auth` | `auth.routes.ts` 处理 HTTP、Cookie、客户端类型；`auth.service.ts` 处理认证、事务、限流；`security.ts` 放安全规则；`sms.ts` 放短信 provider     |
-| `apps/server/prisma`           | `schema.prisma` 定义数据模型，`migrations/` 管理数据库变更                                                                                     |
-| `packages/config`              | 共用 TypeScript / ESLint 配置                                                                                                                  |
-| `scripts/`、`deploy/`          | 本地数据库、验证、打包脚本及 Nginx / systemd 部署模板                                                                                          |
+| 路径                           | 职责与关键入口                                                                                                                                                                                |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/web/src`                 | 唯一业务 UI。`app/App.tsx` 管理 HashRouter 与登录守卫；`app/providers/index.tsx` 配置 React Query、中文 Ant Design；`modules/auth/` 放认证页面                                                |
+| `apps/web/src/services/api.ts` | 页面调用入口，当前导出 `platform.auth`；`hooks/useSession.ts` 用 React Query 的 `['session']` 管理会话查询                                                                                    |
+| `packages/platform/src`        | 双端适配。`index.ts` 根据 `window.tydeDesktop` 选择 Web fetch（`web.ts`）或桌面 bridge（`electron.ts`）                                                                                       |
+| `packages/shared/src`          | 公共 DTO、TypeBox 请求 schema、API 常量、错误类型与 bridge 契约在 `index.ts`；IPC 通道在 `ipc.ts`                                                                                             |
+| `apps/electron/src`            | `main/index.ts` 启动与静态资源协议；`main/windows.ts` 安全窗口；`preload/index.ts` 暴露受限 bridge；`main/ipc/index.ts` 校验并调用后端                                                        |
+| `apps/electron/src/main`       | `transport.ts` 发 HTTP 请求；`session.ts` 加密持久化令牌；`config.ts` 校验可信后端地址                                                                                                        |
+| `apps/server/src`              | `main.ts` 本地/独立服务启动；`app.ts` 为 Vercel 默认导出 HTTP server；`application.ts` 装配 Fastify、Prisma、路由、统一错误与健康检查；`config/index.ts` 校验环境变量；`docs.ts` 注册 Swagger |
+| `apps/server/src/modules/auth` | `auth.routes.ts` 处理 HTTP、Cookie、客户端类型；`auth.service.ts` 处理认证、事务、限流；`security.ts` 放安全规则；`sms.ts` 放短信 provider                                                    |
+| `apps/server/prisma`           | `schema.prisma` 定义数据模型，`migrations/` 管理数据库变更                                                                                                                                    |
+| `packages/config`              | 共用 TypeScript / ESLint 配置                                                                                                                                                                 |
+| `scripts/`、`deploy/`          | 本地数据库、验证、打包脚本及 Nginx / systemd 部署模板                                                                                                                                         |
 
 ## 请求与会话链路
 
@@ -43,7 +43,7 @@ React 页面 → services/api → packages/platform
 
 ## 开发新需求时
 
-- UI 放 `apps/web/src/modules/<业务>/`，路由接入 `app/App.tsx`；后端模块放 `apps/server/src/modules/<业务>/`，在 `app.ts` 装配。
+- UI 放 `apps/web/src/modules/<业务>/`，路由接入 `app/App.tsx`；后端模块放 `apps/server/src/modules/<业务>/`，在 `application.ts` 装配。
 - Swagger UI 为 `/api/v1/docs/`，JSON/YAML 在其下的 `/json`、`/yaml`；插件必须先于业务路由注册。新增接口补齐 summary、operationId、tags、请求与响应 schema，认证响应 schema 位于 `auth.schema.ts`；维护说明见 `docs/API.md`。
 - 涉及双端 API 时同步维护：shared 类型/schema → server 路由与 service → platform Web/桌面适配 → Electron preload 与 IPC → 页面调用。
 - UI 统一通过平台适配层访问业务能力；Electron 只承担桌面能力，不复制 React 页面、不内嵌业务后端。
