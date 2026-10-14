@@ -1,0 +1,15 @@
+packages:
+  - apps/*
+  - packages/*
+allowBuilds:
+  '@prisma/client': true
+  '@prisma/engines': true
+  electron: true
+  electron-winstaller: false
+  esbuild: true
+  prisma: true
+saveExact: true
+engineStrict: true
+fetchRetries: 1
+fetchTimeout: 30000
+verifyDepsBeforeRun: warn

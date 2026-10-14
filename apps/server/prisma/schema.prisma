@@ -1,0 +1,64 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String   @id @default(uuid()) @db.Uuid
+  phoneE164   String   @unique @db.VarChar(16)
+  phoneRegion String   @db.VarChar(2)
+  username    String   @unique @db.VarChar(32)
+  displayName String   @db.VarChar(320)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+  sessions    Session[]
+}
+
+model VerificationChallenge {
+  id            String    @id @default(uuid()) @db.Uuid
+  phoneE164     String    @db.VarChar(16)
+  purpose       String    @default("login") @db.VarChar(16)
+  codeDigest    String    @db.VarChar(64)
+  expiresAt     DateTime  @db.Timestamptz(3)
+  failedAttempts Int      @default(0)
+  consumedAt    DateTime? @db.Timestamptz(3)
+  invalidatedAt DateTime? @db.Timestamptz(3)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  @@index([phoneE164, createdAt])
+  @@index([expiresAt])
+}
+
+model RegistrationGrant {
+  id          String    @id @default(uuid()) @db.Uuid
+  tokenDigest String    @unique @db.VarChar(64)
+  phoneE164   String    @db.VarChar(16)
+  phoneRegion String    @db.VarChar(2)
+  expiresAt   DateTime  @db.Timestamptz(3)
+  consumedAt  DateTime? @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  @@index([expiresAt])
+}
+
+model Session {
+  id          String    @id @default(uuid()) @db.Uuid
+  tokenDigest String    @unique @db.VarChar(64)
+  userId      String    @db.Uuid
+  clientType  String    @db.VarChar(16)
+  expiresAt   DateTime  @db.Timestamptz(3)
+  revokedAt   DateTime? @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model AuthRateLimit {
+  key         String   @id @db.VarChar(200)
+  count       Int      @default(0)
+  expiresAt   DateTime @db.Timestamptz(3)
+  @@index([expiresAt])
+}

@@ -1,0 +1,52 @@
+{
+  "name": "tyde-outside",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.23.0",
+  "engines": {
+    "node": ">=24.0.0 <25",
+    "pnpm": ">=11 <12"
+  },
+  "scripts": {
+    "setup:local": "node scripts/setup-local.mjs",
+    "verify:local": "node scripts/verify-local.mjs",
+    "test:e2e": "playwright test",
+    "test:packaged": "playwright test --config playwright.packaged.config.ts",
+    "db:local:start": "node scripts/postgres-local.mjs start",
+    "db:local:stop": "node scripts/postgres-local.mjs stop",
+    "db:local:status": "node scripts/postgres-local.mjs status",
+    "dev:web": "pnpm --filter @tyde-outside/web dev",
+    "dev:server": "pnpm --filter @tyde-outside/server dev",
+    "dev:electron": "node scripts/dev-electron.mjs",
+    "build:packages": "pnpm --filter @tyde-outside/shared build && pnpm --filter @tyde-outside/platform build",
+    "build:web": "pnpm build:packages && pnpm --filter @tyde-outside/web build",
+    "build:server": "pnpm --filter @tyde-outside/server db:generate && pnpm --filter @tyde-outside/shared build && pnpm --filter @tyde-outside/server build",
+    "build:electron": "pnpm build:web && pnpm --filter @tyde-outside/electron build",
+    "package:mac": "pnpm build:electron && pnpm --filter @tyde-outside/electron package:mac",
+    "package:win": "pnpm build:electron && pnpm --filter @tyde-outside/electron package:win",
+    "package:web": "pnpm build:web && node scripts/package-deploy.mjs web",
+    "package:server": "pnpm build:server && node scripts/package-deploy.mjs server",
+    "typecheck": "pnpm build:packages && pnpm --filter @tyde-outside/server db:generate && pnpm -r --if-present typecheck",
+    "lint": "eslint . --max-warnings 0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "pnpm --filter @tyde-outside/server test",
+    "test:integration": "pnpm --filter @tyde-outside/server test:integration",
+    "test:core": "node --test tests/*.test.mjs",
+    "db:generate": "pnpm --filter @tyde-outside/server db:generate",
+    "db:migrate": "pnpm --filter @tyde-outside/server db:migrate",
+    "db:deploy": "pnpm --filter @tyde-outside/server db:deploy",
+    "db:cleanup": "pnpm --filter @tyde-outside/server db:cleanup"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.13.6",
+    "eslint": "10.9.1",
+    "globals": "17.12.0",
+    "prettier": "3.9.8",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.70.1"
+  }
+}

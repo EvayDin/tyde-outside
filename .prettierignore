@@ -1,0 +1,10 @@
+node_modules
+.pnpm-store
+.local
+dist
+out
+release
+artifacts
+pnpm-lock.yaml
+PROJECT_DESIGN.md
+apps/server/src/generated
