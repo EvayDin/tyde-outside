@@ -10,7 +10,7 @@
   "scripts": {
     "predev": "pnpm --filter @tyde-outside/shared build && prisma generate",
     "dev": "tsx watch --env-file=.env src/main.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "pnpm --filter @tyde-outside/shared build && prisma generate && tsc -p tsconfig.json",
     "start": "node --env-file=.env dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:generate": "prisma generate",
