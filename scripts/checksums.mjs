@@ -16,7 +16,7 @@ await cp(new URL('../docs/INSTALL_TRIAL.md', import.meta.url), resolve(dir, 'INS
 const packages = [];
 for (const name of names) {
   const runtimePath = name.includes('-mac-')
-    ? 'mac-universal/tyde-outside.app/Contents/Resources/runtime.json'
+    ? 'mac-universal/tyde.app/Contents/Resources/runtime.json'
     : name.includes('-win-')
       ? 'win-unpacked/resources/runtime.json'
       : undefined;
@@ -34,7 +34,7 @@ await writeFile(
   resolve(dir, 'TRIAL_MANIFEST.json'),
   JSON.stringify(
     {
-      application: 'tyde-outside',
+      application: 'tyde',
       packages,
       note: 'development + loopback API means local trial only; remote testers need a reachable backend and a test-environment build',
       verification:

@@ -1,5 +1,5 @@
 {
-  "name": "@tyde-outside/platform",
+  "name": "@tyde/platform",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -17,6 +17,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@tyde-outside/shared": "workspace:*"
+    "@tyde/shared": "workspace:*"
   }
 }

@@ -1,5 +1,5 @@
 appId: app.tydeoutside.desktop
-productName: tyde-outside
+productName: tyde
 directories:
   output: ../../release
 files:

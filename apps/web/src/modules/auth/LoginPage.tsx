@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Alert, Button, Form, Input, Space, Typography } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { ApiError, type CodeResult, type RegistrationRequired } from '@tyde-outside/shared';
+import { ApiError, type CodeResult, type RegistrationRequired } from '@tyde/shared';
 import { api } from '../../services/api';
 import { SESSION_KEY } from '../../hooks/useSession';
 import { ErrorNotice } from '../../components/ErrorNotice';

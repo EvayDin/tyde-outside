@@ -1,7 +1,7 @@
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import type { FastifyInstance } from 'fastify';
-import { API_PREFIX } from '@tyde-outside/shared';
+import { API_PREFIX } from '@tyde/shared';
 import type { Config } from './config/index.js';
 
 export async function registerDocs(app: FastifyInstance, config: Config) {
@@ -10,7 +10,7 @@ export async function registerDocs(app: FastifyInstance, config: Config) {
     openapi: {
       openapi: '3.0.3',
       info: {
-        title: 'tyde-outside API',
+        title: 'tyde API',
         version: '0.1.0',
         description: '大陆手机号认证 API。开发/测试短信验证码为字符串 095270。',
       },

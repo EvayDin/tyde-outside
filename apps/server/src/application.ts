@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyError, type FastifyServerOptions } from 'fastify';
 import cookie from '@fastify/cookie';
 import { Prisma, PrismaClient } from '@prisma/client';
-import { API_PREFIX } from '@tyde-outside/shared';
+import { API_PREFIX } from '@tyde/shared';
 import { readConfig, type Config } from './config/index.js';
 import { AuthError } from './modules/auth/auth.error.js';
 import { AuthService } from './modules/auth/auth.service.js';
@@ -85,7 +85,7 @@ export async function createApp(
         },
       },
     },
-    async () => ({ status: 'ok', application: 'tyde-outside' }),
+    async () => ({ status: 'ok', application: 'tyde' }),
   );
   app.get(
     `${API_PREFIX}/health/ready`,

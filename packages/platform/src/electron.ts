@@ -1,9 +1,4 @@
-import {
-  ApiError,
-  type AuthApi,
-  type BridgeResult,
-  type DesktopBridge,
-} from '@tyde-outside/shared';
+import { ApiError, type AuthApi, type BridgeResult, type DesktopBridge } from '@tyde/shared';
 async function unwrap<T>(request: Promise<BridgeResult<T>>): Promise<T> {
   const result = await request;
   if (!result.ok) throw new ApiError(result.status, result.error, result.retryAfter);

@@ -45,7 +45,7 @@ test('Swagger UI and OpenAPI include every business route and authentication con
     expect((await app.inject('/api/v1/docs/yaml')).statusCode).toBe(200);
     expect((await app.inject('/api/v1/health/live')).json()).toEqual({
       status: 'ok',
-      application: 'tyde-outside',
+      application: 'tyde',
     });
     const ready = await app.inject('/api/v1/health/ready');
     expect(ready.statusCode).toBe(503);

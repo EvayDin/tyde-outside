@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC } from '@tyde-outside/shared/ipc';
-import type { DesktopBridge } from '@tyde-outside/shared';
+import { IPC } from '@tyde/shared/ipc';
+import type { DesktopBridge } from '@tyde/shared';
 const bridge: DesktopBridge = {
   sendCode: (input) => ipcRenderer.invoke(IPC.sendCode, input),
   verifyCode: (input) => ipcRenderer.invoke(IPC.verifyCode, input),

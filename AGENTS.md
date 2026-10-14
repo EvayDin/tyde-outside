@@ -1,4 +1,4 @@
-# tyde-outside 架构速览
+# tyde 架构速览
 
 > 供 Codex 开发新需求时快速定位。按当前实现整理，架构或模块入口变化时同步更新本文。
 
@@ -47,7 +47,7 @@ React 页面 → services/api → packages/platform
 - Swagger UI 为 `/api/v1/docs/`，JSON/YAML 在其下的 `/json`、`/yaml`；插件必须先于业务路由注册。新增接口补齐 summary、operationId、tags、请求与响应 schema，认证响应 schema 位于 `auth.schema.ts`；维护说明见 `docs/API.md`。
 - 涉及双端 API 时同步维护：shared 类型/schema → server 路由与 service → platform Web/桌面适配 → Electron preload 与 IPC → 页面调用。
 - UI 统一通过平台适配层访问业务能力；Electron 只承担桌面能力，不复制 React 页面、不内嵌业务后端。
-- 新增 IPC 使用明确通道和固定后端路径，保留来源及参数校验；preload 的 IPC 常量从 `@tyde-outside/shared/ipc` 导入。
+- 新增 IPC 使用明确通道和固定后端路径，保留来源及参数校验；preload 的 IPC 常量从 `@tyde/shared/ipc` 导入。
 - 保持 `sandbox: true`、`contextIsolation: true`、`nodeIntegration: false`；不向 renderer 暴露任意 URL 请求、文件系统或完整 `ipcRenderer`。
 - 数据结构变更同时更新 Prisma schema 与迁移。服务端密钥留在后端 `.env`，不进入前端构建、桌面资源或日志。
 - 当前仅允许开发/测试 mock 短信，固定验证码是字符串 `095270`；`production` 模式被配置校验阻止启动。接入真实短信需同时调整 provider 和配置校验。

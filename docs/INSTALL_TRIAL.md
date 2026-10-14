@@ -1,4 +1,4 @@
-# tyde-outside 内部试用安装
+# tyde 内部试用安装
 
 安装包与校验和由项目维护者提供。试用包未完成 Apple Developer ID 签名、公证或 Windows 发布者签名；系统可能提示来源未知。请核对可信来源、版本和 SHA-256。测试人员无需安装 Node.js、pnpm 或 PostgreSQL。
 
@@ -6,10 +6,10 @@
 
 支持 Apple Silicon / Intel，项目目标最低 macOS 12；具体兼容性以验证记录为准。默认提供 universal DMG，不需要自行选芯片。
 
-1. 打开 DMG，将 **tyde-outside** 拖入 Applications（应用程序）。
+1. 打开 DMG，将 **tyde** 拖入 Applications（应用程序）。
 2. 从 Applications 打开应用。
 3. 如提示开发者无法验证或未公证，先关闭提示，进入“系统设置 → 隐私与安全性”。
-4. 找到 tyde-outside 被阻止的信息，选择“仍要打开 / Open Anyway”，按系统要求验证身份并再次确认。
+4. 找到 tyde 被阻止的信息，选择“仍要打开 / Open Anyway”，按系统要求验证身份并再次确认。
 
 若无允许按钮、被公司策略禁用或提示应用已损坏，请联系维护者/管理员核对文件与签名。不要全局关闭 Gatekeeper、SIP，也不要使用终端命令批量解除隔离。
 
@@ -17,7 +17,7 @@
 
 ## Windows
 
-默认支持 Windows x64，建议使用受支持的 Windows 11。双击 `tyde-outside-版本-win-x64.exe`，按向导安装；默认按当前用户安装。
+默认支持 Windows x64，建议使用受支持的 Windows 11。双击 `tyde-版本-win-x64.exe`，按向导安装；默认按当前用户安装。
 
 如果 SmartScreen 显示“Windows 已保护你的电脑”，在核对可信来源后选择“更多信息 / More info”→“仍要运行 / Run anyway”（系统提供该选项时）。如提示未知发布者，应显示与本项目相符的文件来源。
 

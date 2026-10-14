@@ -7,7 +7,7 @@ import {
   type PhoneInput,
   type RegisterInput,
   type VerifyInput,
-} from '@tyde-outside/shared';
+} from '@tyde/shared';
 import type { Config } from '../../config/index.js';
 import { AuthError } from './auth.error.js';
 import { AuthService, type ServerAuthResult } from './auth.service.js';

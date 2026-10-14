@@ -8,7 +8,7 @@ import type {
   User,
   VerifyInput,
   VerifyResult,
-} from '@tyde-outside/shared';
+} from '@tyde/shared';
 import type { Config } from '../../config/index.js';
 import { AuthError } from './auth.error.js';
 import {

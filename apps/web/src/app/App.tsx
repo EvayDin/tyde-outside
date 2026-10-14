@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button, Spin } from 'antd';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
-import { ApiError } from '@tyde-outside/shared';
+import { ApiError } from '@tyde/shared';
 import { AuthLayout } from '../layouts/AuthLayout';
 import { useSession } from '../hooks/useSession';
 import { LoginPage, type PendingRegistration } from '../modules/auth/LoginPage';

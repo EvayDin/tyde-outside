@@ -1,6 +1,6 @@
 import { Type, type Static } from '@sinclair/typebox';
 
-export const APP_NAME = 'tyde-outside';
+export const APP_NAME = 'tyde';
 export const API_PREFIX = '/api/v1';
 export { IPC } from './ipc.js';
 export const phoneSchema = Type.Object(
