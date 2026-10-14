@@ -25,8 +25,7 @@ export default defineConfig({
       timeout: 30_000,
     },
     {
-      command:
-        'pnpm --filter @tyde-outside/web exec vite --host 127.0.0.1 --port 5175 --strictPort',
+      command: 'pnpm --filter @tyde/web exec vite --host 127.0.0.1 --port 5175 --strictPort',
       url: 'http://127.0.0.1:5175',
       env: { API_PROXY_TARGET: 'http://127.0.0.1:3100' },
       reuseExistingServer: false,

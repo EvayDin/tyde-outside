@@ -1,8 +1,8 @@
 {
-  "name": "@tyde-outside/electron",
+  "name": "@tyde/electron",
   "version": "0.1.0",
-  "description": "tyde-outside 内部试用客户端",
-  "author": "tyde-outside",
+  "description": "tyde 内部试用客户端",
+  "author": "tyde",
   "private": true,
   "type": "module",
   "main": "out/main/index.js",
@@ -14,7 +14,7 @@
     "package:win": "node ../../scripts/prepare-electron.mjs && electron-builder --win --x64 --publish never"
   },
   "dependencies": {
-    "@tyde-outside/shared": "workspace:*",
+    "@tyde/shared": "workspace:*",
     "@sinclair/typebox": "0.34.52"
   },
   "devDependencies": {

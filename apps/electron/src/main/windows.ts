@@ -30,7 +30,7 @@ export async function createWindow(): Promise<BrowserWindow> {
     height: 780,
     minWidth: 420,
     minHeight: 640,
-    title: 'tyde-outside',
+    title: 'tyde',
     backgroundColor: '#f6f7fb',
     show: false,
     webPreferences: {

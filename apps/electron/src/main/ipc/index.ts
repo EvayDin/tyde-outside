@@ -9,7 +9,7 @@ import {
   registerSchema,
   type ApiFailure,
   type BridgeResult,
-} from '@tyde-outside/shared';
+} from '@tyde/shared';
 import type { RuntimeConfig } from '../config.js';
 import { SessionStore } from '../session.js';
 import { trustedPage } from '../windows.js';

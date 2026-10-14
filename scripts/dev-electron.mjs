@@ -56,7 +56,7 @@ try {
     if (Date.now() > deadline) throw new Error('等待 Web 开发服务超时');
     await new Promise((resolve) => setTimeout(resolve, 400));
   }
-  if (!stopping) start(['--filter', '@tyde-outside/electron', 'dev']);
+  if (!stopping) start(['--filter', '@tyde/electron', 'dev']);
 } catch (error) {
   console.error(error.message);
   stop(1);

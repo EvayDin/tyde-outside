@@ -8,6 +8,8 @@ import { createWindow } from './windows.js';
 protocol.registerSchemesAsPrivileged([
   { scheme: 'tyde-app', privileges: { standard: true, secure: true, supportFetchAPI: true } },
 ]);
+// 保留改名前的用户数据目录，升级后继续读取已有会话和浏览器数据。
+if (app.isPackaged) app.setPath('userData', resolve(app.getPath('appData'), 'tyde-outside'));
 if (!app.isPackaged && process.env.TYDE_TEST_USER_DATA)
   app.setPath('userData', process.env.TYDE_TEST_USER_DATA);
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -51,7 +53,7 @@ else {
       });
     })
     .catch(() => {
-      dialog.showErrorBox('tyde-outside 启动失败', '请检查安装资源、运行配置和系统权限。');
+      dialog.showErrorBox('tyde 启动失败', '请检查安装资源、运行配置和系统权限。');
       app.quit();
     });
   app.on('window-all-closed', () => {

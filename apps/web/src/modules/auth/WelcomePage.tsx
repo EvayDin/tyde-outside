@@ -1,6 +1,6 @@
 import { Button, Descriptions, Typography } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import type { SessionResult } from '@tyde-outside/shared';
+import type { SessionResult } from '@tyde/shared';
 import { api } from '../../services/api';
 import { SESSION_KEY } from '../../hooks/useSession';
 import { ErrorNotice } from '../../components/ErrorNotice';
@@ -18,7 +18,7 @@ export function WelcomePage({ session }: { session: SessionResult }) {
       <div className="welcome-icon">✓</div>
       <span className="step-label">一切准备就绪</span>
       <Typography.Title level={2}>欢迎，{session.user.displayName}</Typography.Title>
-      <p className="subtitle">你已成功登录 tyde-outside。</p>
+      <p className="subtitle">你已成功登录 tyde。</p>
       <Descriptions
         column={1}
         size="small"

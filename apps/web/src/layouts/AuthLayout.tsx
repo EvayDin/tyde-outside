@@ -12,7 +12,7 @@ export function AuthLayout({ children }: PropsWithChildren) {
     <main className="shell">
       <header className="topbar">
         <a className="wordmark" href="#/">
-          <span className="brand-mark">t</span>tyde-outside
+          <span className="brand-mark">t</span>tyde
         </a>
         <Tag variant="filled">{isDesktop ? '桌面端' : 'Web 端'}</Tag>
       </header>
@@ -27,7 +27,7 @@ export function AuthLayout({ children }: PropsWithChildren) {
           <p>
             一个账号，连接每一端。
             <br />
-            欢迎来到 tyde-outside。
+            欢迎来到 tyde。
           </p>
           <div className="intro-note">
             <span className="note-line" />
@@ -37,7 +37,7 @@ export function AuthLayout({ children }: PropsWithChildren) {
         <section className="panel">{children}</section>
       </div>
       <footer>
-        <span>tyde-outside · 内部试用版</span>
+        <span>tyde · 内部试用版</span>
         <span className="service">
           <i
             className={

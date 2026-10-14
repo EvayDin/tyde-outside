@@ -1,12 +1,12 @@
 [Unit]
-Description=tyde-outside test API
+Description=tyde test API
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=tyde
-WorkingDirectory=/opt/tyde-outside/apps/server
+WorkingDirectory=/opt/tyde/apps/server
 # 将 /usr/bin/node 替换为目标机 Node 24 的真实绝对路径
 ExecStart=/usr/bin/node --env-file=.env dist/main.js
 Environment=NODE_ENV=production

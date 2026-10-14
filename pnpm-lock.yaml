@@ -38,7 +38,7 @@ importers:
       '@sinclair/typebox':
         specifier: 0.34.52
         version: 0.34.52
-      '@tyde-outside/shared':
+      '@tyde/shared':
         specifier: workspace:*
         version: link:../../packages/shared
     devDependencies:
@@ -69,7 +69,7 @@ importers:
       '@prisma/client':
         specifier: 6.19.3
         version: 6.19.3(prisma@6.19.3(typescript@5.9.3))(typescript@5.9.3)
-      '@tyde-outside/shared':
+      '@tyde/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       fastify:
@@ -94,10 +94,10 @@ importers:
       '@tanstack/react-query':
         specifier: 5.90.2
         version: 5.90.2(react@19.3.0)
-      '@tyde-outside/platform':
+      '@tyde/platform':
         specifier: workspace:*
         version: link:../../packages/platform
-      '@tyde-outside/shared':
+      '@tyde/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       antd:
@@ -130,7 +130,7 @@ importers:
 
   packages/platform:
     dependencies:
-      '@tyde-outside/shared':
+      '@tyde/shared':
         specifier: workspace:*
         version: link:../shared
 

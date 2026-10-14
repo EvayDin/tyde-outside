@@ -1,4 +1,4 @@
-import { API_PREFIX, ApiError, type AuthApi, type ApiFailure } from '@tyde-outside/shared';
+import { API_PREFIX, ApiError, type AuthApi, type ApiFailure } from '@tyde/shared';
 
 async function request<T>(path: string, body?: unknown, method = 'POST'): Promise<T> {
   let response: Response;

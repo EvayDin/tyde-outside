@@ -1,4 +1,4 @@
-import type { DesktopBridge } from '@tyde-outside/shared';
+import type { DesktopBridge } from '@tyde/shared';
 import { webAuth } from './web.js';
 import { electronAuth } from './electron.js';
 declare global {

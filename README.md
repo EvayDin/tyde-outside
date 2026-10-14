@@ -1,4 +1,6 @@
-# tyde-outside
+# tyde
+
+项目原名为 `tyde-outside`。为兼容已有环境，数据库名与角色名、已部署的 Vercel 域名及桌面应用标识 `app.tydeoutside.desktop` 保持原值。
 
 React + Electron + Fastify + PostgreSQL 的 pnpm Monorepo。Web 与桌面共用 `apps/web`，首期实现大陆手机号验证码登录、首次补资料注册、持久会话和退出。
 

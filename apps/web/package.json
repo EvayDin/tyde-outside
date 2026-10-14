@@ -1,19 +1,19 @@
 {
-  "name": "@tyde-outside/web",
+  "name": "@tyde/web",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "predev": "pnpm --filter @tyde-outside/shared build && pnpm --filter @tyde-outside/platform build",
+    "predev": "pnpm --filter @tyde/shared build && pnpm --filter @tyde/platform build",
     "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
-    "build": "pnpm --filter @tyde-outside/shared build && pnpm --filter @tyde-outside/platform build && tsc --noEmit && vite build",
+    "build": "pnpm --filter @tyde/shared build && pnpm --filter @tyde/platform build && tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@tanstack/react-query": "5.90.2",
-    "@tyde-outside/platform": "workspace:*",
-    "@tyde-outside/shared": "workspace:*",
+    "@tyde/platform": "workspace:*",
+    "@tyde/shared": "workspace:*",
     "antd": "6.6.5",
     "react": "19.3.0",
     "react-dom": "19.3.0",

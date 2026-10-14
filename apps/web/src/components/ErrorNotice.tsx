@@ -1,5 +1,5 @@
 import { Alert } from 'antd';
-import { ApiError } from '@tyde-outside/shared';
+import { ApiError } from '@tyde/shared';
 export function ErrorNotice({ error }: { error: unknown }) {
   if (!error) return null;
   const message = error instanceof Error ? error.message : '操作失败，请稍后重试';
