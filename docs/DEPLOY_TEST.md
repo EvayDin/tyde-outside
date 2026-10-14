@@ -37,6 +37,26 @@ pnpm package:server
 
 Prisma CLI 放在服务端生产依赖中用于迁移和目标平台生成；不得为缩小包而移除必需 CLI 后继续声称可部署。`pnpm-workspace.yaml` 的生产允许脚本与依赖覆盖需一同保留。
 
+## Vercel 构建排障
+
+### Web
+
+从完整仓库导入项目，Framework Preset 选择 `Vite`，Root Directory 设为 `apps/web`，开启 **Include source files outside of the Root Directory in the Build Step**，让构建可以读取 `packages/` 与根配置。该选项见 [Vercel Monorepos FAQ](https://vercel.com/docs/monorepos/monorepo-faq)。使用 Node.js 24，Install Command 为 `pnpm install --frozen-lockfile`（保留开发依赖），Build Command 为 `pnpm run build`，Output Directory 为 `dist`。
+
+Web 的 `build` 会依次编译 shared、platform，再执行 Web 类型检查与 Vite 构建；仓库根目录的 `pnpm build:web` 调用同一流程。这两个共享包的导出指向 `dist`，仅安装依赖不会生成产物，缺少产物会导致 `Cannot find module '@tyde-outside/shared'` / `@tyde-outside/platform` 及后续属性类型错误。无需提交 `dist`，也不要将构建命令覆盖为单独的 `vite build`。
+
+Vercel 静态部署不会使用 `vite.config.ts` 的开发 / preview 代理。还需在 Web 项目的 `vercel.json` 中配置 `/api/:path*` 到实际 HTTPS 后端的外部 rewrite，保留 `/api/` 前缀；后端 `WEB_ORIGINS` 应包含 Web 的实际 HTTPS 源，并启用 Secure Cookie。后端域名确定后再填写 rewrite 目标。
+
+### Server
+
+从完整仓库导入项目，Root Directory 设为 `apps/server`，并开启包含 Root Directory 之外源码的选项；server 依赖 `packages/shared`、`packages/config` 和仓库根配置，不能只上传 `apps/server`。使用 Node.js 24，Install Command 为 `pnpm install --frozen-lockfile`，Build Command 为 `pnpm run build`，安装时保留开发依赖。
+
+server 的 `build` 会依次编译 shared、执行 `prisma generate`、编译 server。仓库根目录执行 `pnpm build:server` 使用同一流程。不要把构建命令覆盖为单独的 `tsc`：缺少 shared 产物会报 `Cannot find module '@tyde-outside/shared'`；缺少 Prisma Client 会引发 `User`、Prisma 错误类型缺失及事务参数隐式 `any` 等连锁错误。该构建流程不执行数据库迁移。
+
+这只解决编译阶段。按 [Vercel Fastify 文档](https://vercel.com/docs/frameworks/backend/fastify)，平台要求可识别的服务入口；当前 `src/app.ts` 仅导出 `createApp` 工厂，实际监听逻辑在 `src/main.ts`，后者不在官方自动检测入口列表中。部署前仍需适配运行入口，不能把构建成功作为部署成功。
+
+运行环境需配置上表中的数据库、密钥、HTTPS 源与 Cookie 等变量，测试部署使用 `APP_ENV=test`、`SMS_PROVIDER=mock`；当前 `APP_ENV=production` 会被拒绝启动。数据库必须能从 Vercel 访问，先对目标测试库执行迁移，再验收 live / ready 接口。Web 仍需同源 `/api` 代理。
+
 ## Web 与 HTTPS
 
 把 Web 包的 `web/` 内容部署到 Nginx 静态根目录，按实际域名、证书和目录修改 `nginx.conf.example`。保留 `/api/` 路径转发至后端，不剥离 `/api/v1`。Web 使用 hash 路由，无需 history fallback。
