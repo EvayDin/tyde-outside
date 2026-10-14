@@ -45,7 +45,9 @@ Prisma CLI 放在服务端生产依赖中用于迁移和目标平台生成；不
 
 Web 的 `build` 会依次编译 shared、platform，再执行 Web 类型检查与 Vite 构建；仓库根目录的 `pnpm build:web` 调用同一流程。这两个共享包的导出指向 `dist`，仅安装依赖不会生成产物，缺少产物会导致 `Cannot find module '@tyde-outside/shared'` / `@tyde-outside/platform` 及后续属性类型错误。无需提交 `dist`，也不要将构建命令覆盖为单独的 `vite build`。
 
-Vercel 静态部署不会使用 `vite.config.ts` 的开发 / preview 代理。还需在 Web 项目的 `vercel.json` 中配置 `/api/:path*` 到实际 HTTPS 后端的外部 rewrite，保留 `/api/` 前缀；后端 `WEB_ORIGINS` 应包含 Web 的实际 HTTPS 源，并启用 Secure Cookie。后端域名确定后再填写 rewrite 目标。
+Vercel 静态部署不会使用 `vite.config.ts` 的开发 / preview 代理。`apps/web/vercel.json` 已将 `/api/:path*` 转发到固定后端域名 `https://tyde-outside-server.vercel.app/api/:path*`，保留 `/api/` 前缀。后端迁移域名时同步修改该配置，避免使用每次部署生成的专属地址。
+
+当前 Web 固定域名为 `https://tyde-outside-eva-y.vercel.app`。在后端 Vercel 项目的环境变量中设置 `WEB_ORIGINS=https://tyde-outside-eva-y.vercel.app,https://tyde-outside-server.vercel.app`（同时允许 Web 与后端 Swagger 调试）和 `COOKIE_SECURE=true`，保存后重新部署后端。提交转发配置并部署 Web 后，从 Web 域名访问 `/api/v1/health/live`、`/api/v1/health/ready` 和 `/api/v1/docs/` 验收，再验证登录、刷新恢复会话与退出。新增允许的源时使用逗号分隔，不带路径或结尾斜线。
 
 ### Server
 
