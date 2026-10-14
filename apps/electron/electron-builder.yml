@@ -1,0 +1,32 @@
+appId: app.tydeoutside.desktop
+productName: tyde-outside
+directories:
+  output: ../../release
+files:
+  - out/**/*
+  - package.json
+  - '!node_modules/**/*'
+extraResources:
+  - from: ../web/dist
+    to: web
+  - from: resources/runtime.json
+    to: runtime.json
+asar: true
+npmRebuild: false
+artifactName: '${productName}-${version}-${os}-${arch}.${ext}'
+mac:
+  target: dmg
+  category: public.app-category.productivity
+  identity: '-'
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  minimumSystemVersion: '12.0'
+win:
+  target: nsis
+  signAndEditExecutable: false
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+publish: null

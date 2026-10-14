@@ -1,0 +1,11 @@
+{
+  "name": "@tyde-outside/config",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./typescript/node.json": "./typescript/node.json",
+    "./typescript/browser.json": "./typescript/browser.json",
+    "./eslint": "./eslint/index.mjs"
+  }
+}

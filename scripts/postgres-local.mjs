@@ -1,0 +1,54 @@
+import { existsSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { resolve, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const data = resolve(root, '.local/postgres');
+const command = process.argv[2];
+if (!['start', 'stop', 'status'].includes(command)) throw new Error('请输入 start / stop / status');
+const bin = process.env.PG_BIN ?? '/Applications/Postgres.app/Contents/Versions/latest/bin';
+function run(name, args, options = {}) {
+  const result = spawnSync(join(bin, name), args, { stdio: 'inherit', ...options });
+  if (result.error) throw new Error(`无法运行 ${name}，请安装 PostgreSQL 或设置 PG_BIN`);
+  return result.status ?? 1;
+}
+if (command === 'start') {
+  await mkdir(data, { recursive: true, mode: 0o700 });
+  if (!existsSync(join(data, 'PG_VERSION'))) {
+    const pwfile = resolve(root, '.local/pg-admin-password');
+    await writeFile(pwfile, randomBytes(32).toString('base64url'), { mode: 0o600 });
+    if (
+      run('initdb', [
+        '-D',
+        data,
+        '--encoding=UTF8',
+        '--locale=C',
+        '--auth-local=trust',
+        '--auth-host=scram-sha-256',
+        `--pwfile=${pwfile}`,
+      ])
+    )
+      process.exit(1);
+  }
+  if (run('pg_ctl', ['-D', data, 'status'], { stdio: 'ignore' }) === 0)
+    console.info('本项目 PostgreSQL 已启动');
+  else
+    process.exitCode = run('pg_ctl', [
+      '-D',
+      data,
+      '-l',
+      join(data, 'server.log'),
+      '-o',
+      `-h 127.0.0.1 -p 5432 -k '${data.replaceAll("'", "'\\''")}'`,
+      '-w',
+      'start',
+    ]);
+} else
+  process.exitCode = run('pg_ctl', [
+    '-D',
+    data,
+    ...(command === 'stop' ? ['-m', 'fast', '-w'] : []),
+    command,
+  ]);

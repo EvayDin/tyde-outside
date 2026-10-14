@@ -1,0 +1,37 @@
+{
+  "name": "@tyde-outside/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist",
+    "prisma"
+  ],
+  "scripts": {
+    "predev": "pnpm --filter @tyde-outside/shared build && prisma generate",
+    "dev": "tsx watch --env-file=.env src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node --env-file=.env dist/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:cleanup": "tsx --env-file=.env src/cleanup.ts",
+    "test": "pnpm --filter @tyde-outside/shared build && vitest run --exclude '**/*.integration.test.ts'",
+    "test:integration": "pnpm --filter @tyde-outside/shared build && prisma generate && vitest run tests/auth.integration.test.ts"
+  },
+  "dependencies": {
+    "@fastify/cookie": "11.0.2",
+    "@fastify/swagger": "9.9.2",
+    "@fastify/swagger-ui": "5.2.6",
+    "@prisma/client": "6.19.3",
+    "@tyde-outside/shared": "workspace:*",
+    "fastify": "5.6.2",
+    "libphonenumber-js": "1.12.24",
+    "prisma": "6.19.3"
+  },
+  "devDependencies": {
+    "tsx": "4.23.15",
+    "vitest": "3.2.7"
+  }
+}
