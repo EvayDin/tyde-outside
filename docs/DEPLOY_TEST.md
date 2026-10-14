@@ -53,7 +53,7 @@ Vercel 静态部署不会使用 `vite.config.ts` 的开发 / preview 代理。�
 
 server 的 `build` 会依次编译 shared、执行 `prisma generate`、编译 server。仓库根目录执行 `pnpm build:server` 使用同一流程。不要把构建命令覆盖为单独的 `tsc`：缺少 shared 产物会报 `Cannot find module '@tyde-outside/shared'`；缺少 Prisma Client 会引发 `User`、Prisma 错误类型缺失及事务参数隐式 `any` 等连锁错误。该构建流程不执行数据库迁移。
 
-按 [Vercel Fastify 文档](https://vercel.com/docs/frameworks/backend/fastify)，平台要求可识别的服务入口。`src/app.ts` 创建应用、等待插件就绪，并默认导出底层 Node HTTP server，由 Vercel 管理监听；不能只导出 `createApp` 工厂，否则会报 `Invalid export found`。应用工厂在 `src/application.ts`，本地/独立服务继续通过 `src/main.ts` 监听端口。Framework Preset 选择 `Fastify`，不要把 `dist` 当作静态站点的 Output Directory；部署后以健康检查接口验收，根路径 `/` 没有业务页面。
+按 [Vercel Fastify 文档](https://vercel.com/docs/frameworks/backend/fastify)，平台要求可识别的服务入口。`src/app.ts` 直接导入 `fastify` 并创建实例，复用 `src/application.ts` 的配置与路由装配，等待插件就绪后默认导出底层 Node HTTP server，由 Vercel 管理监听。入口只间接引用 Fastify 会报 `No entrypoint found which imports fastify`；只导出 `createApp` 工厂会报 `Invalid export found`。本地/独立服务继续通过 `src/main.ts` 监听端口。Framework Preset 选择 `Fastify`，不要把 `dist` 当作静态站点的 Output Directory；部署后以健康检查接口验收，根路径 `/` 没有业务页面。
 
 运行环境需配置上表中的数据库、密钥、HTTPS 源与 Cookie 等变量，测试部署使用 `APP_ENV=test`、`SMS_PROVIDER=mock`；当前 `APP_ENV=production` 会被拒绝启动。数据库必须能从 Vercel 访问，先对目标测试库执行迁移，再验收 live / ready 接口。Web 仍需同源 `/api` 代理。
 

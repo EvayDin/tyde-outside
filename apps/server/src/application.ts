@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import Fastify, { type FastifyError } from 'fastify';
+import Fastify, { type FastifyError, type FastifyServerOptions } from 'fastify';
 import cookie from '@fastify/cookie';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { API_PREFIX } from '@tyde-outside/shared';
@@ -9,11 +9,8 @@ import { AuthService } from './modules/auth/auth.service.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
 import { registerDocs } from './docs.js';
 
-export async function createApp(
-  config: Config = readConfig(),
-  db = new PrismaClient({ datasources: { db: { url: config.databaseUrl } } }),
-) {
-  const app = Fastify({
+export function fastifyOptions(config: Config): FastifyServerOptions {
+  return {
     logger: {
       level: config.logLevel,
       redact: [
@@ -29,7 +26,14 @@ export async function createApp(
     trustProxy: config.trustProxy,
     bodyLimit: 16 * 1024,
     ajv: { customOptions: { removeAdditional: false, coerceTypes: false } },
-  });
+  };
+}
+
+export async function createApp(
+  config: Config = readConfig(),
+  db = new PrismaClient({ datasources: { db: { url: config.databaseUrl } } }),
+  app = Fastify(fastifyOptions(config)),
+) {
   await app.register(cookie);
   await registerDocs(app, config);
   app.addHook('onClose', async () => {
