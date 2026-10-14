@@ -45,3 +45,5 @@ await writeFile(
   ) + '\n',
 );
 console.info(rows.join('\n'));
+console.info('最新桌面交付文件位于:', dir);
+console.info('发送 .dmg / .exe 安装包及 INSTALL_TRIAL.md；SHA256SUMS.txt 用于校验。');

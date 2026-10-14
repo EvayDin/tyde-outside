@@ -41,6 +41,8 @@ pnpm dev:electron
 
 Web 地址：<http://127.0.0.1:5173>。输入有效大陆手机号，点击获取验证码，固定输入 **095270**（保留前导零）。新用户填写唯一英文用户名与多语言姓名，老用户直接登录。欢迎页显示姓名和当前手机号。Web 与桌面账号互通，各自会话有效 30 天，退出只撤销当前会话。
 
+Electron 连接 Vercel 测试后端时，退出旧客户端后运行 `pnpm dev:electron:test`，无需启动本地后端。该命令加载 `apps/electron/config/test.env`，目标为 `https://tyde-outside-server.vercel.app`；shell 中已有的 `TYDE_API_BASE_URL` 优先于文件配置，切换时请检查是否有遗留变量。
+
 mock 不会发送短信或验证真实号码归属，请用约定的测试号码。默认生产模式禁止 mock，真实短信后续在 `apps/server/src/modules/auth/sms.ts` 接入。
 
 ## API 文档（Swagger）
@@ -76,8 +78,6 @@ pnpm test:integration
 
 集成测试覆盖真实 PostgreSQL 注册、会话、双端登录/退出、验证码限流与重放、用户名冲突及并发验证。实际执行记录见 [验证记录](docs/VERIFICATION.md)。
 
-## 构建与交付
-
 ```sh
 pnpm build:web
 pnpm build:server
@@ -92,6 +92,7 @@ node scripts/checksums.mjs release
 本机后端配置完成、当前系统安装包构建后，可运行 `pnpm test:packaged` 检查打包后的本地页面、API 桥接和安全隔离；该检查不启动 Vite。它默认用于连接本机后端的包，远程环境包须另行实际联调。
 
 - Web / 后端部署包在 `artifacts/`，桌面安装包在 `release/`。
+- 每次进入打包阶段会自动清理同类型的旧产物（包括旧版本、改名前的包和对应临时目录）；Mac、Windows、Web、后端相互保留。桌面打包成功后自动更新安装说明、SHA-256 与交付清单。Mac 发 `release/` 根目录最新的 `.dmg`，Windows 发 `.exe`，不需要自行压缩 `.app`。打包阶段失败后可能留下不完整输出，应重新成功打包后再分发；需要归档的旧包请提前移出这些输出目录。同一工作区请串行打包。
 - Mac 为 universal DMG，覆盖 Apple Silicon 与 Intel；Windows 为 x64 NSIS EXE。
 - 未设置后端地址的桌面包连接安装者本机 `127.0.0.1:3000`，仅供本地联调。测试服务器上线后设置 `TYDE_API_BASE_URL` 再打包：
 

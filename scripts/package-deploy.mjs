@@ -1,14 +1,15 @@
-import { cp, mkdir, readFile, writeFile, rm, access } from 'node:fs/promises';
+import { cp, mkdir, readFile, writeFile, access } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { cleanPackageArtifacts } from './lib/package-artifacts.mjs';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const kind = process.argv[2];
 if (!['web', 'server'].includes(kind)) throw new Error('请输入 web 或 server');
 const pkg = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 const target = resolve(root, `artifacts/tyde-${kind}-${pkg.version}`);
-await rm(target, { recursive: true, force: true });
+await cleanPackageArtifacts(kind, root);
 await mkdir(target, { recursive: true });
 async function copy(from, to = from) {
   await cp(resolve(root, from), resolve(target, to), { recursive: true });
