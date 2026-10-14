@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { afterEach, expect, test, vi } from 'vitest';
-import { createApp } from '../src/app.js';
+import { createApp } from '../src/application.js';
 import { readConfig } from '../src/config/index.js';
 import { AuthService } from '../src/modules/auth/auth.service.js';
 

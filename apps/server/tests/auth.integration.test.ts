@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { parseEnv } from 'node:util';
 import { PrismaClient } from '@prisma/client';
 import { beforeAll, afterAll, beforeEach, expect, test } from 'vitest';
-import { createApp } from '../src/app.js';
+import { createApp } from '../src/application.js';
 import { readConfig } from '../src/config/index.js';
 import { digest } from '../src/modules/auth/security.js';
 // Prisma 可能在导入时加载 .env。测试配置必须显式解析，不能依赖不覆盖已有值的 loadEnvFile。
