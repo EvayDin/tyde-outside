@@ -1,7 +1,10 @@
 import { writeFile, mkdir, access } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve, dirname } from 'node:path';
+import { cleanPackageArtifacts } from './lib/package-artifacts.mjs';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const kind = process.argv[2];
+if (!['mac', 'win'].includes(kind)) throw new Error('请指定桌面打包平台 mac 或 win');
 await access(resolve(root, 'apps/web/dist/index.html'));
 const api = new URL(process.env.TYDE_API_BASE_URL ?? 'http://127.0.0.1:3000');
 const local = ['localhost', '127.0.0.1', '[::1]'].includes(api.hostname);
@@ -14,6 +17,7 @@ const config = {
   apiBaseUrl: api.origin,
   allowLocalHttp: local,
 };
+await cleanPackageArtifacts(kind, root);
 await mkdir(resolve(root, 'apps/electron/resources'), { recursive: true });
 await writeFile(
   resolve(root, 'apps/electron/resources/runtime.json'),

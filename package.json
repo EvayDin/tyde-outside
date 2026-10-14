@@ -19,6 +19,7 @@
     "dev:web": "pnpm --filter @tyde/web dev",
     "dev:server": "pnpm --filter @tyde/server dev",
     "dev:electron": "node scripts/dev-electron.mjs",
+    "dev:electron:test": "node --env-file=apps/electron/config/test.env scripts/dev-electron.mjs",
     "build:packages": "pnpm --filter @tyde/shared build && pnpm --filter @tyde/platform build",
     "build:web": "pnpm --filter @tyde/web build",
     "build:server": "pnpm --filter @tyde/server build",
