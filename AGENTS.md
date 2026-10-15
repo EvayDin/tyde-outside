@@ -67,6 +67,7 @@ React 页面 → services/api → packages/platform
 | 打包                  | `pnpm package:web`、`pnpm package:server`、`pnpm package:mac`、`pnpm package:win` |
 
 默认端口：Web 5173、API 3000、PostgreSQL 5432。集成测试会清表，只能连接 `.env.test` 指定且库名以 `_test` 结尾的专用测试库。
+Web 使用 `API_PROXY_TARGET`（shell 或 `apps/web/.env.local`，shell 优先）选择后端，统一运行 `pnpm dev:web`；默认本地 HTTP 后端，HTTPS 目标自动启用自签名 HTTPS 并监听 `https://localhost:5173`。远程后端 `WEB_ORIGINS` 需包含该 HTTPS 本地来源。Electron 开发页面独立使用 `http://127.0.0.1:5174`，main 后端地址优先使用 `TYDE_API_BASE_URL`，其次复用 Web 的 `API_PROXY_TARGET` 配置，默认本地后端。
 修改后按影响范围验证；认证改动关注双端恢复/退出、过期、重放、限流与并发。测试位置：`tests/security.test.mjs`、`apps/server/tests/`、`tests/e2e/`。
 
 ## 按需补充上下文
