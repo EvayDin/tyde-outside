@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "predev": "pnpm --filter @tyde/shared build && pnpm --filter @tyde/platform build",
-    "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "dev": "vite --port 5173 --strictPort",
     "build": "pnpm --filter @tyde/shared build && pnpm --filter @tyde/platform build && tsc --noEmit && vite build",
-    "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
+    "preview": "vite preview --port 4173 --strictPort",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -22,6 +22,7 @@
   "devDependencies": {
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-basic-ssl": "2.3.0",
     "@vitejs/plugin-react": "5.0.4",
     "vite": "7.3.6"
   }

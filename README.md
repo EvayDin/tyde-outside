@@ -35,13 +35,17 @@ pnpm dev:server
 # 终端 2：Web
 pnpm dev:web
 
-# 终端 3：Electron（自动复用本项目 Web 服务，未启动则自动启动）
+# 终端 3：Electron（自动启动或复用 5174 端口的桌面页面服务）
 pnpm dev:electron
 ```
 
 Web 地址：<http://127.0.0.1:5173>。输入有效大陆手机号，点击获取验证码，固定输入 **095270**（保留前导零）。新用户填写唯一英文用户名与多语言姓名，老用户直接登录。欢迎页显示姓名和当前手机号。Web 与桌面账号互通，各自会话有效 30 天，退出只撤销当前会话。
 
 Electron 连接 Vercel 测试后端时，退出旧客户端后运行 `pnpm dev:electron:test`，无需启动本地后端。该命令加载 `apps/electron/config/test.env`，目标为 `https://tyde-outside-server.vercel.app`；shell 中已有的 `TYDE_API_BASE_URL` 优先于文件配置，切换时请检查是否有遗留变量。
+
+`pnpm dev:electron` 也读取 Web 的 `API_PROXY_TARGET` 配置（shell 优先于 `apps/web/.env.local`），通过 Electron main 连接对应后端；显式设置的 `TYDE_API_BASE_URL` 优先级最高。桌面页面固定使用 `http://127.0.0.1:5174`，与 Web 的 5173 端口独立，可同时开发，无需为桌面接受自签名证书。
+
+Web 通过 `API_PROXY_TARGET` 切换后端：默认连接 `http://127.0.0.1:3000`；运行 `API_PROXY_TARGET=https://aact.pw pnpm dev:web` 可连接 Vercel，无需启动本地后端或数据库。也可在 `apps/web/.env.local` 中设置 `API_PROXY_TARGET=https://tyde-outside-server.vercel.app`，之后直接运行 `pnpm dev:web`；
 
 mock 不会发送短信或验证真实号码归属，请用约定的测试号码。默认生产模式禁止 mock，真实短信后续在 `apps/server/src/modules/auth/sms.ts` 接入。
 
