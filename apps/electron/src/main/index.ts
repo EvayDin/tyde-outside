@@ -3,7 +3,7 @@ import { resolve, relative, isAbsolute, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadRuntime } from './config.js';
 import { registerIpc } from './ipc/index.js';
-import { createWindow } from './windows.js';
+import { createWindow, iconPath } from './windows.js';
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'tyde-app', privileges: { standard: true, secure: true, supportFetchAPI: true } },
@@ -25,6 +25,7 @@ else {
     .whenReady()
     .then(async () => {
       app.setAppUserModelId('app.tydeoutside.desktop');
+      if (!app.isPackaged) app.dock?.setIcon(iconPath);
       protocol.handle('tyde-app', async (request) => {
         try {
           const url = new URL(request.url);

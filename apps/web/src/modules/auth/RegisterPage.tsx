@@ -1,98 +1,137 @@
-import { useEffect, useState } from 'react';
-import { Button, Form, Input, Typography } from 'antd';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
-import { ApiError } from '@tyde/shared';
-import { api } from '../../services/api';
-import { SESSION_KEY } from '../../hooks/useSession';
-import { ErrorNotice } from '../../components/ErrorNotice';
-import type { PendingRegistration } from './LoginPage';
+import { useEffect, useRef, useState } from 'react';
+import { useForm } from 'react-hook-form';
+import RegisterFormPanel from './components/RegisterFormPanel';
+import type {
+  RegisterAccountType,
+  RegisterFormController,
+  RegisterFormValues,
+  RegisterUploadType,
+} from './types';
 
-export function RegisterPage({
-  grant,
-  clearGrant,
-}: {
-  grant: PendingRegistration;
-  clearGrant: () => void;
-}) {
-  const navigate = useNavigate();
-  const cache = useQueryClient();
-  const [expired, setExpired] = useState(false);
-  useEffect(() => {
-    const update = () => setExpired(Date.now() >= new Date(grant.expiresAt).getTime());
-    update();
-    const timer = window.setInterval(update, 1000);
-    return () => window.clearInterval(timer);
-  }, [grant.expiresAt]);
-  const register = useMutation({
-    mutationFn: (values: { username: string; displayName: string }) =>
-      api.completeRegistration({ ...values, registrationToken: grant.registrationToken }),
-    onSuccess: (result) => {
-      cache.setQueryData(SESSION_KEY, result);
-      clearGrant();
-      navigate('/', { replace: true });
+/** 注册表单保留源项目外观；输入和组织材料只留在当前页面内存中。 */
+export function RegisterPage() {
+  const [accountType, setAccountType] = useState<RegisterAccountType>('personal');
+  const [notice, setNotice] = useState('');
+  const [businessLicenseAsset, setBusinessLicenseAsset] = useState<{ fileName: string } | null>(
+    null,
+  );
+  const [orgLogoUrl, setOrgLogoUrl] = useState('');
+  const logoReader = useRef<FileReader | null>(null);
+  const selectionVersion = useRef(0);
+  const form = useForm<RegisterFormValues>({
+    defaultValues: {
+      roles: ['领航员'],
+      phone: '',
+      code: '',
+      password: '',
+      confirmPassword: '',
+      realName: '',
+      nickname: '',
+      idCardNo: '',
+      email: '',
+      orgName: '',
+      unifiedCreditCode: '',
+      orgPosition: 'OWNER',
+      orgDescription: '',
+      expertiseTags: [],
     },
+    mode: 'onBlur',
+    shouldUnregister: true,
   });
-  const needRestart =
-    expired ||
-    (register.error instanceof ApiError &&
-      ['REGISTRATION_EXPIRED', 'PHONE_ALREADY_REGISTERED'].includes(register.error.code));
-  function restart() {
-    clearGrant();
-    navigate('/auth', { replace: true });
-  }
+
+  useEffect(
+    () => () => {
+      selectionVersion.current += 1;
+      logoReader.current?.abort();
+    },
+    [],
+  );
+
+  const changeAccountType = (type: RegisterAccountType) => {
+    if (type === accountType) return;
+    selectionVersion.current += 1;
+    logoReader.current?.abort();
+    setBusinessLicenseAsset(null);
+    setOrgLogoUrl('');
+    setNotice('');
+    form.reset({
+      ...form.getValues(),
+      roles: type === 'org' ? ['执行专家'] : ['领航员'],
+      orgName: '',
+      unifiedCreditCode: '',
+      orgPosition: 'OWNER',
+      orgDescription: '',
+      expertiseTags: [],
+    });
+    setAccountType(type);
+  };
+
+  const selectFile = (file: File | undefined, type: RegisterUploadType) => {
+    if (!file) return;
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type)) {
+      setNotice('请选择 JPG、PNG、WebP 或 GIF 图片。');
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setNotice('请选择不超过 10 MB 的图片。');
+      return;
+    }
+    if (type === 'businessLicense') {
+      setBusinessLicenseAsset({ fileName: file.name });
+      setNotice('文件仅在本地选择，尚未上传。');
+      return;
+    }
+    selectionVersion.current += 1;
+    logoReader.current?.abort();
+    const version = selectionVersion.current;
+    const reader = new FileReader();
+    logoReader.current = reader;
+    reader.onload = () => {
+      if (selectionVersion.current !== version || typeof reader.result !== 'string') return;
+      setOrgLogoUrl(reader.result);
+      setNotice('文件仅在本地选择，尚未上传。');
+    };
+    reader.onerror = () => {
+      if (selectionVersion.current === version) setNotice('无法读取图片，请重新选择。');
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const controller: RegisterFormController = {
+    form,
+    accountType,
+    registering: false,
+    upload: {
+      businessLicenseAsset,
+      orgLogoUrl,
+      uploadingFile: null,
+      selectFile,
+    },
+    sms: {
+      sending: false,
+      countdown: 0,
+      send: () => setNotice('验证码功能暂未开放。'),
+    },
+    actions: {
+      changeAccountType,
+      realNameBlur: () => undefined,
+      nicknameBlur: () => undefined,
+      finish: () => setNotice('注册功能暂未开放，填写的信息尚未提交。'),
+    },
+  };
+
   return (
-    <>
-      <span className="step-label">最后一步 · 手机号已验证</span>
-      <Typography.Title level={2}>认识一下你</Typography.Title>
-      <p className="subtitle">为 +86 {grant.phone} 完善注册资料。</p>
-      <Form
-        layout="vertical"
-        requiredMark={false}
-        onFinish={(values) => register.mutate(values)}
-        disabled={needRestart || register.isPending}
-      >
-        <Form.Item
-          name="username"
-          label="用户名（英文）"
-          extra="3～32 位，字母开头，可含数字和下划线，不区分大小写。"
-          rules={[
-            { required: true, message: '请输入用户名' },
-            { pattern: /^[a-zA-Z][a-zA-Z0-9_]{2,31}$/, message: '用户名格式不正确' },
-          ]}
+    <div className="flex min-h-0 flex-1 flex-col gap-[8px]">
+      {notice && (
+        <p
+          role="status"
+          aria-label="操作提示"
+          className="flex-none rounded-[8px] bg-[#eef8fa] px-[12px] py-[10px] text-[13px] leading-[1.5] text-[#236578]"
         >
-          <Input autoComplete="username" maxLength={32} placeholder="例如 alex_ding" />
-        </Form.Item>
-        <Form.Item
-          name="displayName"
-          label="姓名"
-          rules={[
-            { required: true, message: '请输入姓名' },
-            {
-              validator: async (_, value: string) => {
-                const name = (value ?? '').trim().normalize('NFC');
-                if (!name || [...name].length > 80 || /[\p{Cc}\p{Cf}]/u.test(name))
-                  throw new Error('请输入 1～80 字的姓名，不含控制字符');
-              },
-            },
-          ]}
-        >
-          <Input autoComplete="name" placeholder="中文、英文或其他语言均可" />
-        </Form.Item>
-        <ErrorNotice error={expired ? new Error('手机号验证已过期，请重新验证') : register.error} />
-        <Button
-          type="primary"
-          block
-          htmlType="submit"
-          className="submit"
-          loading={register.isPending}
-        >
-          完成注册
-        </Button>
-      </Form>
-      <Button type="link" block onClick={restart} disabled={register.isPending} className="back">
-        {needRestart ? '重新验证手机号' : '返回并重新验证'}
-      </Button>
-    </>
+          {notice}
+        </p>
+      )}
+      <RegisterFormPanel controller={controller} />
+    </div>
   );
 }

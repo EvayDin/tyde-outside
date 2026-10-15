@@ -3,34 +3,89 @@ import { createRequire } from 'node:module';
 import { mkdir, mkdtemp } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { randomInt } from 'node:crypto';
+import type {
+  CodeResult,
+  RegistrationRequired,
+  SessionResult,
+} from '../../packages/shared/src/index';
+
 const root = process.cwd();
 const require = createRequire(resolve(root, 'apps/electron/package.json'));
-async function register(page: Page) {
-  const phone = `139${String(randomInt(0, 100_000_000)).padStart(8, '0')}`;
-  await expect(page.getByRole('heading', { name: '登录 / 注册' })).toBeVisible();
-  await page.getByLabel('手机号码').fill(phone);
-  await page.getByRole('button', { name: '获取验证码' }).click();
-  await expect(page.getByText('当前为内部试用', { exact: false })).toBeVisible();
-  await page.getByPlaceholder('6 位验证码').fill('095270');
-  await page.getByRole('button', { name: /^继\s*续$/ }).click();
-  await expect(page.getByRole('heading', { name: '认识一下你' })).toBeVisible();
-  await page.getByLabel('用户名（英文）').fill(`trial_${randomInt(1, 1_000_000_000)}`);
-  await page.getByLabel('姓名', { exact: true }).fill('测试小明 Alex');
-  await page.getByRole('button', { name: '完成注册' }).click();
-  await expect(page.getByRole('heading', { name: '欢迎，测试小明 Alex' })).toBeVisible();
-  await expect(page.getByText(`+86${phone}`, { exact: true })).toBeVisible();
+const phone = () => `139${String(randomInt(0, 100_000_000)).padStart(8, '0')}`;
+
+/** 显式验证现有 Web API 契约；认证页本身处于 UI 复刻阶段，不自动联调。 */
+async function registerWeb(page: Page) {
+  const number = phone();
+  const headers = { 'X-Tyde-Client': 'web', Origin: new URL(page.url()).origin };
+  const code = await page.request.post('/api/v1/auth/code', {
+    headers,
+    data: { region: 'CN', phone: number },
+  });
+  expect(code.ok()).toBe(true);
+  const challenge = (await code.json()) as CodeResult;
+  const verify = await page.request.post('/api/v1/auth/verify', {
+    headers,
+    data: { region: 'CN', phone: number, code: '095270', challengeId: challenge.challengeId },
+  });
+  expect(verify.ok()).toBe(true);
+  const grant = (await verify.json()) as RegistrationRequired;
+  expect(grant.status).toBe('registration_required');
+  const registered = await page.request.post('/api/v1/auth/register', {
+    headers,
+    data: {
+      registrationToken: grant.registrationToken,
+      username: `trial_${randomInt(1, 1_000_000_000)}`,
+      displayName: '测试小明 Alex',
+    },
+  });
+  expect(registered.ok()).toBe(true);
+  const session = (await registered.json()) as SessionResult;
+  expect(session.user.phoneE164).toBe(`+86${number}`);
+  expect(JSON.stringify(session)).not.toContain('sessionToken');
+  return headers;
 }
-test('Web 注册、刷新会话恢复与主动退出', async ({ page }) => {
+
+test('Web API 注册、Cookie 会话恢复与退出', async ({ page }) => {
   await page.goto('/');
-  await register(page);
+  const headers = await registerWeb(page);
   await page.reload();
-  await expect(page.getByRole('heading', { name: '欢迎，测试小明 Alex' })).toBeVisible();
-  await mkdir('artifacts/screenshots', { recursive: true });
-  await page.screenshot({ path: 'artifacts/screenshots/web-welcome.png' });
-  await page.getByRole('button', { name: '退出登录' }).click();
-  await expect(page.getByRole('heading', { name: '登录 / 注册' })).toBeVisible();
+  const current = await page.request.get('/api/v1/auth/me', { headers });
+  expect(current.ok()).toBe(true);
+  expect(((await current.json()) as SessionResult).user.displayName).toBe('测试小明 Alex');
+  const logout = await page.request.post('/api/v1/auth/logout', { headers });
+  expect(logout.status()).toBe(204);
+  expect((await page.request.get('/api/v1/auth/me', { headers })).status()).toBe(401);
 });
-test('Electron 共用页面、加密保存会话、重启恢复与退出', async () => {
+
+/** 直接通过受限 bridge 验证当前桌面接口，不依赖尚未联调的表单。 */
+async function registerDesktop(page: Page) {
+  const number = phone();
+  const code = await page.evaluate(
+    (number) => window.tydeDesktop!.sendCode({ region: 'CN', phone: number }),
+    number,
+  );
+  if (!code.ok) throw new Error(code.error.message);
+  const verified = await page.evaluate(
+    ({ number, challengeId }) =>
+      window.tydeDesktop!.verifyCode({ region: 'CN', phone: number, code: '095270', challengeId }),
+    { number, challengeId: code.data.challengeId },
+  );
+  if (!verified.ok || verified.data.status !== 'registration_required')
+    throw new Error('未获得注册凭证');
+  const registered = await page.evaluate(
+    (registrationToken) =>
+      window.tydeDesktop!.completeRegistration({
+        registrationToken,
+        username: `trial_${Date.now()}`,
+        displayName: '测试小明 Alex',
+      }),
+    verified.data.registrationToken,
+  );
+  expect(registered.ok).toBe(true);
+  expect(JSON.stringify(registered)).not.toContain('sessionToken');
+}
+
+test('Electron bridge 加密保存会话、重启恢复与退出', async () => {
   await mkdir('.local/e2e', { recursive: true });
   const userData = await mkdtemp(resolve(root, '.local/e2e/profile-'));
   const options = {
@@ -45,18 +100,18 @@ test('Electron 共用页面、加密保存会话、重启恢复与退出', async
   };
   let app = await electron.launch(options);
   try {
-    let page = await app.firstWindow();
-    await register(page);
-    await mkdir('artifacts/screenshots', { recursive: true });
-    await page.screenshot({ path: 'artifacts/screenshots/electron-welcome.png' });
-    const result = await page.evaluate(async () => window.tydeDesktop!.getCurrentUser());
-    expect(JSON.stringify(result)).not.toContain('sessionToken');
+    await registerDesktop(await app.firstWindow());
     await app.close();
     app = await electron.launch(options);
-    page = await app.firstWindow();
-    await expect(page.getByRole('heading', { name: '欢迎，测试小明 Alex' })).toBeVisible();
-    await page.getByRole('button', { name: '退出登录' }).click();
-    await expect(page.getByRole('heading', { name: '登录 / 注册' })).toBeVisible();
+    const page = await app.firstWindow();
+    const current = await page.evaluate(() => window.tydeDesktop!.getCurrentUser());
+    if (!current.ok) throw new Error(current.error.message);
+    expect(current.data.user.displayName).toBe('测试小明 Alex');
+    const logout = await page.evaluate(() => window.tydeDesktop!.logout());
+    expect(logout.ok).toBe(true);
+    const cleared = await page.evaluate(() => window.tydeDesktop!.getCurrentUser());
+    expect(cleared.ok).toBe(false);
+    if (!cleared.ok) expect(cleared.status).toBe(401);
   } finally {
     await app.close();
   }

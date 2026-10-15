@@ -12,7 +12,7 @@
 | `/api/v1/docs/json`                  | OpenAPI JSON，可导入 API 调试工具 |
 | `/api/v1/docs/yaml`                  | OpenAPI YAML                      |
 
-执行 `pnpm dev:web` 后也可从 `http://127.0.0.1:5173/api/v1/docs/` 访问。路径在 `/api/` 下，Vite 与部署 Nginx 均沿用现有同源代理。文档随服务启动开放，不依赖数据库连接；数据库状态仍以 `/api/v1/health/ready` 为准。
+执行 `pnpm dev:web` 后也可从 `http://127.0.0.1:3001/api/v1/docs/` 访问。路径在 `/api/` 下，Vite 与部署 Nginx 均沿用现有同源代理。文档随服务启动开放，不依赖数据库连接；数据库状态仍以 `/api/v1/health/ready` 为准。
 
 ## 接口与响应
 
@@ -34,7 +34,7 @@
 
 Swagger UI 中选择 Try it out 即可发送请求。POST 会执行真实业务，验证码挑战、注册和退出都会实际生效。
 
-文档页面所在的源地址必须包含在 `WEB_ORIGINS` 中。默认开发配置允许 Web 的 5173 源，建议通过 Web 代理打开文档；若从 3000 直接调试，请显式把 `http://127.0.0.1:3000` 加入允许列表。浏览器自动发送 Origin，不在 Swagger 中手动伪造该头。
+文档页面所在的源地址必须包含在 `WEB_ORIGINS` 中。默认开发配置允许 Web 的 3001 源，建议通过 Web 代理打开文档；若从 3000 直接调试，请显式把 `http://127.0.0.1:3000` 加入允许列表。浏览器自动发送 Origin，不在 Swagger 中手动伪造该头。
 
 1. 调用 `/auth/code`，请求体示例：`{"region":"CN","phone":"13800138000"}`。使用约定测试号码。
 2. 调用 `/auth/verify`，带上返回的 challengeId、相同 region/phone 和字符串验证码 `095270`。
