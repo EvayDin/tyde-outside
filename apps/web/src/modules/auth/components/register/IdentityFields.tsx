@@ -14,7 +14,7 @@ export default function IdentityFields({
   controller: RegisterFormController;
   inputNameSuffix: string;
 }) {
-  const { form, accountType, actions } = controller;
+  const { form } = controller;
   const realName = useWatch({ control: form.control, name: 'realName' }) ?? '';
   const { errors } = form.formState;
   const realNameId = `register-real-name-${inputNameSuffix}`;
@@ -27,15 +27,12 @@ export default function IdentityFields({
   const nicknameField = form.register('nickname');
 
   return (
-    <FormSection
-      number={accountType === 'org' ? '3' : '2'}
-      title={accountType === 'personal' ? '身份信息' : '主管身份信息'}
-    >
+    <FormSection number="2" title="身份信息">
       <AuthFormField
         htmlFor={realNameId}
         label={
           <span>
-            {accountType === 'personal' ? '姓名' : '真实姓名'} <em>*</em>
+            姓名 <em>*</em>
           </span>
         }
         error={errors.realName}
@@ -49,10 +46,6 @@ export default function IdentityFields({
           placeholder="必须与身份证保持一致"
           aria-invalid={Boolean(errors.realName)}
           {...realNameField}
-          onBlur={(event) => {
-            void realNameField.onBlur(event);
-            actions.realNameBlur();
-          }}
         />
       </AuthFormField>
       <AuthFormField
@@ -72,10 +65,6 @@ export default function IdentityFields({
           placeholder={realName || '默认展示真实姓名'}
           aria-invalid={Boolean(errors.nickname)}
           {...nicknameField}
-          onBlur={(event) => {
-            void nicknameField.onBlur(event);
-            actions.nicknameBlur();
-          }}
         />
       </AuthFormField>
       <AuthFormField

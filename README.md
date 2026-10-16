@@ -2,7 +2,7 @@
 
 项目原名为 `tyde-outside`。为兼容已有环境，数据库名与角色名、已部署的 Vercel 域名及桌面应用标识 `app.tydeoutside.desktop` 保持原值。
 
-React + Electron + Fastify + PostgreSQL 的 pnpm Monorepo。Web 与桌面共用 `apps/web`，使用 Tailwind CSS、shadcn/ui、TanStack Router 和 React Query，当前前端处于登录/注册页面复刻阶段，只提供本地表单交互。当前后端已实现大陆手机号验证码认证、首次补资料注册、持久会话和退出，API 适配保留供后续联调。
+React + Electron + Fastify + PostgreSQL 的 pnpm Monorepo。Web 与桌面共用 `apps/web`，使用 Tailwind CSS、shadcn/ui、TanStack Router 和 React Query。认证入口提供“验证码登录 / 密码登录”双页签，默认验证码登录；密码登录仅展示未开放提示。开发环境使用本地验证码 mock，输入固定码后按新账号进入个人资料页；生产构建保留真实发送适配，真实登录与个人资料提交仍未开放。当前后端已实现大陆手机号验证码认证、首次补资料注册、持久会话和退出，其余 API 适配保留供后续联调。
 
 ## 环境
 
@@ -26,7 +26,7 @@ pnpm db:deploy
 
 `setup:local` 创建 `tyde_outside_dev` 角色、开发库和专用自动化测试库，生成随机凭据到 `apps/server/.env` 与 `.env.test`（权限 0600）。它不会覆盖已有 `.env` 或重置已有角色密码。已有数据库时可自行复制 `.env.example` 并配置；特殊 PostgreSQL 路径通过 `PG_BIN` / `PSQL_BIN` 指定。
 
-只开发前端时，安装依赖后可直接运行 `pnpm dev:web` 或 `pnpm dev:electron`，无需启动数据库或后端。需要单独验证现有后端接口时，再完成上述数据库准备。
+开发前端时，安装依赖后可直接运行 `pnpm dev:web` 或 `pnpm dev:electron`。点击获取验证码会使用开发专用的本地 mock，不发送短信、不访问远程服务或数据库，固定验证码为 **095270**。生产构建不启用本地 mock，验证码请求仍通过现有平台适配；联调本地后端时需完成上述数据库准备，Web 默认代理到 `http://127.0.0.1:3000`，远程预览联调可通过 `API_PROXY_TARGET` 指定后端，并确保后端允许当前 Web 源地址。
 
 分别打开终端：
 
@@ -41,9 +41,13 @@ pnpm dev:web
 pnpm dev:electron
 ```
 
-Web 地址：<http://127.0.0.1:3001>。可直接切换登录/注册页签、登录角色、密码/验证码方式，以及个人/组织注册表单。页面不自动恢复会话、不检查后端健康状态，获取验证码与提交操作只提示功能尚未开放，不调用接口或模拟成功。当前服务端的固定测试验证码仍为 **095270**，供显式 API 测试使用。
+Web 地址：<http://127.0.0.1:3001>。认证入口默认打开“验证码登录”，可切换“密码登录”，不选择角色或账号类型。首次打开密码页即在表单底部展示“还没有账号？”和小尺寸链接样式的“验证码注册”按钮，无需填写密码或提交表单。密码表单必填校验通过并提交后，只显示“密码登录暂未开放，请使用验证码登录或注册。”，不发起密码认证请求。点击“验证码注册”保留手机号，清空密码、验证码、错误、提示和本地验证码挑战，切回验证码页签并聚焦验证码输入框，不自动发码。
 
-Electron 连接 Vercel 测试后端时，退出旧客户端后运行 `pnpm dev:electron:test`，无需启动本地后端。该命令加载 `apps/electron/config/test.env`，目标为 `https://tyde-outside-server.vercel.app`；shell 中已有的 `TYDE_API_BASE_URL` 优先于文件配置，切换时请检查是否有遗留变量。
+开发环境输入合法手机号并获取验证码后，填写 **095270** 点击继续，即按新账号进入 `/#/register` 完善个人资料；本地验证码有效 5 分钟，重发间隔 60 秒，换号会清空旧验证码与挑战，全程不请求后端。资料页保留密码、确认密码、姓名、昵称、身份证号和邮箱，不重复填写手机号、验证码，不提供角色或组织注册；点击完成注册仍提示未开放，不创建真实账号或会话。生产构建使用实际后端发送验证码，继续操作仍未开放，不会在失败时回退为本地 mock，也不自动恢复会话或检查健康状态。
+
+Electron 的 `pnpm dev:electron:test` 加载 `apps/electron/config/test.env`，为 main 指定测试后端 `https://tyde-outside-server.vercel.app`；shell 中已有的 `TYDE_API_BASE_URL` 优先于文件配置。开发页面的验证码仍使用本地 mock，不调用该后端；真实桌面接口联调使用生产构建的共用前端与现有 bridge。
+
+Web 联调同一测试后端时先运行 `pnpm build:web`，再运行 `API_PROXY_TARGET=https://tyde-outside-server.vercel.app pnpm --filter @tyde/web preview`。生产预览不启用本地 mock；代理使用目标后端的 Host，保留浏览器原始 Origin，由后端校验允许的 Web 来源，部署不可用时显示实际请求错误。
 
 mock 不会发送短信或验证真实号码归属，请用约定的测试号码。默认生产模式禁止 mock，真实短信后续在 `apps/server/src/modules/auth/sms.ts` 接入。
 
@@ -130,9 +134,10 @@ pnpm package:win
 ## 双端前端开发
 
 - 页面、组件、Hash 路由和业务逻辑只维护在 `apps/web`；Electron 开发时加载同一 Vite 页面，打包时加载同一份 `apps/web/dist`，不另建 renderer 业务工程。
-- 视觉以 tyde-web 为准，认证页布局、插图与表单展示组件直接复用；通用 UI 按需迁入 `components/ui/`，主题变量保持同源。页面控制器只管理本地输入，不迁入原 Java 接口或业务 store。
-- 当前认证页只做 UI 复刻，不自动请求健康检查或会话接口；发送验证码、登录和注册提交暂不调用 API，也不模拟成功。原有 Web Cookie 与桌面 Bearer API 适配保留，待表单契约与当前后端对齐后再联调。
-- 认证页提供“登录”和“注册账号”页签，对应 `/#/auth` 与 `/#/register`。注册直接展示个人/组织表单，没有验证码前置步骤；字段参考原 tyde-web，仅保存在当前页面内存中。材料选择只留在本地，不上传。切换主页面或刷新会清空敏感输入。
+- 视觉以 tyde-web 为准，认证页布局、插图与表单展示组件直接复用；通用 UI 按需迁入 `components/ui/`，主题变量保持同源。页面控制器通过 `services/api.ts` 发送验证码：开发模式返回本地 mock，生产构建使用现有平台适配；其余表单交互只管理本地输入，不迁入原 Java 接口或业务 store。
+- 认证页不自动请求健康检查或会话接口；开发模式本地发送与验证码校验都不发 fetch 或 IPC，正确码仅推进资料填写步骤；生产构建点击获取后才请求 `/api/v1/auth/code`，Web 使用同源代理，Electron 使用受限 bridge。真实登录和个人资料提交暂不调用 API，不创建模拟账号或会话；其余 Web Cookie 与桌面 Bearer API 适配保留供后续联调。
+- `/#/auth` 提供“验证码登录 / 密码登录”双页签，默认验证码登录，没有独立注册页签或角色选项。首次打开密码页即在表单底部展示“还没有账号？”及公共 Button 小尺寸链接样式的“验证码注册”入口，无需填写密码或提交表单。密码表单必填校验通过并提交后，只显示“密码登录暂未开放，请使用验证码登录或注册。”；没有密码后端接口，不模拟成功或账号错误。点击“验证码注册”保留手机号，清空密码、验证码、错误、提示和本地验证码挑战，切回验证码页签并聚焦验证码输入框，不自动发送验证码。
+- 开发模式需先获取当前手机号的本地验证码，再在 5 分钟内输入 `095270`，点击继续按新账号进入 `/#/register`；错误、过期、未获取或换号后沿用旧码均不能进入。生产构建不启用该模拟流程，继续操作仍提示未开放，后续需按真实验证结果区分新老账号。资料页保留个人字段，不重复填写手机号、验证码，不提供组织注册或材料上传，最终提交继续提示未开放；可返回认证入口，切换页面或刷新会清空输入和本地挑战。现有个人字段尚未与后端注册 DTO 对齐。
 - 基础组件在 `apps/web/src/components/ui/`，主题变量在 `src/styles/global.css`；通过 `components.json` 配置 shadcn，源码使用 `@/` 别名。表单由 React Hook Form 管理，服务端数据由 React Query 管理。
 - 页面通过 `services/api.ts` 和 `@tyde/platform` 调用当前 Fastify API。浏览器继续使用 HttpOnly Cookie，桌面由 main 请求并加密保存令牌；前端不改用原 tyde-web 的 Java 服务。
 - 桌面专有功能通过 `platform.capabilities` 决定是否展示，Web 隐藏不支持的入口；路由与执行入口也需检查能力。当前只声明已实现的 `secureSessionStorage`，以后随实际 IPC 能力增加，不提前声明未实现的文件系统、托盘等能力。
@@ -144,7 +149,7 @@ pnpm package:win
 pnpm test:frontend
 ```
 
-该命令构建共用前端和 Electron，仅在 5176 启动前端预览，验证页签、完整注册表单、本地交互、键盘操作、窄屏布局和 Electron 安全隔离，并断言没有 API 请求。结果与截图在 `artifacts/`。`pnpm test:e2e` 另行验证现有 Web Cookie 和桌面 bridge 的真实后端契约，需要专用测试库；这不代表页面已完成接口联调或正式安装包验收。
+该命令构建共用前端和 Electron，在 5176 启动生产预览、5177 启动开发页面。开发双端验证本地固定验证码、倒计时、按新账号进入个人资料页及零 fetch/IPC 请求，同时覆盖错误、未获取、换号与过期；生产预览使用浏览器路由替身和隔离 HTTP 服务，验证发送、限流、失败重试及双端真实请求契约，确保不会误用本地 mock。同时覆盖个人资料页、本地校验、导航、键盘操作、窄屏布局和 Electron 安全隔离，断言没有额外认证请求、模拟账号或会话创建。结果与截图在 `artifacts/`。`pnpm test:e2e` 另行验证现有 Web Cookie 和桌面 bridge 的真实后端契约，需要专用测试库；这不代表完整登录注册页面已完成接口联调或正式安装包验收。
 
 ## 常见问题
 
