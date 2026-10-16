@@ -6,7 +6,7 @@
 
 pnpm Workspace Monorepo，TypeScript + ESM，3 个应用、3 个共享包。
 Web 与 Electron 共用一份 React 前端，连接 Fastify 后端；后端是按业务模块组织的单体。阿里云后端包包含 Web，由 Fastify 直接托管；Vercel 在现有后端项目中统一发布静态资源与 API。本地可分别启动。
-当前业务：大陆手机号验证码登录、新用户补资料注册、恢复会话、退出。真实短信尚未接入。
+真实短信尚未接入。
 
 技术栈：Node.js 24、pnpm 11、React 19、Vite、Ant Design 6、React Query、React Router、Electron 38、Fastify 5、Prisma 6、PostgreSQL。精确版本见各 `package.json` 与 `pnpm-lock.yaml`。
 
@@ -34,17 +34,18 @@ React 页面 → services/api → packages/platform
   Electron → window.tydeDesktop → preload → IPC → main HTTP 请求 ┴→ Fastify 路由 → Service → Prisma → PostgreSQL
 ```
 
-- API 前缀为 `/api/v1`。认证接口：POST `/auth/code`、`/auth/verify`、`/auth/register`、`/auth/logout`；GET `/auth/me`。健康检查：GET `/health/live`、`/health/ready`。
-- 验证通过后，老用户直接获得会话；新用户得到短期 `registrationToken`，补齐唯一英文用户名与姓名后创建账号和会话。
-- 会话是随机不透明令牌，绝对有效期 30 天，数据库仅存摘要；Web 与桌面会话独立，退出只撤销当前会话。
-- Web 通过 HttpOnly、SameSite=Lax Cookie 认证，远程环境要求 HTTPS + Secure Cookie；服务端校验来源。
-- 桌面 main 以 Bearer 认证，用 Electron `safeStorage` 加密保存令牌，按后端地址隔离；令牌不会返回 renderer。
-- 数据表：`User`（账号）、`VerificationChallenge`（验证码挑战）、`RegistrationGrant`（注册凭证）、`Session`（会话）、`AuthRateLimit`（持久化限流）。验证码消费与注册依赖事务和数据库锁保证并发一致性。
+- API 前缀 `/api/v1`。认证接口沿用旧项目：POST `/auth/sms/send`、`/auth/register`、`/auth/login`、`/auth/sms/login`、`/auth/refresh`、`/auth/password/reset`、`/auth/logout`；GET `/users/me`。健康检查保持 `/health/live`、`/health/ready`。
+- 认证使用旧项目 `code/message/data` 包装；注册返回用户资料，登录返回 `accessToken/refreshToken/tokenType/expiresIn`。`role/roles` 可省略，服务端统一固定 EXPERT。个人/组织账号类型仍使用 `accountType`。
+- 会话使用新项目随机不透明令牌，数据库仅存摘要，默认 30 天。刷新令牌轮换；Web 与桌面会话独立，退出撤销当前会话，重置密码撤销全部会话。
+- Web 使用 HttpOnly、SameSite=Lax Cookie 与来源校验；远程环境要求 HTTPS + Secure Cookie。桌面 main 使用 Bearer。无浏览器头和 Cookie 的普通 API 客户端无需额外客户端头。
+- 原前端仍使用 `/auth/code`、`/auth/verify`、`/auth/me` 与注册凭证流程；这部分未迁移，与新后端不兼容，需要后续前端任务对接。
+- 数据表：`User`、`Organization`、`VerificationChallenge`、`Session`、`AuthRateLimit`；原 `RegistrationGrant` 表保留历史数据。验证码消费、注册、刷新与重置依赖事务和数据库锁。
+- 组织注册营业执照的一次性凭证认领依赖尚未接入，提交 `businessLicense` 会明确报错。迁移与验证限制见 `docs/AUTH_BACKEND.md`。
 
 ## 开发新需求时
 
 - UI 放 `apps/web/src/modules/<业务>/`，路由接入 `app/App.tsx`；后端模块放 `apps/server/src/modules/<业务>/`，在 `application.ts` 装配。
-- Swagger UI 为 `/api/v1/docs/`，JSON/YAML 在其下的 `/json`、`/yaml`；插件必须先于业务路由注册。新增接口补齐 summary、operationId、tags、请求与响应 schema，认证响应 schema 位于 `auth.schema.ts`；维护说明见 `docs/API.md`。
+- Swagger UI 为 `/api/v1/docs/`，JSON/YAML 在其下的 `/json`、`/yaml`；插件必须先于业务路由注册。新增接口补齐 summary、operationId、tags、请求与响应 schema，认证请求 schema 位于 `packages/shared/src/auth.ts`，响应 schema 位于 `auth.schema.ts`；维护说明见 `docs/API.md`。
 - 涉及双端 API 时同步维护：shared 类型/schema → server 路由与 service → platform Web/桌面适配 → Electron preload 与 IPC → 页面调用。
 - UI 统一通过平台适配层访问业务能力；Electron 只承担桌面能力，不复制 React 页面、不内嵌业务后端。
 - 新增 IPC 使用明确通道和固定后端路径，保留来源及参数校验；preload 的 IPC 常量从 `@tyde/shared/ipc` 导入。

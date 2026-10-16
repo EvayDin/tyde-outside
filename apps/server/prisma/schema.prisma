@@ -8,26 +8,40 @@ datasource db {
 }
 
 model User {
-  id          String   @id @default(uuid()) @db.Uuid
-  phoneE164   String   @unique @db.VarChar(16)
-  phoneRegion String   @db.VarChar(2)
-  username    String   @unique @db.VarChar(32)
-  displayName String   @db.VarChar(320)
-  createdAt   DateTime @default(now()) @db.Timestamptz(3)
-  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
-  sessions    Session[]
+  id             String        @id @default(uuid()) @db.Uuid
+  phoneE164      String        @unique @db.VarChar(16)
+  phoneRegion    String        @db.VarChar(2)
+  username       String        @unique @db.VarChar(32)
+  displayName    String        @db.VarChar(320)
+  createdAt      DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime      @updatedAt @db.Timestamptz(3)
+  sessions       Session[]
+  uid            String        @unique @default(uuid()) @db.VarChar(36)
+  accountType    String        @default("INDIVIDUAL") @db.VarChar(16)
+  passwordHash   String?       @db.VarChar(256)
+  email          String?       @unique @db.VarChar(128)
+  realName       String?       @db.VarChar(64)
+  idCardNo       String?       @unique @db.VarChar(32)
+  role           String        @default("EXPERT") @db.VarChar(16)
+  status         String        @default("ACTIVE") @db.VarChar(16)
+  lastLoginAt    DateTime?     @db.Timestamptz(3)
+  lastLoginIp    String?       @db.VarChar(64)
+  organizationId String?       @db.Uuid
+  orgPosition    String?       @db.VarChar(16)
+  organization   Organization? @relation(fields: [organizationId], references: [id])
 }
 
 model VerificationChallenge {
-  id            String    @id @default(uuid()) @db.Uuid
-  phoneE164     String    @db.VarChar(16)
-  purpose       String    @default("login") @db.VarChar(16)
-  codeDigest    String    @db.VarChar(64)
-  expiresAt     DateTime  @db.Timestamptz(3)
-  failedAttempts Int      @default(0)
-  consumedAt    DateTime? @db.Timestamptz(3)
-  invalidatedAt DateTime? @db.Timestamptz(3)
-  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  id             String    @id @default(uuid()) @db.Uuid
+  phoneE164      String    @db.VarChar(16)
+  purpose        String    @default("login") @db.VarChar(16)
+  codeDigest     String    @db.VarChar(64)
+  expiresAt      DateTime  @db.Timestamptz(3)
+  failedAttempts Int       @default(0)
+  consumedAt     DateTime? @db.Timestamptz(3)
+  invalidatedAt  DateTime? @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+
   @@index([phoneE164, createdAt])
   @@index([expiresAt])
 }
@@ -40,25 +54,41 @@ model RegistrationGrant {
   expiresAt   DateTime  @db.Timestamptz(3)
   consumedAt  DateTime? @db.Timestamptz(3)
   createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+
   @@index([expiresAt])
 }
 
 model Session {
-  id          String    @id @default(uuid()) @db.Uuid
-  tokenDigest String    @unique @db.VarChar(64)
-  userId      String    @db.Uuid
-  clientType  String    @db.VarChar(16)
-  expiresAt   DateTime  @db.Timestamptz(3)
-  revokedAt   DateTime? @db.Timestamptz(3)
-  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id               String    @id @default(uuid()) @db.Uuid
+  tokenDigest      String    @unique @db.VarChar(64)
+  userId           String    @db.Uuid
+  clientType       String    @db.VarChar(16)
+  expiresAt        DateTime  @db.Timestamptz(3)
+  refreshDigest    String?   @unique @db.VarChar(64)
+  refreshExpiresAt DateTime? @db.Timestamptz(3)
+  revokedAt        DateTime? @db.Timestamptz(3)
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   @@index([userId])
   @@index([expiresAt])
 }
 
 model AuthRateLimit {
-  key         String   @id @db.VarChar(200)
-  count       Int      @default(0)
-  expiresAt   DateTime @db.Timestamptz(3)
+  key       String   @id @db.VarChar(200)
+  count     Int      @default(0)
+  expiresAt DateTime @db.Timestamptz(3)
+
   @@index([expiresAt])
+}
+
+model Organization {
+  id                String   @id @default(uuid()) @db.Uuid
+  name              String   @unique @db.VarChar(128)
+  unifiedCreditCode String?  @unique @db.VarChar(32)
+  description       String?  @db.VarChar(1024)
+  logoUrl           String?  @db.VarChar(512)
+  expertiseTags     String[]
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+  users             User[]
 }

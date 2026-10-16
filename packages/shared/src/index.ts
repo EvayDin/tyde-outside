@@ -94,3 +94,6 @@ export interface DesktopBridge {
   getCurrentUser(): Promise<BridgeResult<SessionResult>>;
   logout(): Promise<BridgeResult<void>>;
 }
+
+// tyde-core compatible backend authentication contracts.
+export * from './auth.js';

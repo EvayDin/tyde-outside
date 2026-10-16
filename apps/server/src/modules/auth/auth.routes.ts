@@ -1,26 +1,24 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import {
   API_PREFIX,
-  phoneSchema,
-  registerSchema,
-  verifySchema,
-  type PhoneInput,
-  type RegisterInput,
-  type VerifyInput,
+  smsSendSchema,
+  smsLoginSchema,
+  smsRegisterSchema,
+  loginSchema,
+  refreshSchema,
+  passwordResetSchema,
+  type SmsSendInput,
+  type SmsLoginInput,
+  type SmsRegisterInput,
+  type LoginInput,
+  type PasswordResetInput,
+  type LoginResponse,
 } from '@tyde/shared';
 import type { Config } from '../../config/index.js';
 import { AuthError } from './auth.error.js';
-import { AuthService, type ServerAuthResult } from './auth.service.js';
+import { AuthService } from './auth.service.js';
 import { SESSION_DAYS, validateTransport, type ClientType } from './security.js';
-import {
-  authSchema,
-  authFailure,
-  codeResponse,
-  verifyResponse,
-  authenticatedResponse,
-  sessionResponse,
-} from './auth.schema.js';
-
+import { authSchema, resultSchema, userResponse, loginResponse } from './auth.schema.js';
 export async function authRoutes(app: FastifyInstance, service: AuthService, config: Config) {
   const cookieName = config.cookieSecure ? '__Host-tyde_session' : 'tyde_session';
   const cookieOptions = {
@@ -32,90 +30,122 @@ export async function authRoutes(app: FastifyInstance, service: AuthService, con
   function client(req: FastifyRequest): ClientType {
     return req.headers['x-tyde-client'] === 'desktop' ? 'desktop' : 'web';
   }
-  function token(req: FastifyRequest): string | undefined {
-    if (client(req) === 'desktop') {
-      const header = req.headers.authorization;
-      return header?.startsWith('Bearer ') ? header.slice(7) : undefined;
-    }
-    return req.cookies[cookieName];
+  function token(req: FastifyRequest) {
+    return client(req) === 'desktop'
+      ? req.headers.authorization?.replace(/^Bearer /, '')
+      : req.cookies[cookieName];
   }
+  const success = <T>(data: T) => ({ code: 200, message: '操作成功', data });
   app.addHook('onRequest', async (req, reply) => {
-    if (!req.url.startsWith(`${API_PREFIX}/auth/`)) return;
+    if (
+      !req.url.startsWith(`${API_PREFIX}/auth/`) &&
+      req.url.split('?')[0] !== `${API_PREFIX}/users/me`
+    )
+      return;
     reply.header('Cache-Control', 'no-store');
+    // Ordinary API clients retain the legacy Bearer contract without a custom header.
+    if (
+      !req.headers['x-tyde-client'] &&
+      !req.headers.origin &&
+      !req.headers.cookie &&
+      !Object.keys(req.headers).some((key) => key.startsWith('sec-fetch-'))
+    )
+      req.headers['x-tyde-client'] = 'desktop';
     try {
       validateTransport(req.headers, req.method, config.webOrigins);
     } catch (error) {
       throw new AuthError(403, 'ORIGIN_NOT_ALLOWED', (error as Error).message);
     }
   });
-  function finish(result: ServerAuthResult, req: FastifyRequest, reply: FastifyReply) {
-    if (result.status !== 'authenticated') return result;
-    const { sessionToken, ...publicResult } = result;
-    if (client(req) === 'desktop') return { ...publicResult, sessionToken };
-    reply.setCookie(cookieName, sessionToken!, { ...cookieOptions, maxAge: SESSION_DAYS * 86_400 });
-    return publicResult;
+  function finish(result: LoginResponse, req: FastifyRequest, reply: FastifyReply) {
+    if (client(req) === 'web')
+      reply.setCookie(cookieName, result.accessToken, {
+        ...cookieOptions,
+        maxAge: SESSION_DAYS * 86_400,
+      });
+    return success(result);
   }
-  app.post<{ Body: PhoneInput }>(
-    `${API_PREFIX}/auth/code`,
-    {
-      schema: { ...authSchema('sendCode', '发送验证码', { 200: codeResponse }), body: phoneSchema },
-    },
-    async (req) => service.sendCode(req.body, req.ip),
-  );
-  app.post<{ Body: VerifyInput }>(
-    `${API_PREFIX}/auth/verify`,
+  app.post<{ Body: SmsSendInput }>(
+    `${API_PREFIX}/auth/sms/send`,
     {
       schema: {
-        ...authSchema('verifyCode', '验证并登录或获取注册凭证', {
-          200: verifyResponse,
-          410: authFailure,
-        }),
-        body: verifySchema,
+        ...authSchema('sendCode', '发送短信验证码', resultSchema({ type: 'string' })),
+        body: smsSendSchema,
       },
     },
-    async (req, reply) => finish(await service.verify(req.body, req.ip, client(req)), req, reply),
+    async (req) => success(await service.sendCode(req.body, req.ip)),
   );
-  app.post<{ Body: RegisterInput }>(
+  app.post<{ Body: SmsRegisterInput }>(
     `${API_PREFIX}/auth/register`,
     {
       schema: {
-        ...authSchema('completeRegistration', '补充资料并注册', {
-          201: authenticatedResponse,
-          409: authFailure,
-          410: authFailure,
-        }),
-        body: registerSchema,
+        ...authSchema(
+          'register',
+          '注册（固定为执行专家，无需选择身份）',
+          resultSchema(userResponse),
+        ),
+        body: smsRegisterSchema,
       },
     },
-    async (req, reply) => {
-      const result = await service.register(req.body, client(req));
-      reply.code(201);
-      return finish(result, req, reply);
+    async (req) => success(await service.register(req.body, req.ip)),
+  );
+  app.post<{ Body: LoginInput }>(
+    `${API_PREFIX}/auth/login`,
+    {
+      schema: {
+        ...authSchema('login', '密码登录（默认执行专家）', resultSchema(loginResponse)),
+        body: loginSchema,
+      },
+    },
+    async (req, reply) => finish(await service.login(req.body, req.ip, client(req)), req, reply),
+  );
+  app.post<{ Body: SmsLoginInput }>(
+    `${API_PREFIX}/auth/sms/login`,
+    {
+      schema: {
+        ...authSchema('loginBySms', '短信登录（默认执行专家）', resultSchema(loginResponse)),
+        body: smsLoginSchema,
+      },
+    },
+    async (req, reply) =>
+      finish(await service.loginBySms(req.body, req.ip, client(req)), req, reply),
+  );
+  app.post<{ Body: { refreshToken: string } }>(
+    `${API_PREFIX}/auth/refresh`,
+    {
+      schema: {
+        ...authSchema('refresh', '刷新令牌（旧令牌对失效）', resultSchema(loginResponse)),
+        body: refreshSchema,
+      },
+    },
+    async (req, reply) =>
+      finish(await service.refresh(req.body.refreshToken, client(req)), req, reply),
+  );
+  app.post<{ Body: PasswordResetInput }>(
+    `${API_PREFIX}/auth/password/reset`,
+    {
+      schema: {
+        ...authSchema('resetPassword', '重置密码并撤销所有会话', resultSchema({ type: 'null' })),
+        body: passwordResetSchema,
+      },
+    },
+    async (req) => {
+      await service.resetPassword(req.body, req.ip);
+      return success(null);
     },
   );
   app.get(
-    `${API_PREFIX}/auth/me`,
-    {
-      schema: authSchema(
-        'getCurrentUser',
-        '获取当前会话',
-        { 200: sessionResponse, 401: authFailure },
-        true,
-      ),
-    },
-    async (req) => service.me(token(req), client(req)),
+    `${API_PREFIX}/users/me`,
+    { schema: authSchema('getCurrentUser', '获取当前用户', resultSchema(userResponse), true) },
+    async (req) => success(await service.me(token(req), client(req))),
   );
   app.post(
     `${API_PREFIX}/auth/logout`,
-    {
-      schema: authSchema('logout', '撤销当前会话（无会话也成功）', {
-        204: { type: 'null', description: '退出成功，无响应体' },
-      }),
-    },
+    { schema: authSchema('logout', '退出当前会话', resultSchema({ type: 'null' })) },
     async (req, reply) => {
       await service.logout(token(req));
       if (client(req) === 'web') reply.clearCookie(cookieName, cookieOptions);
-      return reply.code(204).send();
+      return success(null);
     },
   );
 }
