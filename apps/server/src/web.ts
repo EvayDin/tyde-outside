@@ -1,5 +1,5 @@
-import { access } from 'node:fs/promises';
-import { resolve, relative, sep } from 'node:path';
+import { readdir } from 'node:fs/promises';
+import { relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fastifyStatic from '@fastify/static';
 import type { FastifyInstance } from 'fastify';
@@ -9,7 +9,12 @@ const publicRoot = fileURLToPath(new URL('../public/', import.meta.url));
 
 export async function registerWeb(app: FastifyInstance, root = publicRoot) {
   try {
-    await access(resolve(root, 'index.html'));
+    // 直接枚举固定 URL，让 Vercel 的文件追踪包含整个 Web 目录（含动态命名的资源）。
+    const files =
+      root === publicRoot
+        ? await readdir(new URL('../public/', import.meta.url), { recursive: true })
+        : await readdir(root, { recursive: true });
+    if (!files.includes('index.html')) throw new Error('Web 构建产物缺少 index.html');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     app.log.info('未找到 Web 构建产物，仅提供 API；运行 pnpm build:server 可生成页面');

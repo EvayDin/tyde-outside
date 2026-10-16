@@ -68,7 +68,7 @@ React 页面 → services/api → packages/platform
 
 `pnpm build:server` 统一构建 Web 到 `apps/server/public` 及后端；`pnpm package:server` 将两者放进一个后端包。独立入口 `main.ts` 通过 `web.ts` 托管页面，未构建 Web 时本地可仅提供 API。阿里云 HTTPS 使用 `deploy/nginx-server.conf.example` 全路径转发。
 
-Vercel 项目 Root Directory 为 `apps/server`，`apps/server/vercel.json` 调用根目录 `build:vercel`（复用 `build:server`），Vercel 托管静态资源，Fastify 处理 API。`apps/server/public` 为忽略的构建产物；普通 Web / Electron 构建仍使用 `apps/web/dist`。控制台须开启根目录之外源码访问、关闭 Skip unaffected projects，保证仅改 Web 也会部署；页面源须加入 `WEB_ORIGINS`。详细切换步骤见 `docs/DEPLOY_TEST.md`。
+Vercel 项目 Root Directory 为 `apps/server`，`apps/server/vercel.json` 调用根目录 `build:vercel`（复用 `build:server`），Vercel 的 `app.ts` 与独立 `main.ts` 均注册 `web.ts`，由 Fastify 提供页面与 API。`web.ts` 直接枚举 Web 目录以保证 Vercel 文件追踪包含全部资源，不依赖平台静态路由或根路径重写。`apps/server/public` 为忽略的构建产物；普通 Web / Electron 构建仍使用 `apps/web/dist`。控制台须开启根目录之外源码访问、关闭 Skip unaffected projects，保证仅改 Web 也会部署；页面源须加入 `WEB_ORIGINS`。详细切换步骤见 `docs/DEPLOY_TEST.md`。
 
 默认端口：Web 5173、API 3000、PostgreSQL 5432。集成测试会清表，只能连接 `.env.test` 指定且库名以 `_test` 结尾的专用测试库。
 Web 使用 `API_PROXY_TARGET`（shell 或 `apps/web/.env.local`，shell 优先）选择后端，统一运行 `pnpm dev:web`；默认本地 HTTP 后端，HTTPS 目标自动启用自签名 HTTPS 并监听 `https://localhost:5173`。远程后端 `WEB_ORIGINS` 需包含该 HTTPS 本地来源。Electron 开发页面独立使用 `http://127.0.0.1:5174`，main 后端地址优先使用 `TYDE_API_BASE_URL`，其次复用 Web 的 `API_PROXY_TARGET` 配置，默认本地后端。
