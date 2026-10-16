@@ -24,6 +24,14 @@ import { hashPassword, verifyPassword } from './password.js';
 import { MockSmsProvider, type SmsProvider } from './sms.js';
 type Tx = Prisma.TransactionClient;
 type Profile = User & { organization?: Organization | null };
+// 服务端业务身份；角色只表示登录身份，业务权限和数据范围仍由各模块检查。
+export interface AuthPrincipal {
+  userId: string;
+  uid: string;
+  sessionId: string;
+  role: 'EXPERT';
+  clientType: ClientType;
+}
 const invalid = (message: string) => new AuthError(400, 'VALIDATION_ERROR', message);
 const unauthorized = () => new AuthError(401, 'UNAUTHENTICATED', '登录已过期，请重新登录');
 function phoneNumber(phone: string): string {
@@ -234,7 +242,8 @@ export class AuthService {
         const user = await tx.user.create({
           data: {
             uid,
-            username: uid,
+            // 初始迁移要求 username 以字母开头且不超过 32 字符；uid 保留完整 UUID。
+            username: `u${uid.slice(1)}`,
             phoneE164: phone,
             phoneRegion: 'CN',
             displayName: input.nickname?.trim() || realName,
@@ -335,7 +344,7 @@ export class AuthService {
       return this.issue(tx, user, client);
     });
   }
-  async me(token: string | undefined, client: ClientType) {
+  private async requireSession(token: string | undefined, client: ClientType) {
     if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) throw unauthorized();
     const session = await this.db.session.findUnique({
       where: { tokenDigest: digest(token) },
@@ -349,6 +358,20 @@ export class AuthService {
       session.user.status !== 'ACTIVE'
     )
       throw unauthorized();
+    return session;
+  }
+  async authenticate(token: string | undefined, client: ClientType): Promise<AuthPrincipal> {
+    const session = await this.requireSession(token, client);
+    return {
+      userId: session.userId,
+      uid: session.user.uid,
+      sessionId: session.id,
+      role: 'EXPERT',
+      clientType: client,
+    };
+  }
+  async me(token: string | undefined, client: ClientType) {
+    const session = await this.requireSession(token, client);
     return publicUser(session.user, true);
   }
   async logout(token: string | undefined) {

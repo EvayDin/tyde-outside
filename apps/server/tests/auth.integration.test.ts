@@ -209,3 +209,78 @@ test('cooldown spans scenes, transport spoofing and client-bound token use are r
   ).toBe(403);
   expect((await app.inject({ url: '/api/v1/users/me', headers: web })).statusCode).toBe(401);
 });
+
+test('concurrent SMS login consumes the challenge only once and tokens stay bound to the client', async () => {
+  await register();
+  await send('login');
+  const results = await Promise.all([
+    post('/auth/sms/login', { phone, code: '095270' }, desktop),
+    post('/auth/sms/login', { phone, code: '095270' }, desktop),
+  ]);
+  expect(results.map((result) => result.statusCode).sort()).toEqual([200, 400]);
+  expect(await db.session.count()).toBe(1);
+  const tokens = results.find((result) => result.statusCode === 200)!.json().data;
+  expect((await post('/auth/refresh', { refreshToken: tokens.refreshToken }, web)).statusCode).toBe(
+    401,
+  );
+  expect(
+    (
+      await app.inject({
+        url: '/api/v1/users/me',
+        headers: { ...web, cookie: `tyde_session=${tokens.accessToken}` },
+      })
+    ).statusCode,
+  ).toBe(401);
+  expect(
+    (await app.inject({ url: '/api/v1/users/me', headers: bearer(tokens.accessToken) })).statusCode,
+  ).toBe(200);
+});
+
+test('organization creation and code consumption roll back when user uniqueness fails', async () => {
+  await register();
+  const otherPhone = '13912345678';
+  await send('register', otherPhone);
+  const result = await post('/auth/register', {
+    ...registration,
+    phone: otherPhone,
+    accountType: 'ORGANIZATION',
+    organization: { name: '应回滚的组织' },
+  });
+  expect(result.statusCode).toBe(409);
+  expect(await db.organization.count()).toBe(0);
+  expect(await db.user.count()).toBe(1);
+  expect(
+    (
+      await db.verificationChallenge.findFirstOrThrow({
+        where: { phoneE164: `+86${otherPhone}`, purpose: 'register' },
+      })
+    ).consumedAt,
+  ).toBeNull();
+  expect(
+    (
+      await post('/auth/register', {
+        ...registration,
+        phone: otherPhone,
+        email: 'other@example.com',
+      })
+    ).statusCode,
+  ).toBe(200);
+});
+
+test('disabled users cannot log in, access profiles or refresh existing sessions', async () => {
+  await register();
+  const tokens = (await login(desktop)).json().data;
+  await db.user.updateMany({ data: { status: 'BANNED' } });
+  expect(
+    (await post('/auth/login', { account: phone, password: 'Password123' }, desktop)).statusCode,
+  ).toBe(403);
+  await send('login');
+  expect((await post('/auth/sms/login', { phone, code: '095270' }, desktop)).statusCode).toBe(403);
+  expect(
+    (await app.inject({ url: '/api/v1/users/me', headers: bearer(tokens.accessToken) })).statusCode,
+  ).toBe(401);
+  expect(
+    (await post('/auth/refresh', { refreshToken: tokens.refreshToken }, desktop)).statusCode,
+  ).toBe(403);
+  expect(await db.session.count()).toBe(1);
+});

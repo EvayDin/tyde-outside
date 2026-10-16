@@ -37,15 +37,15 @@ UserDTO 使用 `id`、`uid`、`accountType`、`phone`、`nickname`、`realName`�
 
 - `packages/shared/src/auth.ts`：新增请求 schema 与兼容 DTO。原 `index.ts` 中的前端 DTO 暂时保留，新增导出不会改变前端现有类型。
 - `auth.routes.ts`：路由、Cookie、客户端类型、来源校验。
-- `auth.service.ts`：场景化验证码、注册、密码/短信登录、刷新、重置、资料查询及退出。
+- `auth.service.ts`：场景化验证码、注册、密码/短信登录、刷新、重置、资料查询及退出。`authenticate(token, client)` 统一验证会话有效期、撤销状态、客户端及账号状态，返回服务端身份（userId/uid/sessionId/role/clientType）；与 me 共用校验，不提供管理权限，调用方仍须验证业务权限和数据范围。
 - `password.ts`：Node 内置 scrypt、独立随机盐和恒定时间摘要比较；不存储明文密码。
 - `auth.schema.ts`：Swagger 元数据和响应序列化。
 - `application.ts`：认证错误的 Result 包装、敏感字段日志脱敏。
 - `prisma/schema.prisma` 和 `20261016000000_legacy_auth/migration.sql`：持久化字段和迁移。
 
-短信仍为开发/测试 mock，固定字符串验证码 `095270`，有效期 5 分钟；真实短信未接入，现有配置继续禁止 mock 生产启动。验证码按 `phone + scene` 隔离；发送冷却和发送限流跨场景共用，错误次数持久化，成功消费一次。注册、验证码消费、重置密码及刷新使用事务和手机号 advisory lock。
+用户已确认暂用开发/测试 mock 短信，固定字符串验证码 `095270`，有效期 5 分钟；真实短信未接入，现有配置继续禁止 mock 生产启动。验证码按 `phone + scene` 隔离；发送冷却和发送限流跨场景共用，错误次数持久化，成功消费一次。注册、验证码消费、重置密码及刷新使用事务和手机号 advisory lock。
 
-令牌仍采用新项目的随机不透明值，数据库只存摘要，默认有效 30 天；并非旧项目 JWT。刷新后原访问/刷新令牌对失效；重置密码撤销全部会话；普通退出撤销当前会话。沿用新项目 Web/桌面会话独立的行为，不迁移旧项目单会话踢号与角色切换功能。
+令牌仍采用新项目的随机不透明值，数据库只存摘要，默认有效 30 天；并非旧项目 JWT。刷新后原访问/刷新令牌对失效；重置密码撤销全部会话；普通退出撤销当前会话。当前实现允许 Web/桌面及同客户端多个会话并存；单账号踢号、退出范围、刷新重放强制下线等兼容策略仍待用户确认，不能视为已验收。角色切换按固定 EXPERT 规则暂缓。
 
 Web 使用 HttpOnly Cookie；有 Origin 的写请求必须来自 `WEB_ORIGINS`。桌面使用 `X-Tyde-Client: desktop` 与 Bearer，禁止 Origin、Cookie 和浏览器 fetch 头。无浏览器头、Cookie 和客户端声明的 API 调试请求按 Bearer 客户端处理，因此旧式 API 客户端无需额外自定义头。
 
@@ -80,12 +80,75 @@ API 客户端登录后使用 `Authorization: Bearer <accessToken>` 调用 `/user
 
 ## 验证
 
-2026-10-16 已通过：`pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm test`（6 项）、`pnpm test:core`（11 项）及 `git diff --check`。数据库集成与前端 E2E 未执行，原因见下文。
+2026-10-16 最新结果：此前 Agent 服务端单测 34 项、服务端 typecheck 和改动文件 ESLint 通过；用户本机专用测试库已应用 init、legacy_auth 两个迁移，16:24:24 执行 `pnpm test:integration`，1 个文件 / 10 项全部通过，用时 3.45 秒。证据来自用户完整终端输出。开发库迁移、真实短信及 Web/Electron 联调未执行。
 
-- `pnpm typecheck`：全仓类型检查。
-- `pnpm lint`：静态检查。
-- `pnpm test`：服务端安全、Swagger 契约与静态页面路由测试。
-- `pnpm test:core`：核心安全测试。
-- `pnpm test:integration`：真实 PostgreSQL 注册、场景隔离、错误次数、并发注册、刷新重放、重置下线、组织注册和来源校验。要求专用 `.env.test`，库名以 `_test` 结尾且 `TEST_DATABASE_RESET=true`，执行前对该专用测试库应用迁移。
+- `pnpm test`：服务端安全、Swagger、静态页面路由、身份校验及注册 SQL 约束回归。
+- `pnpm test:integration`：真实 PostgreSQL 注册、场景隔离、错误次数、并发注册/短信消费、刷新重放、重置下线、组织原子性/回滚、禁用用户和来源/客户端隔离。读取 `.env.test`，要求库名以 `_test` 结尾且 `TEST_DATABASE_RESET=true`。
 
-当前工作区只有远程开发 `.env`，无 `.env.test`。未对远程开发库执行迁移或清表；尝试创建独立临时 PostgreSQL 时，环境禁止 `shmget`，数据库初始化失败。因此数据库集成测试尚未执行，后续需要在允许启动 PostgreSQL 的环境验证。原前端 E2E 保持不变，不适用于本次迁移后的认证契约。
+Agent 的 TCP/socket 连接受执行环境限制，数据库验证已由用户本机完成。首次 4 通过 / 6 失败的注册问题已修复并复测通过。逐接口状态、兼容差异和续做位置以 [00 认证任务](../../backend-migration/00-auth/todoTask.md) 为准；兼容策略仍待确认，不能仅据测试通过宣称旧业务完全迁移。
+
+### 在本机终端完成认证数据库验证
+
+在 `tyde/` 目录执行：
+
+```sh
+node scripts/verify-auth-database.mjs
+```
+
+脚本读取 `apps/server/.env` 的本地数据库连接，使用该账号连接维护库 `postgres`，创建随机命名、以 `_test` 结尾的独立测试库（无需开发库已存在），生成权限为 0600 且被 Git 忽略的 `apps/server/.env.test`，对新测试库执行 `prisma migrate deploy` 和 `pnpm test:integration`。测试会清空独立测试库业务表，开发库不清表、不应用迁移；测试库保留供检查。账号需有 CREATEDB 权限，PostgreSQL 工具默认使用 Postgres.app，可通过 `PG_BIN` 指定工具目录。已有 `.env.test` 时脚本拒绝覆盖。
+
+若提示 permission denied to create database，请让本机数据库管理员执行以下命令后重试脚本（需管理员判断该开发账号是否应具备建库权限）：
+
+```sql
+ALTER ROLE tyde_outside_dev CREATEDB;
+```
+
+若脚本已经生成 `.env.test` 后迁移或测试失败，保留配置。修复失败原因后，在 `tyde/` 目录执行以下命令，继续使用原独立测试库：
+
+```sh
+node --env-file=apps/server/.env.test --input-type=module -e 'import { spawnSync } from "node:child_process"; process.exit(spawnSync("pnpm", ["exec", "prisma", "migrate", "deploy"], { cwd: "apps/server", stdio: "inherit", env: process.env }).status ?? 1)'
+pnpm test:integration
+```
+
+执行结果交回后再更新数据库验收状态；不要提交 `.env` 或 `.env.test`，无需发送密码。辅助脚本已由用户本机成功建库并迁移；注册修复后直接执行 `pnpm test:integration`，10/10 通过。
+
+### 本地账号认证失败的修复
+
+历史排障记录（已解决）：用户本机确认项目 PostgreSQL 启动成功后，验证脚本曾返回 `password authentication failed for user "tyde_outside_dev"`；此错误可能是角色不存在或本地密码与 `.env` 不一致。失败发生在 CREATE DATABASE 执行前，本次未建测试库、未生成 `.env.test`，迁移/测试未开始。切换连接地址不会同步远程账号凭据；已有 `.env` 时 `setup:local` 会拒绝覆盖配置，不适合直接重跑。
+
+在 `tyde/` 目录通过项目 Unix socket 进入本地管理员连接（默认使用当前系统账号）：
+
+```sh
+/Applications/Postgres.app/Contents/Versions/latest/bin/psql -X -h "$PWD/.local/postgres" -d postgres
+```
+
+在 psql 内执行以下语句，缺角色时创建，已有角色时保留；为验证脚本授予本地建库权限：
+
+```sql
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'tyde_outside_dev') THEN
+    CREATE ROLE tyde_outside_dev LOGIN;
+  END IF;
+END $$;
+ALTER ROLE tyde_outside_dev LOGIN CREATEDB;
+```
+
+然后在 psql 内执行：
+
+```text
+\password tyde_outside_dev
+```
+
+按提示两次输入 `apps/server/.env` 中 DATABASE_URL 对应的密码（输入不回显），再执行 `\q` 退出，重跑 `node scripts/verify-auth-database.mjs`。该操作仅修复本地角色，不修改远程账号、不清理开发库；若其他本地程序使用该角色旧密码，需要同步其配置。若管理员连接失败，保留原配置并提供不含凭据的错误信息。Agent 本轮 TCP 和 Unix socket 均受执行环境限制，未自行操作数据库。
+
+历史排障记录（已解决）：本地角色及密码修复后，认证错误消失；随后因开发库 `tyde_outside` 不存在而失败。辅助脚本已修正为连接维护库 `postgres` 执行建库，无需先创建开发库。直接重跑验证脚本即可；此前失败仍未创建测试库、未生成 `.env.test`、未执行迁移或测试。
+
+### PostgreSQL 首轮验证与注册修复
+
+用户本机已在专用库 `tyde_auth_1792138803808_563211cb_test` 成功应用两个迁移（init、legacy_auth）。首次 10 项集成测试中 4 通过、6 失败，失败集中于注册返回 500。核对发现注册将随机 UUID 直接作为 username，可能以数字开头，违反初始迁移的 `User_username_format` CHECK（须以字母开头、长度 3～32）。已将内部 username 改为 `u` 加 31 位 UUID 字符，保留完整对外 uid；不修改原约束、不新增迁移。新增首位 0–f 共 16 项回归测试，服务端单测本轮合计 34 项通过。
+
+修复后用户本机于 2026-10-16 16:24:24 执行 `pnpm test:integration`，10 项全部通过（3.45 秒）。现有 `.env.test` 和测试库保留，无需重新建库。数据库验证已完成，兼容策略仍待确认；开发库未应用迁移。
+
+## 核心基线交接
+
+2026-10-16 用户授权遗留项备注后交接 01，当前任务指针已切换为文件存储与上传凭证。00 核心测试通过，完整业务验收未完成，兼容差异未自动获得接受。短信暂用 mock 095270，真实短信为上线依赖；营业执照在 01 回补，资料/组织/主管/presence 分别依赖 02/03/07/14。其余兼容决定、公共能力及联调待办见 [00 遗留项与回补条件](../../backend-migration/00-auth/todoTask.md#遗留项与回补条件)。本次仅交接，不启动 01 实现。
