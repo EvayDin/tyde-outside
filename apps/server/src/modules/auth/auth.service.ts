@@ -6,6 +6,7 @@ import type {
   LoginResponse,
   SmsSendInput,
   SmsLoginInput,
+  SmsLoginResponse,
   SmsRegisterInput,
   PasswordResetInput,
 } from '@tyde/shared';
@@ -214,6 +215,8 @@ export class AuthService {
     return { accessToken, refreshToken, tokenType: 'Bearer', expiresIn: SESSION_DAYS * 86_400 };
   }
   async register(input: SmsRegisterInput, ip: string): Promise<AuthUser> {
+    if (Boolean(input.code) === Boolean(input.registrationToken))
+      throw invalid('验证码和注册凭证必须且只能提交一个');
     if (input.password !== input.confirmPassword) throw invalid('两次输入的密码不一致');
     const realName = input.realName.trim();
     if (!/^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z\-·]{0,63}$/.test(realName))
@@ -231,8 +234,21 @@ export class AuthService {
       const result = await this.db.$transaction(async (tx) => {
         const phone = phoneNumber(input.phone);
         await lock(tx, phone);
-        const error = await this.consume(tx, phone, 'register', input.code);
-        if (error) return error;
+        if (input.registrationToken) {
+          const used = await tx.registrationGrant.updateMany({
+            where: {
+              tokenDigest: digest(`sms-registration:${input.registrationToken}`),
+              phoneE164: phone,
+              consumedAt: null,
+              expiresAt: { gt: new Date() },
+            },
+            data: { consumedAt: new Date() },
+          });
+          if (used.count !== 1) return invalid('注册凭证无效或已过期，请重新获取登录验证码');
+        } else {
+          const error = await this.consume(tx, phone, 'register', input.code!);
+          if (error) return error;
+        }
         const organization = org
           ? await tx.organization.create({
               data: {
@@ -307,7 +323,11 @@ export class AuthService {
       return this.issue(tx, current, client, ip);
     });
   }
-  async loginBySms(input: SmsLoginInput, ip: string, client: ClientType) {
+  async loginBySms(
+    input: SmsLoginInput,
+    ip: string,
+    client: ClientType,
+  ): Promise<SmsLoginResponse> {
     await this.rate([{ key: `verify-ip:${digest(ip)}`, max: 100, seconds: 900 }]);
     const result = await this.db.$transaction(async (tx) => {
       const phone = phoneNumber(input.phone);
@@ -315,7 +335,28 @@ export class AuthService {
       const error = await this.consume(tx, phone, 'login', input.code);
       if (error) return error;
       const user = await tx.user.findUnique({ where: { phoneE164: phone } });
-      if (!user) return new AuthError(401, 'UNAUTHENTICATED', '手机号未注册，请先注册');
+      if (!user) {
+        const registrationToken = newToken();
+        const expiresAt = new Date(Date.now() + 600_000);
+        // 重新验证同一手机号时使之前的注册凭证失效，只保留最新一次。
+        await tx.registrationGrant.updateMany({
+          where: { phoneE164: phone, consumedAt: null },
+          data: { consumedAt: new Date() },
+        });
+        await tx.registrationGrant.create({
+          data: {
+            tokenDigest: digest(`sms-registration:${registrationToken}`),
+            phoneE164: phone,
+            phoneRegion: 'CN',
+            expiresAt,
+          },
+        });
+        return {
+          status: 'registration_required' as const,
+          registrationToken,
+          expiresAt: expiresAt.toISOString(),
+        };
+      }
       return this.issue(tx, user, client, ip);
     });
     if (result instanceof AuthError) throw result;

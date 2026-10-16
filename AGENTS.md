@@ -36,11 +36,11 @@ React 页面 → services/api → packages/platform
 ```
 
 - API 前缀 `/api/v1`。认证接口沿用旧项目：POST `/auth/sms/send`、`/auth/register`、`/auth/login`、`/auth/sms/login`、`/auth/refresh`、`/auth/password/reset`、`/auth/logout`；GET `/users/me`。健康检查保持 `/health/live`、`/health/ready`。
-- 认证使用旧项目 `code/message/data` 包装；注册返回用户资料，登录返回 `accessToken/refreshToken/tokenType/expiresIn`。`role/roles` 可省略，服务端统一固定 EXPERT。个人/组织账号类型仍使用 `accountType`。
+- 认证使用旧项目 `code/message/data` 包装；注册返回用户资料，已注册登录返回 `accessToken/refreshToken/tokenType/expiresIn`；未注册手机号短信登录返回 `status=registration_required/registrationToken/expiresAt`，填写资料后使用凭证注册（10分钟有效，与注册验证码二选一），不提前建用户或会话。`role/roles` 可省略，服务端统一固定 EXPERT。个人/组织账号类型仍使用 `accountType`。
 - 会话使用新项目随机不透明令牌，数据库仅存摘要，默认 30 天。刷新令牌轮换；Web 与桌面会话独立，退出撤销当前会话，重置密码撤销全部会话。
 - Web 使用 HttpOnly、SameSite=Lax Cookie 与来源校验；远程环境要求 HTTPS + Secure Cookie。桌面 main 使用 Bearer。无浏览器头和 Cookie 的普通 API 客户端无需额外客户端头。
 - 原前端仍使用 `/auth/code`、`/auth/verify`、`/auth/me` 与注册凭证流程；这部分未迁移，与新后端不兼容，需要后续前端任务对接。
-- 数据表：`User`、`Organization`、`VerificationChallenge`、`Session`、`AuthRateLimit`、`UploadedFile`；原 `RegistrationGrant` 表保留历史数据。验证码消费、注册、刷新与重置依赖事务和数据库锁。
+- 数据表：`User`、`Organization`、`VerificationChallenge`、`Session`、`AuthRateLimit`、`UploadedFile`；`RegistrationGrant` 复用于一次性注册凭证并保留历史数据，新凭证摘要带用途隔离。验证码消费、注册、刷新与重置依赖事务和数据库锁。
 - 组织注册营业执照已接入台账一次性认领，与验证码消费/组织/用户创建同事务；`businessLicenseUrl` 返回 objectKey，未提交为 null。文件上传/鉴权代理已接入；存储默认关闭，须显式配置新项目 OSS。已认领项目/考试附件读取仍待业务权限回补。迁移与验证限制见 `docs/AUTH_BACKEND.md`。
 
 ## 开发新需求时

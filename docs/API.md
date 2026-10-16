@@ -4,18 +4,18 @@
 
 认证后端已按 `tyde-core` 的接口路径与字段迁移，注册和登录固定为执行专家 `EXPERT`，不要求选择身份。完整字段、联调示例、迁移说明和已知依赖见 [认证后端上下文](AUTH_BACKEND.md)。本次仅改后端，Web/Electron 仍为旧流程，尚需独立适配。
 
-| 方法与路径（前缀 `/api/v1`） | 用途                           |
-| ---------------------------- | ------------------------------ |
-| POST `/auth/sms/send`        | 按 `scene` 发送验证码          |
-| POST `/auth/register`        | 注册并返回用户资料             |
-| POST `/auth/login`           | 手机号 / 邮箱 / uid + 密码登录 |
-| POST `/auth/sms/login`       | 手机号 + 验证码登录            |
-| POST `/auth/refresh`         | 轮换访问和刷新令牌             |
-| POST `/auth/password/reset`  | 验证码重置密码并全端下线       |
-| POST `/auth/logout`          | 撤销当前会话                   |
-| GET `/users/me`              | 当前用户资料                   |
-| GET `/health/live`           | 存活状态                       |
-| GET `/health/ready`          | 数据库就绪状态                 |
+| 方法与路径（前缀 `/api/v1`） | 用途                              |
+| ---------------------------- | --------------------------------- |
+| POST `/auth/sms/send`        | 按 `scene` 发送验证码             |
+| POST `/auth/register`        | 注册并返回用户资料                |
+| POST `/auth/login`           | 手机号 / 邮箱 / uid + 密码登录    |
+| POST `/auth/sms/login`       | 手机号 + 验证码登录或返回注册指引 |
+| POST `/auth/refresh`         | 轮换访问和刷新令牌                |
+| POST `/auth/password/reset`  | 验证码重置密码并全端下线          |
+| POST `/auth/logout`          | 撤销当前会话                      |
+| GET `/users/me`              | 当前用户资料                      |
+| GET `/health/live`           | 存活状态                          |
+| GET `/health/ready`          | 数据库就绪状态                    |
 
 认证成功统一 HTTP 200，使用 `{code: 200, message: "操作成功", data: ...}`。登录 data 包含 `accessToken/refreshToken/tokenType/expiresIn`，注册返回 UserDTO，退出与重置返回 null。失败使用 `code/message/data`，限流 HTTP 429 携带 `Retry-After`。健康检查保留原 `status` 结构。
 

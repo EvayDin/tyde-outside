@@ -59,6 +59,7 @@ test('OpenAPI preserves legacy auth names, request fields, Result and token resp
         'orgPosition',
         'phone',
         'code',
+        'registrationToken',
         'email',
         'organization',
       ].sort(),
@@ -76,7 +77,7 @@ test('OpenAPI preserves legacy auth names, request fields, Result and token resp
       Object.values(registerMedia.examples).map(
         (entry) => (entry as { value: { accountType: string } }).value.accountType,
       ),
-    ).toEqual(['INDIVIDUAL', 'ORGANIZATION']);
+    ).toEqual(['INDIVIDUAL', 'ORGANIZATION', 'INDIVIDUAL']);
     const documented = new Set<object>();
     function checkFields(schema: Record<string, unknown>, location: string) {
       if (documented.has(schema)) return;
@@ -151,6 +152,32 @@ test('OpenAPI preserves legacy auth names, request fields, Result and token resp
       code: 403,
       data: null,
     });
+    const pending = {
+      status: 'registration_required' as const,
+      registrationToken: 'g'.repeat(43),
+      expiresAt: '2026-10-16T12:10:00.000Z',
+    };
+    const sms = vi.spyOn(AuthService.prototype, 'loginBySms').mockResolvedValue(pending);
+    for (const headers of [{ origin: config.webOrigins[0]! }, { 'x-tyde-client': 'desktop' }]) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/sms/login',
+        headers,
+        payload: { phone: '13812345678', code: '095270' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().data).toEqual(pending);
+      expect(response.cookies).toHaveLength(0);
+    }
+    sms.mockResolvedValue(tokens);
+    const smsLogged = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/sms/login',
+      headers: { origin: config.webOrigins[0]! },
+      payload: { phone: '13812345678', code: '095270' },
+    });
+    expect(smsLogged.json().data).toEqual(tokens);
+    expect(smsLogged.cookies[0]?.httpOnly).toBe(true);
     vi.spyOn(AuthService.prototype, 'logout').mockResolvedValue(undefined);
     expect(
       (

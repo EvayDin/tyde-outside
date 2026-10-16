@@ -18,7 +18,13 @@ import type { Config } from '../../config/index.js';
 import { AuthError } from './auth.error.js';
 import { AuthService } from './auth.service.js';
 import { SESSION_DAYS, validateTransport, type ClientType } from './security.js';
-import { authSchema, resultSchema, userResponse, loginResponse } from './auth.schema.js';
+import {
+  authSchema,
+  resultSchema,
+  userResponse,
+  loginResponse,
+  smsLoginResponse,
+} from './auth.schema.js';
 export async function authRoutes(app: FastifyInstance, service: AuthService, config: Config) {
   const cookieName = config.cookieSecure ? '__Host-tyde_session' : 'tyde_session';
   const cookieOptions = {
@@ -111,12 +117,18 @@ export async function authRoutes(app: FastifyInstance, service: AuthService, con
     `${API_PREFIX}/auth/sms/login`,
     {
       schema: {
-        ...authSchema('loginBySms', '短信登录（默认执行专家）', resultSchema(loginResponse)),
+        ...authSchema(
+          'loginBySms',
+          '短信登录或进入注册（默认执行专家）',
+          resultSchema(smsLoginResponse),
+        ),
         body: smsLoginSchema,
       },
     },
-    async (req, reply) =>
-      finish(await service.loginBySms(req.body, req.ip, client(req)), req, reply),
+    async (req, reply) => {
+      const result = await service.loginBySms(req.body, req.ip, client(req));
+      return 'status' in result ? success(result) : finish(result, req, reply);
+    },
   );
   app.post<{ Body: { refreshToken: string } }>(
     `${API_PREFIX}/auth/refresh`,

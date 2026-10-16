@@ -174,6 +174,39 @@ export const loginResponse = {
     },
   },
 };
+const registrationRequiredResponse = {
+  type: 'object',
+  description:
+    '手机号已验证但尚未注册。客户端展示注册资料表单；不创建用户、登录会话或登录 Cookie。',
+  required: ['status', 'registrationToken', 'expiresAt'],
+  examples: [
+    {
+      status: 'registration_required',
+      registrationToken: 'g'.repeat(43),
+      expiresAt: '2026-10-16T12:10:00.000Z',
+    },
+  ],
+  properties: {
+    status: {
+      ...text('处理状态，registration_required=需要填写资料并注册。', 'registration_required'),
+      enum: ['registration_required'],
+    },
+    registrationToken: text(
+      '一次性注册凭证，绑定本次手机号，10 分钟有效；仅用于 /auth/register，不能访问受保护接口。再次验证该手机号后旧凭证失效；示例不可实际使用。',
+      'g'.repeat(43),
+    ),
+    expiresAt: text(
+      '注册凭证到期时间，ISO 8601 UTC；到期后重新获取登录验证码。',
+      '2026-10-16T12:10:00.000Z',
+    ),
+  },
+};
+export const smsLoginResponse = {
+  description:
+    '已注册返回登录令牌对；未注册返回注册指引。根据 status=registration_required 展示表单，未填写不产生账号。',
+  anyOf: [loginResponse, registrationRequiredResponse],
+  examples: [loginResponse.examples[0], registrationRequiredResponse.examples[0]],
+};
 export function resultSchema(data: DocumentedSchema) {
   const examples = data.examples as unknown[] | undefined;
   return {
@@ -203,11 +236,11 @@ const operationDescriptions: Record<string, string> = {
   sendCode:
     '按 scene 发送验证码。不同场景独立验证，手机号跨场景共用 60 秒发送冷却；验证码 5 分钟有效，错误尝试最多 5 次。当前开发/测试仅 mock，不实际发短信，验证码为字符串 095270。',
   register:
-    '使用 scene=register 的验证码注册个人或组织账号，固定 EXPERT；成功返回用户资料，不自动登录。ORGANIZATION 必须填写 organization.name；个人账号不创建组织。可选营业执照须先通过文件上传获取 BUSINESS_LICENSE 的 objectKey/uploadToken；认领、验证码消费和注册同事务，失败回滚。',
+    '使用 scene=register 的验证码或短信登录返回的 registrationToken 注册个人或组织账号（两者必须且只能提交一个），固定 EXPERT；成功返回用户资料，不自动登录。ORGANIZATION 必须填写 organization.name；个人账号不创建组织。可选营业执照须先通过文件上传获取 BUSINESS_LICENSE 的 objectKey/uploadToken；认领、验证码消费和注册同事务，失败回滚。',
   login:
     '通过手机号、备用邮箱或 uid 与密码登录，固定 EXPERT。成功签发访问/刷新令牌并更新最近登录时间/IP；密码错误或无账号返回 401，禁用账号返回 403。',
   loginBySms:
-    '使用 scene=login 的验证码登录已注册账号，固定 EXPERT；不会自动注册。验证码成功使用后失效；未注册手机号返回 401。',
+    '使用 scene=login 的验证码验证手机号，固定 EXPERT。已注册账号签发登录令牌；未注册返回 HTTP 200、status=registration_required、registrationToken 和 expiresAt，客户端展示注册表单。凭证绑定手机号、10 分钟有效且一次性，再次验证同手机号后旧凭证失效；未提交注册不创建用户或会话。验证码成功使用后失效。',
   refresh:
     '提交 refreshToken 换取新令牌对；原访问令牌及刷新令牌失效，重复使用返回 401。客户端类型必须与原登录一致；刷新不会更新最近登录时间/IP。',
   resetPassword:
