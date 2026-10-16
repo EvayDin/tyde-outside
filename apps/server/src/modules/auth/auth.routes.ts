@@ -69,7 +69,15 @@ export async function authRoutes(app: FastifyInstance, service: AuthService, con
     `${API_PREFIX}/auth/sms/send`,
     {
       schema: {
-        ...authSchema('sendCode', '发送短信验证码', resultSchema({ type: 'string' })),
+        ...authSchema(
+          'sendCode',
+          '发送短信验证码',
+          resultSchema({
+            type: 'string',
+            description: '验证码发送结果提示；开发/测试 mock 不实际发送短信。',
+            examples: ['验证码已发送，请注意查收'],
+          }),
+        ),
         body: smsSendSchema,
       },
     },
@@ -125,7 +133,15 @@ export async function authRoutes(app: FastifyInstance, service: AuthService, con
     `${API_PREFIX}/auth/password/reset`,
     {
       schema: {
-        ...authSchema('resetPassword', '重置密码并撤销所有会话', resultSchema({ type: 'null' })),
+        ...authSchema(
+          'resetPassword',
+          '重置密码并撤销所有会话',
+          resultSchema({
+            type: 'null',
+            description: '操作成功，无业务数据，固定为 null。',
+            examples: [null],
+          }),
+        ),
         body: passwordResetSchema,
       },
     },
@@ -141,7 +157,17 @@ export async function authRoutes(app: FastifyInstance, service: AuthService, con
   );
   app.post(
     `${API_PREFIX}/auth/logout`,
-    { schema: authSchema('logout', '退出当前会话', resultSchema({ type: 'null' })) },
+    {
+      schema: authSchema(
+        'logout',
+        '退出当前会话',
+        resultSchema({
+          type: 'null',
+          description: '操作成功，无业务数据，固定为 null。',
+          examples: [null],
+        }),
+      ),
+    },
     async (req, reply) => {
       await service.logout(token(req));
       if (client(req) === 'web') reply.clearCookie(cookieName, cookieOptions);
