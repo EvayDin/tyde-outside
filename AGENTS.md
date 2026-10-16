@@ -46,6 +46,7 @@ React 页面 → services/api → packages/platform
 
 - UI 放 `apps/web/src/modules/<业务>/`，路由接入 `app/App.tsx`；后端模块放 `apps/server/src/modules/<业务>/`，在 `application.ts` 装配。
 - Swagger UI 为 `/api/v1/docs/`，JSON/YAML 在其下的 `/json`、`/yaml`；插件必须先于业务路由注册。新增接口补齐 summary、operationId、tags、请求与响应 schema，认证请求 schema 位于 `packages/shared/src/auth.ts`，响应 schema 位于 `auth.schema.ts`；维护说明见 `docs/API.md`。
+- Swagger 字段说明是新增/修改接口的必交付项：所有请求、响应、嵌套对象、数组项及参数均需中文 `description`，枚举逐值解释，说明条件必填/默认行为/单位/格式/null，并提供真实可校验示例；未接入和占位能力如实标注。常规枚举使用 `type: string` + `enum`，避免无必要的 `anyOf`。完整规则和验收要求见 `docs/API.md` 的“Swagger 文档标准”。
 - 涉及双端 API 时同步维护：shared 类型/schema → server 路由与 service → platform Web/桌面适配 → Electron preload 与 IPC → 页面调用。
 - UI 统一通过平台适配层访问业务能力；Electron 只承担桌面能力，不复制 React 页面、不内嵌业务后端。
 - 新增 IPC 使用明确通道和固定后端路径，保留来源及参数校验；preload 的 IPC 常量从 `@tyde/shared/ipc` 导入。

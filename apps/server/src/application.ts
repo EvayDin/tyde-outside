@@ -94,8 +94,13 @@ export async function createApp(
             type: 'object',
             required: ['status', 'application'],
             properties: {
-              status: { type: 'string', enum: ['ok'] },
-              application: { type: 'string' },
+              status: {
+                type: 'string',
+                enum: ['ok'],
+                description: '进程存活状态，ok=服务进程正常；不检查数据库。',
+                examples: ['ok'],
+              },
+              application: { type: 'string', description: '服务应用名称。', examples: ['tyde'] },
             },
           },
         },
@@ -119,7 +124,15 @@ export async function createApp(
             {
               type: 'object',
               required: ['status'],
-              properties: { status: { type: 'string', enum: [status] } },
+              properties: {
+                status: {
+                  type: 'string',
+                  enum: [status],
+                  description:
+                    '数据库就绪状态：ready=数据库可连接，unavailable=数据库不可用；不可用时 HTTP 503。',
+                  examples: [status],
+                },
+              },
             },
           ]),
         ),

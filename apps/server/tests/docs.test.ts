@@ -1,4 +1,14 @@
 import { PrismaClient } from '@prisma/client';
+import {
+  smsSendSchema,
+  smsLoginSchema,
+  loginSchema,
+  passwordResetSchema,
+  refreshSchema,
+  smsRegisterSchema,
+  type AuthUser,
+} from '@tyde/shared';
+import { userResponse } from '../src/modules/auth/auth.schema.js';
 import { afterEach, expect, test, vi } from 'vitest';
 import { createApp } from '../src/application.js';
 import { readConfig } from '../src/config/index.js';
@@ -49,6 +59,66 @@ test('OpenAPI preserves legacy auth names, request fields, Result and token resp
       ].sort(),
     );
     expect(registration.required).not.toContain('roles');
+    expect(registration.properties.accountType.enum).toEqual(['INDIVIDUAL', 'ORGANIZATION']);
+    expect(registration.properties.accountType.anyOf).toBeUndefined();
+    expect(registration.properties.roles.items.enum).toEqual(['NAVIGATOR', 'PM', 'EXPERT', 'OPS']);
+    expect(registration.properties.organization.properties.businessLicense.description).toContain(
+      'HTTP 400',
+    );
+    const registerMedia =
+      spec.paths['/api/v1/auth/register'].post.requestBody.content['application/json'];
+    expect(
+      Object.values(registerMedia.examples).map(
+        (entry) => (entry as { value: { accountType: string } }).value.accountType,
+      ),
+    ).toEqual(['INDIVIDUAL', 'ORGANIZATION']);
+    const documented = new Set<object>();
+    function checkFields(schema: Record<string, unknown>, location: string) {
+      if (documented.has(schema)) return;
+      documented.add(schema);
+      if (typeof schema.$ref === 'string') {
+        const resolved = schema.$ref
+          .split('/')
+          .slice(1)
+          .reduce((node, key) => node[key], spec);
+        checkFields(resolved, location);
+      }
+      for (const [name, field] of Object.entries(schema.properties ?? {})) {
+        const property = field as Record<string, unknown>;
+        expect(property.description, `${location}.${name} 必须说明中文含义`).toMatch(
+          /[\u3400-\u9fff]/u,
+        );
+        checkFields(property, `${location}.${name}`);
+      }
+      if (schema.items && typeof schema.items === 'object')
+        checkFields(schema.items as Record<string, unknown>, `${location}[]`);
+      for (const keyword of ['anyOf', 'oneOf', 'allOf']) {
+        for (const branch of (schema[keyword] ?? []) as Record<string, unknown>[])
+          checkFields(branch, location);
+      }
+    }
+    for (const [path, methods] of Object.entries(spec.paths)) {
+      for (const [method, operation] of Object.entries(
+        methods as Record<
+          string,
+          {
+            requestBody?: { content: Record<string, { schema: Record<string, unknown> }> };
+            responses: Record<
+              string,
+              { content?: Record<string, { schema: Record<string, unknown> }> }
+            >;
+          }
+        >,
+      )) {
+        for (const media of Object.values(operation.requestBody?.content ?? {}))
+          checkFields(media.schema, `${method} ${path} body`);
+        for (const [status, response] of Object.entries(operation.responses)) {
+          for (const media of Object.values(response.content ?? {}))
+            checkFields(media.schema, `${method} ${path} response ${status}`);
+        }
+      }
+    }
+
     expect(
       spec.paths['/api/v1/auth/login'].post.requestBody.content['application/json'].schema.required,
     ).toEqual(['account', 'password']);
@@ -86,9 +156,97 @@ test('OpenAPI preserves legacy auth names, request fields, Result and token resp
         })
       ).json(),
     ).toEqual({ code: 200, message: '操作成功', data: null });
+    const user: AuthUser = {
+      ...userResponse.examples[0],
+      accountType: 'ORGANIZATION',
+      role: 'EXPERT',
+      roles: ['EXPERT'],
+      selectedRole: 'EXPERT',
+      organization: {
+        id: '00000000-0000-4000-8000-000000000002',
+        name: '示例组织',
+        unifiedCreditCode: null,
+        description: '测试简介',
+        businessLicenseUrl: null,
+        logoUrl: null,
+        expertiseTags: ['图像标注'],
+        verifyStatus: 'PENDING',
+        status: 'ACTIVE',
+        position: 'OWNER',
+        joinStatus: 'ACTIVE',
+        createdAt: '2026-10-16T08:00:00.000Z',
+        extraPreserved: '兼容扩展字段',
+      },
+    };
+    vi.spyOn(AuthService.prototype, 'me').mockResolvedValue(user);
+    const currentUser = await app.inject({
+      url: '/api/v1/users/me',
+      headers: { 'x-tyde-client': 'desktop', authorization: `Bearer ${tokens.accessToken}` },
+    });
+    expect(currentUser.statusCode).toBe(200);
+    expect(currentUser.json().data).toEqual(user);
+    const registeredUser: AuthUser = {
+      ...user,
+      accountType: 'INDIVIDUAL',
+      organization: null,
+      selectedRole: null,
+    };
+    vi.spyOn(AuthService.prototype, 'register').mockResolvedValue(registeredUser);
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/register',
+      payload: smsRegisterSchema.examples![0],
+    });
+    expect(created.statusCode).toBe(200);
+    expect(created.json().data).toEqual(registeredUser);
+
     const bad = await app.inject({ method: 'POST', url: '/api/v1/auth/register', payload: {} });
     expect(bad.statusCode).toBe(400);
     expect(bad.json()).toMatchObject({ code: 400, data: null });
+  } finally {
+    await app.close();
+  }
+});
+
+test('documented request examples pass actual Fastify validation; flat enums preserve accepted values', async () => {
+  const config = readConfig({
+    APP_ENV: 'test',
+    DATABASE_URL: 'postgresql://localhost/unused_test',
+    CODE_HMAC_SECRET: 'x'.repeat(32),
+    SMS_PROVIDER: 'mock',
+    WEB_ORIGINS: 'http://127.0.0.1:3000',
+    LOG_LEVEL: 'silent',
+  });
+  const app = await createApp(config, new PrismaClient());
+  try {
+    await app.ready();
+    const compiler = app.validatorCompiler!;
+    const validate = (schema: object, value: unknown) =>
+      compiler({ schema, method: 'POST', url: '/docs-example', httpPart: 'body' })(value);
+    for (const schema of [
+      smsSendSchema,
+      smsLoginSchema,
+      loginSchema,
+      passwordResetSchema,
+      refreshSchema,
+      smsRegisterSchema,
+    ]) {
+      for (const example of schema.examples ?? []) expect(validate(schema, example)).toBe(true);
+    }
+    for (const accountType of ['INDIVIDUAL', 'ORGANIZATION'])
+      expect(validate(smsRegisterSchema, { ...smsRegisterSchema.examples![0], accountType })).toBe(
+        true,
+      );
+    expect(
+      validate(smsRegisterSchema, { ...smsRegisterSchema.examples![0], accountType: 'INVALID' }),
+    ).toBe(false);
+    for (const role of ['NAVIGATOR', 'PM', 'EXPERT', 'OPS'])
+      expect(validate(loginSchema, { account: '13812345678', password: 'Example123!', role })).toBe(
+        true,
+      );
+    expect(
+      validate(loginSchema, { account: '13812345678', password: 'Example123!', role: 'INVALID' }),
+    ).toBe(false);
   } finally {
     await app.close();
   }
