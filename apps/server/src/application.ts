@@ -20,6 +20,11 @@ export function fastifyOptions(config: Config): FastifyServerOptions {
         '*.code',
         '*.registrationToken',
         '*.sessionToken',
+        '*.password',
+        '*.confirmPassword',
+        '*.newPassword',
+        '*.accessToken',
+        '*.refreshToken',
       ],
     },
     genReqId: () => randomUUID(),
@@ -40,16 +45,23 @@ export async function createApp(
     await db.$disconnect();
   });
   app.setErrorHandler<FastifyError>((error, req, reply) => {
+    const legacy =
+      req.url.startsWith(`${API_PREFIX}/auth/`) ||
+      req.url.split('?')[0] === `${API_PREFIX}/users/me`;
+    const failure = (status: number, code: string, message: string) =>
+      legacy
+        ? { code: status === 429 ? 4292 : status, message, data: null }
+        : { code, message, requestId: req.id };
     if (error instanceof AuthError) {
       if (error.retryAfter) reply.header('Retry-After', error.retryAfter);
-      return reply
-        .code(error.status)
-        .send({ code: error.code, message: error.message, requestId: req.id });
+      return reply.code(error.status).send(failure(error.status, error.code, error.message));
     }
     if (error.validation || error.statusCode === 400 || error.statusCode === 413)
       return reply
         .code(error.statusCode === 413 ? 413 : 400)
-        .send({ code: 'VALIDATION_ERROR', message: '请求字段或格式不正确', requestId: req.id });
+        .send(
+          failure(error.statusCode === 413 ? 413 : 400, 'VALIDATION_ERROR', '请求字段或格式不正确'),
+        );
     const unavailable =
       error instanceof Prisma.PrismaClientInitializationError ||
       (error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -59,11 +71,15 @@ export async function createApp(
       { errorType: error.name, errorCode: 'code' in error ? error.code : undefined },
       'request failed',
     );
-    return reply.code(unavailable ? 503 : 500).send({
-      code: unavailable ? 'SERVICE_UNAVAILABLE' : 'INTERNAL_ERROR',
-      message: unavailable ? '服务暂不可用，请稍后重试' : '操作失败，请稍后重试',
-      requestId: req.id,
-    });
+    return reply
+      .code(unavailable ? 503 : 500)
+      .send(
+        failure(
+          unavailable ? 503 : 500,
+          unavailable ? 'SERVICE_UNAVAILABLE' : 'INTERNAL_ERROR',
+          unavailable ? '服务暂不可用，请稍后重试' : '操作失败，请稍后重试',
+        ),
+      );
   });
   await authRoutes(app, new AuthService(db, config), config);
   app.get(

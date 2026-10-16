@@ -1,96 +1,68 @@
 import type { FastifySchema } from 'fastify';
-
-const dateTime = { type: 'string', format: 'date-time' };
-const user = {
+const string = { type: 'string' };
+const nullableString = { type: 'string', nullable: true };
+export const userResponse = {
   type: 'object',
-  required: ['id', 'phoneE164', 'phoneRegion', 'username', 'displayName', 'createdAt'],
   properties: {
-    id: { type: 'string' },
-    phoneE164: { type: 'string' },
-    phoneRegion: { type: 'string' },
-    username: { type: 'string' },
-    displayName: { type: 'string' },
-    createdAt: dateTime,
+    id: string,
+    uid: string,
+    accountType: string,
+    phone: string,
+    nickname: string,
+    realName: string,
+    idCardNo: nullableString,
+    idVerified: { type: 'integer' },
+    avatarUrl: nullableString,
+    bio: nullableString,
+    role: { type: 'string', enum: ['EXPERT'] },
+    roles: { type: 'array', items: { type: 'string', enum: ['EXPERT'] } },
+    selectedRole: nullableString,
+    hasExpertManagementRole: { type: 'boolean' },
+    status: string,
+    creditScore: { type: 'integer' },
+    lastLoginAt: nullableString,
+    lastLoginIp: nullableString,
+    organization: { type: 'object', nullable: true, additionalProperties: true },
+    createdAt: string,
+    updatedAt: string,
   },
 };
-export const sessionResponse = {
+export const loginResponse = {
   type: 'object',
-  required: ['user', 'sessionExpiresAt'],
-  properties: { user, sessionExpiresAt: dateTime },
-};
-export const authenticatedResponse = {
-  ...sessionResponse,
-  required: [...sessionResponse.required, 'status'],
+  required: ['accessToken', 'refreshToken', 'tokenType', 'expiresIn'],
   properties: {
-    ...sessionResponse.properties,
-    status: { type: 'string', enum: ['authenticated'] },
-    sessionToken: {
-      type: 'string',
-      description: '仅桌面 main 响应包含；Web 通过 Set-Cookie 建立会话。',
-    },
+    accessToken: string,
+    refreshToken: string,
+    tokenType: { type: 'string', enum: ['Bearer'] },
+    expiresIn: { type: 'integer' },
   },
 };
-export const verifyResponse = {
-  anyOf: [
-    authenticatedResponse,
-    {
-      type: 'object',
-      required: ['status', 'registrationToken', 'expiresAt'],
-      properties: {
-        status: { type: 'string', enum: ['registration_required'] },
-        registrationToken: { type: 'string' },
-        expiresAt: dateTime,
-      },
-    },
-  ],
-};
-export const codeResponse = {
-  type: 'object',
-  required: ['challengeId', 'expiresAt', 'resendAfterSeconds', 'mode'],
-  properties: {
-    challengeId: { type: 'string', format: 'uuid' },
-    expiresAt: dateTime,
-    resendAfterSeconds: { type: 'integer' },
-    mode: { type: 'string', enum: ['mock', 'sms'] },
-  },
-};
-const failure = {
-  type: 'object',
-  required: ['code', 'message', 'requestId'],
-  properties: {
-    code: { type: 'string' },
-    message: { type: 'string' },
-    requestId: { type: 'string' },
-  },
-};
+export function resultSchema(data: unknown) {
+  return {
+    type: 'object',
+    required: ['code', 'message', 'data'],
+    properties: { code: { type: 'integer' }, message: string, data },
+  };
+}
 export function authSchema(
   operationId: string,
   summary: string,
-  response: Record<string, unknown>,
+  response: unknown,
   protectedRoute = false,
 ): FastifySchema {
+  const failure = resultSchema({ type: 'null' });
   return {
     operationId,
     summary,
     tags: ['Auth'],
     description:
-      'Web 请求默认使用 Cookie；POST 的 Origin 必须在 WEB_ORIGINS 内。桌面请求需 X-Tyde-Client: desktop 且不能带 Origin、Cookie 或 sec-fetch-* 头。429 响应包含 Retry-After（秒）。',
+      '沿用 tyde-core 字段与 Result 包装。role/roles 可省略；即使传入其他角色仍固定 EXPERT。Web 使用 Cookie 与 Origin 校验；桌面使用 X-Tyde-Client: desktop 和 Bearer 令牌。',
     security: protectedRoute ? [{ webSession: [] }, { desktopSession: [] }] : [],
-    headers: {
-      type: 'object',
-      properties: {
-        'x-tyde-client': { type: 'string', enum: ['web', 'desktop'], default: 'web' },
-      },
-    },
     response: {
-      400: failure,
-      403: failure,
-      413: failure,
-      429: failure,
-      500: failure,
-      503: failure,
-      ...response,
+      200: response,
+      ...Object.fromEntries(
+        [400, 401, 403, 404, 409, 413, 429, 500, 503].map((status) => [status, failure]),
+      ),
     },
   };
 }
-export const authFailure = failure;

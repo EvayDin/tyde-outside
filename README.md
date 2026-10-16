@@ -39,7 +39,7 @@ pnpm dev:web
 pnpm dev:electron
 ```
 
-Web 地址：<http://127.0.0.1:5173>。输入有效大陆手机号，点击获取验证码，固定输入 **095270**（保留前导零）。新用户填写唯一英文用户名与多语言姓名，老用户直接登录。欢迎页显示姓名和当前手机号。Web 与桌面账号互通，各自会话有效 30 天，退出只撤销当前会话。
+Web 地址：<http://127.0.0.1:5173>。当前注册登录迁移仅覆盖后端，Web/Electron 原认证流程尚未适配。请先通过 Swagger 或 API 客户端联调，接口字段、默认执行专家规则及迁移步骤见 [认证后端上下文](docs/AUTH_BACKEND.md)。开发/测试 mock 验证码仍为字符串 **095270**（保留前导零）。
 
 Electron 连接 Vercel 测试后端时，退出旧客户端后运行 `pnpm dev:electron:test`，无需启动本地后端。该命令加载 `apps/electron/config/test.env`，目标为 `https://tyde-outside-server.vercel.app`；shell 中已有的 `TYDE_API_BASE_URL` 优先于文件配置，切换时请检查是否有遗留变量。
 
@@ -88,7 +88,7 @@ cd ../..
 pnpm test:integration
 ```
 
-集成测试覆盖真实 PostgreSQL 注册、会话、双端登录/退出、验证码限流与重放、用户名冲突及并发验证。实际执行记录见 [验证记录](docs/VERIFICATION.md)。
+集成测试覆盖真实 PostgreSQL 注册、密码/短信登录、验证码场景隔离、并发与重放、刷新令牌、重置密码下线和组织资料。实际执行记录见 [验证记录](docs/VERIFICATION.md)。
 
 ```sh
 pnpm build:web

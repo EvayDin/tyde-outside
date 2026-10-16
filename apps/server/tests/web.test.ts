@@ -52,7 +52,7 @@ test('standalone server serves Web with caching while preserving API and Swagger
     expect((await app.inject('/api/v1/docs/')).statusCode).toBe(200);
     expect((await app.inject('/api/v1/docs/static/swagger-ui-bundle.js')).statusCode).toBe(200);
     const spec = (await app.inject('/api/v1/docs/json')).json();
-    expect(spec.paths['/api/v1/auth/me']).toBeDefined();
+    expect(spec.paths['/api/v1/users/me']).toBeDefined();
     expect(spec.paths['/*']).toBeUndefined();
     for (const url of ['/api/v1/not-found', '/assets/missing.js', '/missing-page']) {
       const response = await app.inject(url);
