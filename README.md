@@ -49,6 +49,14 @@ Web 通过 `API_PROXY_TARGET` 切换后端：默认连接 `http://127.0.0.1:3000
 
 mock 不会发送短信或验证真实号码归属，请用约定的测试号码。默认生产模式禁止 mock，真实短信后续在 `apps/server/src/modules/auth/sms.ts` 接入。
 
+## 前后端合并部署
+
+阿里云部署执行 `pnpm package:server`，生成包含 Web 静态资源的后端包。Fastify 直接提供根路径页面和 `/api/v1/*`，HTTPS 使用 `deploy/nginx-server.conf.example` 将全部请求代理至后端，不需要单独部署前端。`pnpm build:server` 会先构建 Web，再构建 API。
+
+Vercel 使用现有后端项目统一发布 Web 页面和 API：push 源码后自动构建，不提交前端打包产物。Root Directory 保持 `apps/server`，其 `vercel.json` 调用根目录的 `pnpm build:vercel`，生成 `apps/server/public` 静态资源及后端产物。部署后同一域名的 `/` 为 Web 页面，`/api/v1/*` 为 API。
+
+首次切换需在控制台开启 Root Directory 之外源码访问、关闭 Skip unaffected projects，并将页面访问域名加入 `WEB_ORIGINS`。完整设置、验收与旧前端项目下架顺序见 [Vercel 合并部署说明](docs/DEPLOY_TEST.md#vercel-前后端合并部署)。本地 Web / Electron 开发命令保持原用法。
+
 ## API 文档（Swagger）
 
 后端启动后访问 <http://127.0.0.1:3000/api/v1/docs/>，或通过 Web 开发代理访问 <http://127.0.0.1:5173/api/v1/docs/>。
@@ -113,7 +121,7 @@ pnpm package:win
 
 `test.example.com` 是占位符，必须替换。前端构建不会嵌入后端密钥；Web 使用同源 `/api` 代理，桌面由 main 固定请求可信后端。安装包中的 React 静态资源来自同一个 `apps/web/dist`。
 
-后端包不包含开发机 `node_modules`，须在 Linux 目标机安装锁定依赖并生成目标平台 Prisma client。[测试部署说明](docs/DEPLOY_TEST.md)包含迁移、Nginx、systemd 与健康检查；[试用安装说明](docs/INSTALL_TRIAL.md)包含 Mac / Windows 授信步骤。
+后端包包含 Web 资源，不包含开发机 `node_modules`，须在 Linux 目标机安装锁定依赖并生成目标平台 Prisma client。[测试部署说明](docs/DEPLOY_TEST.md)包含迁移、Nginx、systemd 与健康检查；[试用安装说明](docs/INSTALL_TRIAL.md)包含 Mac / Windows 授信步骤。
 
 ## 目录与工程边界
 

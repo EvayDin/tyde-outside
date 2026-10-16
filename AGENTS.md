@@ -5,7 +5,7 @@
 ## 项目概况
 
 pnpm Workspace Monorepo，TypeScript + ESM，3 个应用、3 个共享包。
-Web 与 Electron 共用一份 React 前端，连接独立 Fastify 后端；后端是按业务模块组织的单体。
+Web 与 Electron 共用一份 React 前端，连接 Fastify 后端；后端是按业务模块组织的单体。阿里云后端包包含 Web，由 Fastify 直接托管；Vercel 在现有后端项目中统一发布静态资源与 API。本地可分别启动。
 当前业务：大陆手机号验证码登录、新用户补资料注册、恢复会话、退出。真实短信尚未接入。
 
 技术栈：Node.js 24、pnpm 11、React 19、Vite、Ant Design 6、React Query、React Router、Electron 38、Fastify 5、Prisma 6、PostgreSQL。精确版本见各 `package.json` 与 `pnpm-lock.yaml`。
@@ -30,7 +30,7 @@ Web 与 Electron 共用一份 React 前端，连接独立 Fastify 后端；后�
 
 ```text
 React 页面 → services/api → packages/platform
-  Web      → 同源 fetch /api/v1 → Vite（开发）或 Nginx（部署）代理 ┐
+  Web      → 同源 fetch /api/v1 → Vite（开发）或 Nginx（独立部署）代理 / Vercel 同域路由 ┐
   Electron → window.tydeDesktop → preload → IPC → main HTTP 请求 ┴→ Fastify 路由 → Service → Prisma → PostgreSQL
 ```
 
@@ -63,8 +63,12 @@ React 页面 → services/api → packages/platform
 | 静态检查              | `pnpm typecheck`、`pnpm lint`、`pnpm format:check`                                |
 | 核心 / 服务端单测     | `pnpm test:core`、`pnpm test`                                                     |
 | 数据库集成 / 双端 E2E | `pnpm test:integration`、`pnpm test:e2e`，环境准备见 README                       |
-| 构建                  | `pnpm build:web`、`pnpm build:server`、`pnpm build:electron`                      |
+| 构建                  | `pnpm build:web`、`pnpm build:server`、`pnpm build:electron`、`pnpm build:vercel` |
 | 打包                  | `pnpm package:web`、`pnpm package:server`、`pnpm package:mac`、`pnpm package:win` |
+
+`pnpm build:server` 统一构建 Web 到 `apps/server/public` 及后端；`pnpm package:server` 将两者放进一个后端包。独立入口 `main.ts` 通过 `web.ts` 托管页面，未构建 Web 时本地可仅提供 API。阿里云 HTTPS 使用 `deploy/nginx-server.conf.example` 全路径转发。
+
+Vercel 项目 Root Directory 为 `apps/server`，`apps/server/vercel.json` 调用根目录 `build:vercel`（复用 `build:server`），Vercel 托管静态资源，Fastify 处理 API。`apps/server/public` 为忽略的构建产物；普通 Web / Electron 构建仍使用 `apps/web/dist`。控制台须开启根目录之外源码访问、关闭 Skip unaffected projects，保证仅改 Web 也会部署；页面源须加入 `WEB_ORIGINS`。详细切换步骤见 `docs/DEPLOY_TEST.md`。
 
 默认端口：Web 5173、API 3000、PostgreSQL 5432。集成测试会清表，只能连接 `.env.test` 指定且库名以 `_test` 结尾的专用测试库。
 Web 使用 `API_PROXY_TARGET`（shell 或 `apps/web/.env.local`，shell 优先）选择后端，统一运行 `pnpm dev:web`；默认本地 HTTP 后端，HTTPS 目标自动启用自签名 HTTPS 并监听 `https://localhost:5173`。远程后端 `WEB_ORIGINS` 需包含该 HTTPS 本地来源。Electron 开发页面独立使用 `http://127.0.0.1:5174`，main 后端地址优先使用 `TYDE_API_BASE_URL`，其次复用 Web 的 `API_PROXY_TARGET` 配置，默认本地后端。

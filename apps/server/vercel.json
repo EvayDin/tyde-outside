@@ -1,0 +1,23 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "fastify",
+  "installCommand": "pnpm install --frozen-lockfile",
+  "buildCommand": "pnpm --dir ../.. build:vercel",
+  "outputDirectory": null,
+  "ignoreCommand": "exit 1",
+  "rewrites": [{ "source": "/", "destination": "/index.html" }],
+  "headers": [
+    {
+      "source": "/",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }]
+    },
+    {
+      "source": "/index.html",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }]
+    },
+    {
+      "source": "/assets/:path*",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+    }
+  ]
+}

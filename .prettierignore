@@ -8,3 +8,4 @@ artifacts
 pnpm-lock.yaml
 PROJECT_DESIGN.md
 apps/server/src/generated
+apps/server/public
