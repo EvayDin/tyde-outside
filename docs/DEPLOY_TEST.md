@@ -48,17 +48,17 @@ Prisma CLI 放在服务端生产依赖中用于迁移和目标平台生成；不
 
 在现有后端项目的 Settings 中确认以下设置；代码无法代替控制台修改 Root Directory、Git 关联或环境变量。
 
-| 设置                                                                 | 值                                                |
-| -------------------------------------------------------------------- | ------------------------------------------------- |
-| Git Repository / Production Branch                                   | 关联本仓库与实际发布分支，保持 Git 自动部署开启   |
-| Root Directory                                                       | `apps/server`                                     |
-| Include source files outside of the Root Directory in the Build Step | 开启；构建需要 `apps/web`、`packages/` 与根配置   |
-| Node.js Version                                                      | `24.x`                                            |
-| Framework Preset                                                     | `Fastify`                                         |
-| Output Directory                                                     | 关闭 Override，使用 Fastify 默认静态目录 `public` |
-| Skip deployment / Skip unaffected projects                           | 关闭，确保仅修改 Web 也会触发合并部署             |
+| 设置                                                                 | 值                                              |
+| -------------------------------------------------------------------- | ----------------------------------------------- |
+| Git Repository / Production Branch                                   | 关联本仓库与实际发布分支，保持 Git 自动部署开启 |
+| Root Directory                                                       | `apps/server`                                   |
+| Include source files outside of the Root Directory in the Build Step | 开启；构建需要 `apps/web`、`packages/` 与根配置 |
+| Node.js Version                                                      | `24.x`                                          |
+| Framework Preset                                                     | `Fastify`                                       |
+| Output Directory                                                     | 关闭 Override，使用 Fastify 默认值              |
+| Skip deployment / Skip unaffected projects                           | 关闭，确保仅修改 Web 也会触发合并部署           |
 
-`apps/server/vercel.json` 随代码指定 Install Command 为 `pnpm install --frozen-lockfile`，Build Command 为 `pnpm --dir ../.. build:vercel`，并用 `outputDirectory: null` 恢复框架默认输出设置。控制台 Output Directory 同样建议关闭 Override，不显式指定 `public` 或 `dist`：Fastify 构建器会在显式输出目录中寻找后端入口，而 `public` 仅包含前端资源，会导致入口检测失败。默认情况下 Vercel 会收集 `public` 静态资源，同时从 `src/app.ts` 构建 API。清理旧的构建覆盖配置，部署日志应执行上述合并命令，而不是旧的 `pnpm run build`。`ignoreCommand: exit 1` 表示继续构建，避免旧的 Ignored Build Step 只检查后端变更；它不能代替关闭控制台的 Skip unaffected projects。
+`apps/server/vercel.json` 随代码指定 Install Command 为 `pnpm install --frozen-lockfile`，Build Command 为 `pnpm --dir ../.. build:vercel`，并用 `outputDirectory: null` 恢复框架默认输出设置。控制台 Output Directory 同样建议关闭 Override，不显式指定 `public` 或 `dist`：Fastify 构建器会在显式输出目录中寻找后端入口，而 `public` 仅包含前端资源，会导致入口检测失败。页面资源通过文件追踪随 Function 一起打包，`src/app.ts` 注册与阿里云相同的静态托管。不要依赖 Fastify preset 自动发布构建后才生成的 `public` 目录。清理旧的构建覆盖配置，部署日志应执行上述合并命令，而不是旧的 `pnpm run build`。`ignoreCommand: exit 1` 表示继续构建，避免旧的 Ignored Build Step 只检查后端变更；它不能代替关闭控制台的 Skip unaffected projects。
 
 安装需保留开发依赖，不要使用 `--prod`。完整仓库可访问选项见 [Vercel Monorepos FAQ](https://vercel.com/docs/monorepos/monorepo-faq)，构建跳过机制见 [Vercel Monorepos](https://vercel.com/docs/monorepos)。
 
@@ -72,15 +72,15 @@ pnpm build:vercel
 
 `build:vercel` 调用与阿里云交付相同的 `pnpm build:server`。该命令先编译 shared、platform、检查 Web 类型，再让 Vite 将 Web 输出到 `apps/server/public`；随后编译 shared、生成 Prisma Client、编译后端。Vite 每次清理专用输出目录，避免旧资源残留。该目录已从 Git、ESLint 和 Prettier 检查中忽略，只提交源码、锁文件与构建配置。普通 `pnpm build:web` 仍输出 `apps/web/dist`，供 Electron 与独立 Web 交付使用。
 
-Vercel 从 `public` 发布静态资源，Fastify 继续通过 `src/app.ts` 默认导出的 HTTP server 处理 API。`/` 显式重写到 `/index.html`；页面采用 HashRouter，无需全路径 SPA fallback，未知 API 不会变成 HTML 页面。入口 HTML 每次使用前重新验证缓存，Vite 带内容摘要的 `/assets/*` 资源允许长期缓存。Fastify 部署入口约束见 [Vercel Fastify 文档](https://vercel.com/docs/frameworks/backend/fastify)。
+Vercel 通过 `src/app.ts` 默认导出的 HTTP server 提供页面和 API，入口注册 `registerWeb` 托管 `public`。`web.ts` 直接枚举固定的 Web 目录，使文件追踪包含 HTML 与动态命名的 JS/CSS。根路径直接返回首页，不依赖 `/` 的平台重写；页面采用 HashRouter，无需全路径 SPA fallback，未知 API 不会变成 HTML 页面。入口 HTML 每次使用前重新验证缓存，Vite 带内容摘要的 `/assets/*` 资源允许长期缓存。Fastify 部署入口约束见 [Vercel Fastify 文档](https://vercel.com/docs/frameworks/backend/fastify)。
 
 ```text
 同一个 Vercel 项目、同一个域名
-  /、/index.html、/assets/* → Web 静态资源
-  /api/v1/*               → Fastify Function
+  /、/index.html、/assets/* → Fastify Function 提供 Web
+  /api/v1/*               → Fastify Function 提供 API
 ```
 
-阿里云的独立入口 `src/main.ts` 在 API 装配后注册 `src/web.ts`，直接托管同一个 `public` 目录；Vercel 的 `src/app.ts` 不注册这一静态插件，由平台托管资源。本地未构建 Web 时 `pnpm dev:server` 可仅启动 API；存在构建产物时也能访问根路径页面。
+阿里云的独立入口 `src/main.ts` 与 Vercel 的 `src/app.ts` 均在 API 装配后注册 `src/web.ts`，托管同一个 `public` 目录。本地未构建 Web 时 `pnpm dev:server` 可仅启动 API；存在构建产物时也能访问根路径页面。
 
 ### 环境变量与迁移
 
