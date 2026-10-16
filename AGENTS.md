@@ -12,19 +12,20 @@ Web 与 Electron 共用一份 React 前端，连接 Fastify 后端；后端是�
 
 ## 模块边界与入口
 
-| 路径                           | 职责与关键入口                                                                                                                                                                                |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/web/src`                 | 唯一业务 UI。`app/App.tsx` 管理 HashRouter 与登录守卫；`app/providers/index.tsx` 配置 React Query、中文 Ant Design；`modules/auth/` 放认证页面                                                |
-| `apps/web/src/services/api.ts` | 页面调用入口，当前导出 `platform.auth`；`hooks/useSession.ts` 用 React Query 的 `['session']` 管理会话查询                                                                                    |
-| `packages/platform/src`        | 双端适配。`index.ts` 根据 `window.tydeDesktop` 选择 Web fetch（`web.ts`）或桌面 bridge（`electron.ts`）                                                                                       |
-| `packages/shared/src`          | 公共 DTO、TypeBox 请求 schema、API 常量、错误类型与 bridge 契约在 `index.ts`；IPC 通道在 `ipc.ts`                                                                                             |
-| `apps/electron/src`            | `main/index.ts` 启动与静态资源协议；`main/windows.ts` 安全窗口；`preload/index.ts` 暴露受限 bridge；`main/ipc/index.ts` 校验并调用后端                                                        |
-| `apps/electron/src/main`       | `transport.ts` 发 HTTP 请求；`session.ts` 加密持久化令牌；`config.ts` 校验可信后端地址                                                                                                        |
-| `apps/server/src`              | `main.ts` 本地/独立服务启动；`app.ts` 为 Vercel 默认导出 HTTP server；`application.ts` 装配 Fastify、Prisma、路由、统一错误与健康检查；`config/index.ts` 校验环境变量；`docs.ts` 注册 Swagger |
-| `apps/server/src/modules/auth` | `auth.routes.ts` 处理 HTTP、Cookie、客户端类型；`auth.service.ts` 处理认证、事务、限流；`security.ts` 放安全规则；`sms.ts` 放短信 provider                                                    |
-| `apps/server/prisma`           | `schema.prisma` 定义数据模型，`migrations/` 管理数据库变更                                                                                                                                    |
-| `packages/config`              | 共用 TypeScript / ESLint 配置                                                                                                                                                                 |
-| `scripts/`、`deploy/`          | 本地数据库、验证、打包脚本及 Nginx / systemd 部署模板                                                                                                                                         |
+| 路径                            | 职责与关键入口                                                                                                                                                                                                                                               |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `apps/web/src`                  | 唯一业务 UI。`app/App.tsx` 管理 HashRouter 与登录守卫；`app/providers/index.tsx` 配置 React Query、中文 Ant Design；`modules/auth/` 放认证页面                                                                                                               |
+| `apps/web/src/services/api.ts`  | 页面调用入口，当前导出 `platform.auth`；`hooks/useSession.ts` 用 React Query 的 `['session']` 管理会话查询                                                                                                                                                   |
+| `packages/platform/src`         | 双端适配。`index.ts` 根据 `window.tydeDesktop` 选择 Web fetch（`web.ts`）或桌面 bridge（`electron.ts`）                                                                                                                                                      |
+| `packages/shared/src`           | 公共 DTO、TypeBox 请求 schema、API 常量、错误类型与 bridge 契约在 `index.ts`；IPC 通道在 `ipc.ts`                                                                                                                                                            |
+| `apps/electron/src`             | `main/index.ts` 启动与静态资源协议；`main/windows.ts` 安全窗口；`preload/index.ts` 暴露受限 bridge；`main/ipc/index.ts` 校验并调用后端                                                                                                                       |
+| `apps/electron/src/main`        | `transport.ts` 发 HTTP 请求；`session.ts` 加密持久化令牌；`config.ts` 校验可信后端地址                                                                                                                                                                       |
+| `apps/server/src`               | `main.ts` 本地/独立服务启动；`app.ts` 为 Vercel 默认导出 HTTP server；`application.ts` 装配 Fastify、Prisma、路由、统一错误与健康检查；`config/index.ts` 校验环境变量；`docs.ts` 注册 Swagger                                                                |
+| `apps/server/src/modules/auth`  | `auth.routes.ts` 处理 HTTP、Cookie、客户端类型；`auth.service.ts` 处理认证、事务、限流；`security.ts` 放安全规则；`sms.ts` 放短信 provider                                                                                                                   |
+| `apps/server/src/modules/files` | `object-storage.ts` 为显式启用的 OSS 适配；`file-registry.service.ts` 为上传台账、一次性认领、释放/清理基础。`file.routes.ts` 注册上传、鉴权代理、签名链接及删除五个旧接口；`file-validation.ts` 校验类型/内容/大小。已认领项目/考试附件读取待业务权限回补。 |
+| `apps/server/prisma`            | `schema.prisma` 定义数据模型，`migrations/` 管理数据库变更                                                                                                                                                                                                   |
+| `packages/config`               | 共用 TypeScript / ESLint 配置                                                                                                                                                                                                                                |
+| `scripts/`、`deploy/`           | 本地数据库、验证、打包脚本及 Nginx / systemd 部署模板                                                                                                                                                                                                        |
 
 ## 请求与会话链路
 
@@ -39,8 +40,8 @@ React 页面 → services/api → packages/platform
 - 会话使用新项目随机不透明令牌，数据库仅存摘要，默认 30 天。刷新令牌轮换；Web 与桌面会话独立，退出撤销当前会话，重置密码撤销全部会话。
 - Web 使用 HttpOnly、SameSite=Lax Cookie 与来源校验；远程环境要求 HTTPS + Secure Cookie。桌面 main 使用 Bearer。无浏览器头和 Cookie 的普通 API 客户端无需额外客户端头。
 - 原前端仍使用 `/auth/code`、`/auth/verify`、`/auth/me` 与注册凭证流程；这部分未迁移，与新后端不兼容，需要后续前端任务对接。
-- 数据表：`User`、`Organization`、`VerificationChallenge`、`Session`、`AuthRateLimit`；原 `RegistrationGrant` 表保留历史数据。验证码消费、注册、刷新与重置依赖事务和数据库锁。
-- 组织注册营业执照的一次性凭证认领依赖尚未接入，提交 `businessLicense` 会明确报错。迁移与验证限制见 `docs/AUTH_BACKEND.md`。
+- 数据表：`User`、`Organization`、`VerificationChallenge`、`Session`、`AuthRateLimit`、`UploadedFile`；原 `RegistrationGrant` 表保留历史数据。验证码消费、注册、刷新与重置依赖事务和数据库锁。
+- 组织注册营业执照已接入台账一次性认领，与验证码消费/组织/用户创建同事务；`businessLicenseUrl` 返回 objectKey，未提交为 null。文件上传/鉴权代理已接入；存储默认关闭，须显式配置新项目 OSS。已认领项目/考试附件读取仍待业务权限回补。迁移与验证限制见 `docs/AUTH_BACKEND.md`。
 
 ## 开发新需求时
 

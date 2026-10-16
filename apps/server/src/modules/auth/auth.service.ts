@@ -22,6 +22,8 @@ import {
 } from './security.js';
 import { hashPassword, verifyPassword } from './password.js';
 import { MockSmsProvider, type SmsProvider } from './sms.js';
+import { FileRegistryService } from '../files/file-registry.service.js';
+import { createObjectStorage } from '../files/object-storage.js';
 type Tx = Prisma.TransactionClient;
 type Profile = User & { organization?: Organization | null };
 // 服务端业务身份；角色只表示登录身份，业务权限和数据范围仍由各模块检查。
@@ -73,7 +75,7 @@ function publicUser(user: Profile, current = false): AuthUser {
           name: org.name,
           unifiedCreditCode: org.unifiedCreditCode,
           description: org.description,
-          businessLicenseUrl: null,
+          businessLicenseUrl: org.businessLicenseKey ?? null,
           logoUrl: org.logoUrl,
           expertiseTags: org.expertiseTags,
           verifyStatus: 'PENDING',
@@ -90,6 +92,11 @@ export class AuthService {
     readonly db: PrismaClient,
     private readonly config: Config,
     private readonly sms: SmsProvider = new MockSmsProvider(),
+    private readonly files = new FileRegistryService(
+      db,
+      createObjectStorage(config.files),
+      config.files,
+    ),
   ) {}
   private async rate(entries: { key: string; max: number; seconds: number }[]) {
     const now = Date.now();
@@ -218,7 +225,6 @@ export class AuthService {
     const org = input.accountType === 'ORGANIZATION' ? input.organization : undefined;
     if (input.accountType === 'ORGANIZATION' && !org?.name.trim())
       throw invalid('组织账号需填写组织信息');
-    if (org?.businessLicense) throw invalid('营业执照上传凭证服务尚未接入，请暂不提交营业执照');
     const passwordHash = await hashPassword(input.password);
     await this.rate([{ key: `register-ip:${digest(ip)}`, max: 100, seconds: 900 }]);
     try {
@@ -238,6 +244,19 @@ export class AuthService {
               },
             })
           : null;
+        if (organization && org?.businessLicense) {
+          const file = await this.files.claimForOrganizationRegistration(
+            tx,
+            org.businessLicense.objectKey,
+            org.businessLicense.uploadToken,
+            organization.id,
+          );
+          organization.businessLicenseKey = file.objectKey;
+          await tx.organization.update({
+            where: { id: organization.id },
+            data: { businessLicenseKey: file.objectKey },
+          });
+        }
         const uid = randomUUID().replaceAll('-', '');
         const user = await tx.user.create({
           data: {

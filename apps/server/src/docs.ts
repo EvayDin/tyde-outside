@@ -16,6 +16,7 @@ export async function registerDocs(app: FastifyInstance, config: Config) {
       },
       tags: [
         { name: 'Auth', description: '验证码、注册与会话' },
+        { name: 'Files', description: '文件上传、一次性认领凭证与鉴权代理' },
         { name: 'Health', description: '存活与数据库就绪检查' },
       ],
       components: {

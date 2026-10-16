@@ -36,6 +36,11 @@ test('OpenAPI preserves legacy auth names, request fields, Result and token resp
       '/api/v1/auth/register',
       '/api/v1/auth/sms/login',
       '/api/v1/auth/sms/send',
+      '/api/v1/files',
+      '/api/v1/files/access-url',
+      '/api/v1/files/upload',
+      '/api/v1/files/upload/batch',
+      '/api/v1/files/view',
       '/api/v1/health/live',
       '/api/v1/health/ready',
       '/api/v1/users/me',
@@ -63,7 +68,7 @@ test('OpenAPI preserves legacy auth names, request fields, Result and token resp
     expect(registration.properties.accountType.anyOf).toBeUndefined();
     expect(registration.properties.roles.items.enum).toEqual(['NAVIGATOR', 'PM', 'EXPERT', 'OPS']);
     expect(registration.properties.organization.properties.businessLicense.description).toContain(
-      'HTTP 400',
+      '一次性 uploadToken',
     );
     const registerMedia =
       spec.paths['/api/v1/auth/register'].post.requestBody.content['application/json'];
@@ -247,6 +252,73 @@ test('documented request examples pass actual Fastify validation; flat enums pre
     expect(
       validate(loginSchema, { account: '13812345678', password: 'Example123!', role: 'INVALID' }),
     ).toBe(false);
+  } finally {
+    await app.close();
+  }
+});
+
+test('file OpenAPI documents multipart binary, query fields, proxy media and complete valid examples', async () => {
+  const config = readConfig({
+    APP_ENV: 'test',
+    DATABASE_URL: 'postgresql://localhost/unused_test',
+    CODE_HMAC_SECRET: 'x'.repeat(32),
+    SMS_PROVIDER: 'mock',
+    WEB_ORIGINS: 'http://127.0.0.1:3000',
+    LOG_LEVEL: 'silent',
+  });
+  const app = await createApp(config, new PrismaClient());
+  try {
+    const spec = (await app.inject('/api/v1/docs/json')).json();
+    const upload = spec.paths['/api/v1/files/upload'].post;
+    const body = upload.requestBody.content['multipart/form-data'].schema;
+    expect(body.properties.file).toMatchObject({ type: 'string', format: 'binary' });
+    expect(body.required).toEqual(['file']);
+    const batch =
+      spec.paths['/api/v1/files/upload/batch'].post.requestBody.content['multipart/form-data']
+        .schema;
+    expect(batch.properties.files.items.format).toBe('binary');
+    expect(
+      spec.paths['/api/v1/files/view'].get.responses['200'].content['application/octet-stream']
+        .schema.format,
+    ).toBe('binary');
+    expect(
+      spec.paths['/api/v1/files/view'].get.responses['200'].content['application/json'],
+    ).toBeUndefined();
+    for (const [path, methods] of Object.entries(spec.paths)) {
+      if (!path.startsWith('/api/v1/files')) continue;
+      for (const operation of Object.values(
+        methods as Record<
+          string,
+          { parameters?: { description?: string; schema: { description?: string } }[] }
+        >,
+      ))
+        for (const parameter of operation.parameters ?? [])
+          expect(parameter.description ?? parameter.schema.description).toMatch(/[\u3400-\u9fff]/u);
+    }
+    const compile = (schema: object) =>
+      app.validatorCompiler!({ schema, method: 'POST', url: '/schema-example', httpPart: 'body' });
+    const { uploadResponse, uploadExample, uploadBody } =
+      await import('../src/modules/files/file.schema.js');
+    for (const [schema, media] of [
+      [uploadBody(false), upload.requestBody.content['multipart/form-data']],
+      [
+        uploadBody(true),
+        spec.paths['/api/v1/files/upload/batch'].post.requestBody.content['multipart/form-data'],
+      ],
+    ]) {
+      const examples =
+        media.example !== undefined
+          ? [media.example]
+          : Object.values(media.examples ?? {}).map((entry) => (entry as { value: unknown }).value);
+      expect(examples.length).toBeGreaterThan(0);
+      for (const example of examples) expect(compile(schema)(example)).toBe(true);
+    }
+    // 生成文档中的响应有 $ref，使用原始交付 schema 验证完整示例，避免人为猜测引用结构。
+    expect(compile(uploadResponse)(uploadExample)).toBe(true);
+    expect(
+      upload.responses['200'].content['application/json'].schema.properties.data.properties
+        .uploadToken.description,
+    ).toContain('一次性');
   } finally {
     await app.close();
   }

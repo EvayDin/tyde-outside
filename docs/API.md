@@ -39,7 +39,7 @@ curl http://127.0.0.1:3000/api/v1/users/me \
 3. **取值与业务规则**：枚举逐值解释，例如 `INDIVIDUAL=个人、ORGANIZATION=组织`；说明实际默认行为、格式/长度、数值单位、日期格式/时区、脱敏和 null/空数组的意义。`required` 由实际 schema 声明；条件必填在字段和接口说明写清，例如组织账号必须填写 `organization.name`。不要为了展示默认值给 schema 添加会改变 AJV 入参的 `default`。
 4. **枚举可读性**：普通字符串枚举优先输出 `type: string` + `enum`，避免把每个字面量展开为一层 `anyOf`。保留现有合法取值、TypeScript 类型推导和验证语义；只有真实联合结构才使用 `oneOf/anyOf`。
 5. **完整示例**：每个有请求体的接口至少一个可通过实际 schema 校验的请求示例；个人/组织等主要分支分别给示例。成功响应提供实际结构示例，失败响应说明 HTTP 状态、业务码、中文原因和必要响应头（例如 `Retry-After` 单位为秒）。示例里的密码、令牌、手机号和证件均为演示值，不能使用环境密钥或真实用户数据。
-6. **文档与当前实现一致**：字段未接入、固定值、兼容字段被忽略、暂不支持的分支必须明确说明，不能把规划能力写成已上线。注册 `roles` 可省略且固定 EXPERT、组织注册提交 `businessLicense` 当前返回 400 等限制需在页面直接可见。
+6. **文档与当前实现一致**：字段未接入、固定值、兼容字段被忽略、暂不支持的分支必须明确说明，不能把规划能力写成已上线。注册 `roles` 可省略且固定 EXPERT、文件存储默认关闭、已认领项目/考试附件访问授权尚未接入等限制需在页面直接可见。
 7. **响应 schema 保真**：响应 schema 会影响 Fastify 序列化。给原自由对象补嵌套字段时核验字段与 null 不丢失；文档补充不得暗改校验、字段名、HTTP 状态或业务行为。发现业务差异按迁移任务另外记录。
 8. **交付验收**：查看生成的 `/api/v1/docs/json`，检查中文字段说明、嵌套结构、枚举和完整示例确实存在；示例通过实际请求校验；验证响应序列化及现有契约不变。`apps/server/tests/docs.test.ts` 已递归检查当前请求/响应字段的中文说明，并校验示例与枚举、组织响应字段保留；有 path/query/header 或新响应结构时扩展相应检查。不能仅靠 schema 源码有注释就通过验收。
 
@@ -63,3 +63,23 @@ const body = Type.Object(
 ```
 
 请求标准入口 `packages/shared/src/auth.ts`，响应与错误说明范例 `apps/server/src/modules/auth/auth.schema.ts`。字段说明修改与接口代码一同交付，不要求调用方另找字段中文对照表。
+
+## 文件上传、凭证与访问
+
+以下路径均加 `/api/v1`，沿用 `{code,message,data}`，失败 data=null；`GET /files/view` 成功时直接返回文件字节，不用 JSON 包装。
+
+| 方法与路径                 | 字段                                                  | 身份与结果                                                                                                    |
+| -------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| POST `/files/upload`       | multipart：`file` 必填，`bizType/category` 选填       | 可匿名；项目/考试附件必须登录。返回可信元数据、objectKey、一次性 uploadToken；敏感文件 url=null。             |
+| POST `/files/upload/batch` | multipart：重复 `files` 字段，`bizType/category` 选填 | 默认最多10个文件，按顺序返回；后续上传失败时前面成功的对象保留，未认领对象过期清理。                          |
+| GET `/files/view`          | query：`objectKey` 必填                               | 需登录；安全图片/PDF内联，其余强制下载；no-store, private 与 nosniff。匿名请求403。                           |
+| GET `/files/access-url`    | query：`objectKey` 必填，`expireSeconds` 选填         | 需登录；敏感目录或台账一律403。非敏感图片默认2147483647秒，其他默认604800秒；非正数视为默认，最大32位正整数。 |
+| DELETE `/files`            | query：`objectKey` 必填                               | 需登录且为本人未认领文件；匿名上传对象、已认领对象和重复删除403。成功data=true。                              |
+
+`bizType` 默认 COMMON，`category` 默认由业务推断；忽略大小写和首尾空白，未知值400。固定业务大类不能被 category 放宽，ANY 仍受已知安全类型白名单。全局单文件默认50MiB、请求100MiB（含multipart边界/字段）、批量10个；图片/JSON10MiB，文档/Excel20MiB，视频/业务附件/ANY50MiB，均可被全局硬上限收紧。文件名、声明MIME和实际内容须一致；拒绝SVG/HTML/脚本及伪装内容；Office ZIP 检查结构和CRC，最多检查200项、解压2MiB，不解包落盘。文件和请求超限413，字段/内容不符400。
+
+敏感文件只通过鉴权代理读取：未认领对象只允许上传者；匿名预上传在组织认领前不能读取（uploadToken不是读取凭据）。已认领营业执照仅所属组织 OWNER/ADMIN 可读取，不使用 hasExpertManagementRole 展示字段授权。**已认领项目/考试附件读取依赖后续业务关系，当前明确403，不能用于完整项目/考试流程。** 非敏感文件沿用登录后访问规则。只接受新项目存活台账，不接收旧bucket未登记对象；这与旧普通文件“只要登录即可查看”存在收紧差异，尚未作为完整兼容验收通过。
+
+组织注册的 `organization.businessLicense` 接受 BUSINESS_LICENSE 的 `objectKey/uploadToken`，默认24小时内一次认领（可配置），原文凭证不落库。无记录/类型错误/存储对象缺失或大小不符400，错误凭证403，过期/重复409，存储关闭/不可达503。认领、验证码消费、组织与用户创建同事务，失败回滚；`organization.businessLicenseUrl` 保留旧字段名，返回objectKey或null，不是公开URL。
+
+Swagger 已提供 multipart 输入、全部请求/响应/查询字段中文说明和完整schema示例，文件代理200按真实媒体类型记录二进制响应。测试使用真实专用PostgreSQL及内存对象存储，29项集成通过；真实OSS尚未联调，默认 FILE_STORAGE_PROVIDER=disabled，须先配置新项目专用存储。

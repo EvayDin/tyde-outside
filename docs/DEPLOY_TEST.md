@@ -144,3 +144,15 @@ Windows PowerShell：先 `$env:TYDE_API_BASE_URL='https://真实测试域名'`�
 - 更新前备份数据库与当前版本，应用迁移再切换服务；回退前检查迁移兼容性，不能承诺任意数据库变更可直接回滚。
 
 所有 example 域名、目录和配置均为占位；本文不表示已完成阿里云部署。
+
+### 文件存储与上传（01）
+
+上传、批量上传、鉴权代理、非敏感签名链接和本人未认领文件删除接口已接入。默认 `FILE_STORAGE_PROVIDER=disabled`，不会默认使用旧项目存储；启用时配置 `.env.example` 中的新项目专用 `OSS_ENDPOINT`（HTTPS 区域端点）、`OSS_BUCKET`、`OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET`。bucket应为私有，密钥仅放后端环境。当前使用OSS V1签名保留旧图片最大有效期行为，真实OSS上传/读取/签名尚未联调。协议参考 [OSS V1 URL 签名文档](https://www.alibabacloud.com/help/en/oss/developer-reference/ddd-signatures-to-urls)。接口及权限边界见 [API](API.md#文件上传凭证与访问)。
+
+新增迁移 `20261016010000_uploaded_files` 包含 UploadedFile 台账和 Organization.businessLicenseKey。2026-10-16用户本机已在专用 `_test` 库应用，Agent复测29项数据库集成通过；开发库和部署环境迁移未执行。其他环境部署前须应用全部迁移。集成测试会清表，只能连接 `.env.test` 指定的专用库；确认 APP_ENV=test、库名以 `_test` 结尾、TEST_DATABASE_RESET=true。不要对开发库运行测试。
+
+默认单文件50MiB、总请求100MiB（按原始流统计，含multipart开销）、批量10个；反向代理也须允许相应请求大小。整个请求文件内容在内存中有界缓冲后校验，部署需按并发和内存预算收紧 `.env.example` 的大小/数量配置；Vercel/网关的平台限制独立于应用上限，未做大文件远程验收。当前配置参数统一为字节整数（不接受旧100MB字符串）。
+
+`pnpm db:cleanup` 在存储启用时附加清理到期的 UPLOADED/RELEASED 文件（默认每批100）。与认领共用行锁，成功删除对象后物理删除台账，失败保留供重试；存储关闭时跳过文件清理。该命令尚未部署定时调度。对象存储和数据库不共享事务：对象删除成功但台账提交失败时由下次幂等清理恢复；上传后登记失败会尽力删除对象，若删除也失败，须通过bucket与台账对账回收无记录对象。真实失败恢复/调度仍待环境验证。
+
+已认领项目/考试附件读取暂返回403，须在对应业务迁移中接实真实关系授权；不能放宽为“任何EXPERT均可读取”。旧普通敏感文件仅要求登录，新接口按台账归属收紧；新旧bucket与对象台账不默认互通。
