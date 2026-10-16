@@ -192,7 +192,7 @@ export const smsRegisterSchema = Type.Object(
                   minLength: 1,
                   maxLength: 512,
                   description:
-                    '文件上传接口返回的营业执照对象存储 Key，不能提交可访问 URL；凭证认领服务接入前请勿提交。',
+                    '文件上传登记的营业执照对象存储 Key，不能提交可访问 URL；须与 uploadToken 对应。先通过 POST /files/upload 且 bizType=BUSINESS_LICENSE 上传。',
                   examples: ['business-license/example.jpg'],
                 }),
                 uploadToken: Type.String({
@@ -206,7 +206,7 @@ export const smsRegisterSchema = Type.Object(
               {
                 ...options,
                 description:
-                  '营业执照上传凭证，选填。当前文件认领服务尚未接入，组织注册提交该对象会返回 HTTP 400；请暂时省略。',
+                  '营业执照上传凭证，选填。仅接受 BUSINESS_LICENSE 登记对象及其一次性 uploadToken；默认 24 小时内认领（可配置），重复/过期 HTTP 409，错误凭证 HTTP 403，无登记对象 HTTP 400。认领与注册同事务；存储未配置或不可达时 HTTP 503。',
               },
             ),
           ),
@@ -251,7 +251,7 @@ export const smsRegisterSchema = Type.Object(
   {
     ...options,
     description:
-      '手机号注册请求。code 必须来自 scene=register；无需 roles。成功只返回用户资料，不自动登录。示例 1 为个人注册，示例 2 为组织注册，均省略尚未接入的营业执照凭证。',
+      '手机号注册请求。code 必须来自 scene=register；无需 roles。成功只返回用户资料，不自动登录。示例 1 为个人注册，示例 2 为组织注册，均省略选填的营业执照凭证；如需提交，须先通过文件上传取得真实 objectKey/uploadToken，不能使用示例凭证。',
     examples: [
       {
         accountType: 'INDIVIDUAL',

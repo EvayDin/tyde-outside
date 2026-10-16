@@ -8,6 +8,10 @@ import { AuthError } from './modules/auth/auth.error.js';
 import { AuthService } from './modules/auth/auth.service.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
 import { registerDocs } from './docs.js';
+import { fileRoutes } from './modules/files/file.routes.js';
+import { FileService } from './modules/files/file.service.js';
+import { FileRegistryService } from './modules/files/file-registry.service.js';
+import { createObjectStorage, type ObjectStorage } from './modules/files/object-storage.js';
 
 export function fastifyOptions(config: Config): FastifyServerOptions {
   return {
@@ -25,6 +29,8 @@ export function fastifyOptions(config: Config): FastifyServerOptions {
         '*.newPassword',
         '*.accessToken',
         '*.refreshToken',
+        '*.uploadToken',
+        '*.claimTokenHash',
       ],
     },
     genReqId: () => randomUUID(),
@@ -38,6 +44,7 @@ export async function createApp(
   config: Config = readConfig(),
   db = new PrismaClient({ datasources: { db: { url: config.databaseUrl } } }),
   app = Fastify(fastifyOptions(config)),
+  storage: ObjectStorage = createObjectStorage(config.files),
 ) {
   await app.register(cookie);
   await registerDocs(app, config);
@@ -47,6 +54,7 @@ export async function createApp(
   app.setErrorHandler<FastifyError>((error, req, reply) => {
     const legacy =
       req.url.startsWith(`${API_PREFIX}/auth/`) ||
+      req.url.startsWith(`${API_PREFIX}/files`) ||
       req.url.split('?')[0] === `${API_PREFIX}/users/me`;
     const failure = (status: number, code: string, message: string) =>
       legacy
@@ -81,7 +89,10 @@ export async function createApp(
         ),
       );
   });
-  await authRoutes(app, new AuthService(db, config), config);
+  const files = new FileRegistryService(db, storage, config.files);
+  const auth = new AuthService(db, config, undefined, files);
+  await authRoutes(app, auth, config);
+  await fileRoutes(app, new FileService(files), auth, config);
   app.get(
     `${API_PREFIX}/health/live`,
     {

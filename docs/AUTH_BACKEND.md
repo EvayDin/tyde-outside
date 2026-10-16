@@ -27,7 +27,7 @@
 可选字段：`roles`、`nickname`、`idCardNo`、`orgPosition`、`email`、`organization`。
 
 `accountType` 为 `INDIVIDUAL` / `ORGANIZATION`。昵称默认真实姓名。个人账号忽略组织信息；组织账号要求 `organization.name`，组织内身份默认 `OWNER`，可沿用 `ADMIN` / `MEMBER`。
-组织信息保留字段 `name`、`unifiedCreditCode`、`businessLicense`（`objectKey` / `uploadToken`）、`description`、`logoUrl`、`expertiseTags`。**营业执照凭证认领依赖尚未接入，目前提交该字段会返回明确的 400 错误，不会伪造成功或保存未经校验的文件引用。**
+组织信息保留字段 `name`、`unifiedCreditCode`、`businessLicense`（`objectKey` / `uploadToken`）、`description`、`logoUrl`、`expertiseTags`。**营业执照已接入文件上传台账认领：先调用 POST /files/upload 且 bizType=BUSINESS_LICENSE，再提交 objectKey/uploadToken。默认24小时有效（可配置）；注册组织、创建用户、消费验证码和认领同事务，失败回滚。businessLicenseUrl 保留旧字段名，返回objectKey或null，不返回公开链接；已认领营业执照仅本组织OWNER/ADMIN通过鉴权代理读取。默认文件存储关闭，启用须配置新项目OSS；真实OSS未联调。**
 
 LoginResponse 字段严格使用 `accessToken`、`refreshToken`、`tokenType`（`Bearer`）、`expiresIn`（秒）。注册仅创建账号并返回资料，不自动登录；未注册手机号短信登录返回 401，不自动创建账号。
 
@@ -152,3 +152,5 @@ ALTER ROLE tyde_outside_dev LOGIN CREATEDB;
 ## 核心基线交接
 
 2026-10-16 用户授权遗留项备注后交接 01，当前任务指针已切换为文件存储与上传凭证。00 核心测试通过，完整业务验收未完成，兼容差异未自动获得接受。短信暂用 mock 095270，真实短信为上线依赖；营业执照在 01 回补，资料/组织/主管/presence 分别依赖 02/03/07/14。其余兼容决定、公共能力及联调待办见 [00 遗留项与回补条件](../../backend-migration/00-auth/todoTask.md#遗留项与回补条件)。本次仅交接，不启动 01 实现。
+
+01 回补进展（2026-10-16）：用户本机已应用第三个迁移 `20261016010000_uploaded_files`（专用测试库，非开发库），并安装 multipart 依赖。修复大小不符测试中两个字符串同为10字节的夹具错误，改用台账大小+1；Agent先复测21项全部通过，再接入文件HTTP接口并扩展为29项集成全部通过（真实PostgreSQL+内存对象存储）。API-002营业执照上传/注册/认领/代理链路已验证；原API-002仍为部分迁移，多组织/昵称等其他回补不变。文件业务权限及真实OSS联调限制见 [01 记录](../../backend-migration/01-files/todoTask.md)。

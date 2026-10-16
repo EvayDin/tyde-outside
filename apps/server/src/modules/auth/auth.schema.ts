@@ -20,7 +20,7 @@ const organizationResponse = {
     unifiedCreditCode: text('统一社会信用代码，未填写时为 null。', null, true),
     description: text('组织简介，未填写时为 null。', '提供数据标注服务。', true),
     businessLicenseUrl: text(
-      '营业执照文件引用；当前凭证认领能力尚未接入，固定为 null，不返回敏感文件公开链接。',
+      '已认领营业执照的 objectKey（保留旧字段名，不是公开 URL）；未填写时为 null。读取须走鉴权文件代理；已认领营业执照仅本组织主管/管理员可读取。',
       null,
       true,
     ),
@@ -203,7 +203,7 @@ const operationDescriptions: Record<string, string> = {
   sendCode:
     '按 scene 发送验证码。不同场景独立验证，手机号跨场景共用 60 秒发送冷却；验证码 5 分钟有效，错误尝试最多 5 次。当前开发/测试仅 mock，不实际发短信，验证码为字符串 095270。',
   register:
-    '使用 scene=register 的验证码注册个人或组织账号，固定 EXPERT；成功返回用户资料，不自动登录。ORGANIZATION 必须填写 organization.name；个人账号不创建组织。当前营业执照凭证服务未接入，提交 businessLicense 会返回 400。',
+    '使用 scene=register 的验证码注册个人或组织账号，固定 EXPERT；成功返回用户资料，不自动登录。ORGANIZATION 必须填写 organization.name；个人账号不创建组织。可选营业执照须先通过文件上传获取 BUSINESS_LICENSE 的 objectKey/uploadToken；认领、验证码消费和注册同事务，失败回滚。',
   login:
     '通过手机号、备用邮箱或 uid 与密码登录，固定 EXPERT。成功签发访问/刷新令牌并更新最近登录时间/IP；密码错误或无账号返回 401，禁用账号返回 403。',
   loginBySms:
