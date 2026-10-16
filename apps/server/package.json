@@ -35,6 +35,7 @@
   },
   "devDependencies": {
     "tsx": "4.23.15",
+    "undici-types": "7.18.2",
     "vitest": "3.2.7"
   }
 }

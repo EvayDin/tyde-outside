@@ -1,5 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { Readable } from 'node:stream';
+import type { fetch as nodeFetch, Response } from 'undici-types';
 import { AuthError } from '../auth/auth.error.js';
 import type { FileConfig } from './file.config.js';
 
@@ -27,7 +28,8 @@ const unavailable = () => new AuthError(503, 'STORAGE_UNAVAILABLE', '文件存�
 export class OssObjectStorage implements ObjectStorage {
   constructor(
     private readonly config: FileConfig,
-    private readonly request: typeof fetch = fetch,
+    // Node 原生 fetch 基于 Undici；显式类型避免 Vercel 编译时全局 Response 丢失成员。
+    private readonly request: typeof nodeFetch = fetch as typeof nodeFetch,
   ) {}
   private url(key: string) {
     validObjectKey(key);
