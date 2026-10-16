@@ -12,26 +12,60 @@
 
 前缀 `/api/v1`；成功 HTTP 200，响应 `{ "code": 200, "message": "操作成功", "data": ... }`。错误同样使用 `code/message/data`，`data` 为 null；常见业务码 400/401/403/404/409/413/500/503，频率限制 4292（HTTP 429，含 `Retry-After`）。
 
-| 方法与路径                  | 请求字段                                                    | 成功 data        |
-| --------------------------- | ----------------------------------------------------------- | ---------------- |
-| POST `/auth/sms/send`       | `phone`, `scene`（`login` / `register` / `reset_password`） | 字符串发送提示   |
-| POST `/auth/register`       | 见下文                                                      | 用户资料 UserDTO |
-| POST `/auth/login`          | `account`, `password`, 可选 `role`                          | LoginResponse    |
-| POST `/auth/sms/login`      | `phone`, `code`, 可选 `role`                                | LoginResponse    |
-| POST `/auth/refresh`        | `refreshToken`                                              | 新 LoginResponse |
-| POST `/auth/password/reset` | `phone`, `code`, `newPassword`                              | null             |
-| POST `/auth/logout`         | 无请求体；可携带当前认证凭据                                | null             |
-| GET `/users/me`             | 当前认证凭据                                                | 用户资料 UserDTO |
+| 方法与路径                  | 请求字段                                                    | 成功 data                |
+| --------------------------- | ----------------------------------------------------------- | ------------------------ |
+| POST `/auth/sms/send`       | `phone`, `scene`（`login` / `register` / `reset_password`） | 字符串发送提示           |
+| POST `/auth/register`       | 见下文                                                      | 用户资料 UserDTO         |
+| POST `/auth/login`          | `account`, `password`, 可选 `role`                          | LoginResponse            |
+| POST `/auth/sms/login`      | `phone`, `code`, 可选 `role`                                | LoginResponse 或注册指引 |
+| POST `/auth/refresh`        | `refreshToken`                                              | 新 LoginResponse         |
+| POST `/auth/password/reset` | `phone`, `code`, `newPassword`                              | null                     |
+| POST `/auth/logout`         | 无请求体；可携带当前认证凭据                                | null                     |
+| GET `/users/me`             | 当前认证凭据                                                | 用户资料 UserDTO         |
 
-注册必填字段：`accountType`、`password`、`confirmPassword`、`realName`、`phone`、`code`。
+注册必填字段：`accountType`、`password`、`confirmPassword`、`realName`、`phone`；另外必须且只能提交 `code`（注册场景验证码）或 `registrationToken`（短信登录返回的注册凭证）。
 可选字段：`roles`、`nickname`、`idCardNo`、`orgPosition`、`email`、`organization`。
 
 `accountType` 为 `INDIVIDUAL` / `ORGANIZATION`。昵称默认真实姓名。个人账号忽略组织信息；组织账号要求 `organization.name`，组织内身份默认 `OWNER`，可沿用 `ADMIN` / `MEMBER`。
 组织信息保留字段 `name`、`unifiedCreditCode`、`businessLicense`（`objectKey` / `uploadToken`）、`description`、`logoUrl`、`expertiseTags`。**营业执照已接入文件上传台账认领：先调用 POST /files/upload 且 bizType=BUSINESS_LICENSE，再提交 objectKey/uploadToken。默认24小时有效（可配置）；注册组织、创建用户、消费验证码和认领同事务，失败回滚。businessLicenseUrl 保留旧字段名，返回objectKey或null，不返回公开链接；已认领营业执照仅本组织OWNER/ADMIN通过鉴权代理读取。默认文件存储关闭，启用须配置新项目OSS；真实OSS未联调。**
 
-LoginResponse 字段严格使用 `accessToken`、`refreshToken`、`tokenType`（`Bearer`）、`expiresIn`（秒）。注册仅创建账号并返回资料，不自动登录；未注册手机号短信登录返回 401，不自动创建账号。
+LoginResponse 字段严格使用 `accessToken`、`refreshToken`、`tokenType`（`Bearer`）、`expiresIn`（秒）。注册仅创建账号并返回资料，不自动登录；未注册手机号短信登录返回 HTTP 200 和 `{ status: "registration_required", registrationToken, expiresAt }`，不创建账号或登录会话、不设置登录 Cookie；客户端据此进入资料填写页。注册凭证绑定手机号、10 分钟有效、一次性使用，再次验证同手机号会使旧凭证失效；放弃填写后，下次重新获取登录验证码并验证仍返回注册指引。
 
 UserDTO 使用 `id`、`uid`、`accountType`、`phone`、`nickname`、`realName`、`idCardNo`、`idVerified`、`avatarUrl`、`bio`、`role`、`roles`、`selectedRole`、`hasExpertManagementRole`、`status`、`creditScore`、`lastLoginAt`、`lastLoginIp`、`organization`、`createdAt`、`updatedAt`。手机号和身份证号脱敏。新项目 `id` 仍为 UUID 字符串，时间仍为 ISO 8601；字段名沿用旧项目，不承诺旧数据库主键类型或日期格式兼容。
+
+## 验证码登录后填写资料注册
+
+1. `POST /auth/sms/send` 提交 `{ "phone": "13812345678", "scene": "login" }`。
+2. `POST /auth/sms/login` 提交 `{ "phone": "13812345678", "code": "095270" }`。已注册用户返回原 LoginResponse；新手机号返回：
+
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "status": "registration_required",
+    "registrationToken": "ggggggggggggggggggggggggggggggggggggggggggg",
+    "expiresAt": "2026-10-16T12:10:00.000Z"
+  }
+}
+```
+
+3. 前端判断 `data.status === "registration_required"`，展示表单并暂存手机号/凭证；凭证仅用于注册，不能作为登录令牌。填写后向 `POST /auth/register` 提交：
+
+```json
+{
+  "accountType": "INDIVIDUAL",
+  "phone": "13812345678",
+  "registrationToken": "ggggggggggggggggggggggggggggggggggggggggggg",
+  "realName": "小明",
+  "password": "Password123",
+  "confirmPassword": "Password123"
+}
+```
+
+示例凭证不可实际使用，需替换为本次返回的真实值。密码/确认密码、真实姓名及账号类型继续沿用既有注册要求，组织账号仍需组织资料。`code` 和 `registrationToken` 必须且只能提交一个；原 `scene=register` 验证码注册仍保留。凭证消费、用户/组织创建和营业执照认领在同一事务内，业务失败回滚，可修正表单重试；过期/错误/手机号不匹配/已消费凭证返回 HTTP 400。注册成功仍只返回用户资料，不自动登录，随后可用注册密码登录或重新获取登录验证码。实际页面跳转和表单对接由前端任务完成，本次未改 Web/Electron。
+
+复用既有 `RegistrationGrant` 表，无新增数据库迁移；摘要增加 `sms-registration:` 用途隔离，历史旧流程凭证不能用于此入口。过期凭证沿用现有认证清理命令。
 
 ## 安全与实现入口
 

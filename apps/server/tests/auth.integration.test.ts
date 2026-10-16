@@ -124,7 +124,7 @@ test('SMS scenes are isolated; successful login consumes code and unknown phones
   expect((await post('/auth/sms/login', { phone, code: '095270' })).statusCode).toBe(400);
   await send('login', '13912345678');
   expect((await post('/auth/sms/login', { phone: '13912345678', code: '095270' })).statusCode).toBe(
-    401,
+    200,
   );
   expect(await db.user.count()).toBe(1);
 });
@@ -752,4 +752,99 @@ test('HTTP single file, batch count and complete multipart body limits are enfor
   } finally {
     await limited.close();
   }
+});
+
+async function registrationGrant(headers = web) {
+  await send('login');
+  const result = await post('/auth/sms/login', { phone, code: '095270' }, headers);
+  expect(result.statusCode).toBe(200);
+  expect(result.json().data.status).toBe('registration_required');
+  expect(result.cookies).toHaveLength(0);
+  expect(result.json().data.accessToken).toBeUndefined();
+  expect(await db.user.count()).toBe(0);
+  expect(await db.session.count()).toBe(0);
+  return result.json().data.registrationToken as string;
+}
+function registrationForm(registrationToken: string) {
+  const { code: _code, ...form } = registration;
+  void _code;
+  return { ...form, registrationToken };
+}
+test('abandoned registration repeats the form; newest grant completes registration without another SMS', async () => {
+  const first = await registrationGrant();
+  expect((await post('/auth/sms/login', { phone, code: '095270' })).statusCode).toBe(400);
+  expect((await app.inject({ url: '/api/v1/users/me', headers: bearer(first) })).statusCode).toBe(
+    401,
+  );
+  const latest = await registrationGrant(desktop);
+  expect(latest).not.toBe(first);
+  const row = await db.registrationGrant.findUniqueOrThrow({
+    where: { tokenDigest: digest(`sms-registration:${latest}`) },
+  });
+  expect(row.tokenDigest).not.toBe(latest);
+  expect((await post('/auth/register', registrationForm(first))).statusCode).toBe(400);
+  const created = await post('/auth/register', registrationForm(latest));
+  expect(created.statusCode).toBe(200);
+  expect(created.json().data.role).toBe('EXPERT');
+  expect(created.cookies).toHaveLength(0);
+  expect(await db.session.count()).toBe(0);
+  expect((await post('/auth/register', registrationForm(latest))).statusCode).toBe(400);
+  await send('login');
+  const logged = await post('/auth/sms/login', { phone, code: '095270' });
+  expect(logged.statusCode).toBe(200);
+  expect(logged.json().data.accessToken).toBeTruthy();
+  expect(logged.cookies[0]?.httpOnly).toBe(true);
+});
+test('registration grants reject missing, mixed, forged, mismatched and expired credentials', async () => {
+  const token = await registrationGrant();
+  const form = registrationForm(token);
+  const { registrationToken: _token, ...missing } = form;
+  void _token;
+  for (const input of [
+    missing,
+    { ...form, code: '095270' },
+    { ...form, registrationToken: 'x'.repeat(43) },
+    { ...form, phone: '13912345678' },
+  ])
+    expect((await post('/auth/register', input)).statusCode).toBe(400);
+  await db.registrationGrant.updateMany({ data: { expiresAt: new Date(0) } });
+  expect((await post('/auth/register', form)).statusCode).toBe(400);
+  expect(await db.user.count()).toBe(0);
+});
+test('grant registration validates the form and rolls back credential consumption on conflicts', async () => {
+  const token = await registrationGrant();
+  const form = registrationForm(token);
+  expect((await post('/auth/register', { ...form, confirmPassword: 'Wrong123' })).statusCode).toBe(
+    400,
+  );
+  const org = await db.organization.create({ data: { name: '已存在组织', expertiseTags: [] } });
+  expect(
+    (
+      await post('/auth/register', {
+        ...form,
+        accountType: 'ORGANIZATION',
+        organization: { name: org.name },
+      })
+    ).statusCode,
+  ).toBe(409);
+  expect((await db.registrationGrant.findFirstOrThrow()).consumedAt).toBeNull();
+  expect(await db.user.count()).toBe(0);
+  expect((await post('/auth/register', form)).statusCode).toBe(200);
+});
+test('concurrent new-phone SMS consumption issues only one grant', async () => {
+  await send('login');
+  const results = await Promise.all([
+    post('/auth/sms/login', { phone, code: '095270' }),
+    post('/auth/sms/login', { phone, code: '095270' }),
+  ]);
+  expect(results.map((result) => result.statusCode).sort()).toEqual([200, 400]);
+  expect(await db.registrationGrant.count()).toBe(1);
+  expect(await db.user.count()).toBe(0);
+  expect(await db.session.count()).toBe(0);
+});
+test('concurrent registration with one grant creates exactly one account', async () => {
+  const form = registrationForm(await registrationGrant());
+  const results = await Promise.all([post('/auth/register', form), post('/auth/register', form)]);
+  expect(results.map((result) => result.statusCode).sort()).toEqual([200, 400]);
+  expect(await db.user.count()).toBe(1);
 });

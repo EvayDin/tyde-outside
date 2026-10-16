@@ -1,4 +1,5 @@
 import { Type, type Static } from '@sinclair/typebox';
+import type { RegistrationRequired } from './index.js';
 const options = { additionalProperties: false };
 // 输出普通 string + enum，避免 Swagger 把枚举拆成多个 anyOf，保留字面量类型推导。
 function stringEnum<const T extends readonly string[]>(values: T, description: string) {
@@ -50,7 +51,7 @@ export const smsLoginSchema = Type.Object(
   {
     ...options,
     description:
-      '短信登录请求。code 必须来自 scene=login；手机号必须已注册，不会自动创建账号，登录身份固定为执行专家。',
+      '短信登录请求。code 必须来自 scene=login；已注册返回登录令牌；未注册返回 status=registration_required 和一次性注册凭证，不创建账号或会话，客户端据此展示注册表单。登录身份固定为执行专家。',
     examples: [{ phone: '13812345678', code: '095270' }],
   },
 );
@@ -160,7 +161,15 @@ export const smsRegisterSchema = Type.Object(
       ),
     ),
     phone,
-    code,
+    code: Type.Optional(code),
+    registrationToken: Type.Optional(
+      Type.String({
+        pattern: '^[A-Za-z0-9_-]{43}$',
+        description:
+          '短信登录返回的一次性注册凭证，10 分钟有效，绑定已验证手机号；与 code 必须且只能提交一个。使用此凭证无需重新获取注册验证码，不能用于登录鉴权；示例不可实际使用。',
+        examples: ['g'.repeat(43)],
+      }),
+    ),
     email: Type.Optional(
       Type.String({
         maxLength: 128,
@@ -251,7 +260,7 @@ export const smsRegisterSchema = Type.Object(
   {
     ...options,
     description:
-      '手机号注册请求。code 必须来自 scene=register；无需 roles。成功只返回用户资料，不自动登录。示例 1 为个人注册，示例 2 为组织注册，均省略选填的营业执照凭证；如需提交，须先通过文件上传取得真实 objectKey/uploadToken，不能使用示例凭证。',
+      '手机号注册请求。必须且只能提交 code（scene=register）或 registrationToken（未注册手机号短信登录返回）；无需 roles。成功只返回用户资料，不自动登录。示例 1 为个人注册，示例 2 为组织注册，示例 3 为短信登录后凭证注册，均省略选填的营业执照凭证；如需提交，须先通过文件上传取得真实 objectKey/uploadToken，不能使用示例凭证。',
     examples: [
       {
         accountType: 'INDIVIDUAL',
@@ -270,6 +279,14 @@ export const smsRegisterSchema = Type.Object(
         code: '095270',
         organization: { name: '示例标注团队', expertiseTags: ['图像标注'] },
       },
+      {
+        accountType: 'INDIVIDUAL',
+        password: 'Example123!',
+        confirmPassword: 'Example123!',
+        realName: '王小明',
+        phone: '13812345678',
+        registrationToken: 'g'.repeat(43),
+      },
     ],
   },
 );
@@ -278,6 +295,7 @@ export type SmsLoginInput = Static<typeof smsLoginSchema>;
 export type LoginInput = Static<typeof loginSchema>;
 export type SmsRegisterInput = Static<typeof smsRegisterSchema>;
 export type PasswordResetInput = Static<typeof passwordResetSchema>;
+export type SmsLoginResponse = LoginResponse | RegistrationRequired;
 export interface LoginResponse {
   accessToken: string;
   refreshToken: string;
