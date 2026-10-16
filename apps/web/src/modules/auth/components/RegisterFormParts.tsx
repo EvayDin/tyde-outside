@@ -16,15 +16,15 @@ export function FormSection({
   children: ReactNode;
 }) {
   return (
-    <section className="mb-[20px]">
-      <div className="mb-[13px] flex items-center gap-[9px]">
+    <section className="mb-[12px]">
+      <div className="mb-[8px] flex items-center gap-[9px]">
         <span className="grid h-[21px] w-[21px] place-items-center rounded-full bg-[#dff4f7] text-[12px] leading-none text-[#149cb3]">
           {number}
         </span>
         <b className="text-[12px] text-[#294554]">{title}</b>
         <i className="ml-[7px] h-px flex-1 bg-[var(--color-divider)]" />
       </div>
-      <div className="grid grid-cols-2 gap-[12px] max-[580px]:grid-cols-1">{children}</div>
+      <div className="grid grid-cols-2 gap-[12px] max-[360px]:grid-cols-1">{children}</div>
     </section>
   );
 }

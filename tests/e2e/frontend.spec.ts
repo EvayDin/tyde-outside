@@ -36,8 +36,10 @@ test('Web 仅为合法手机号发送验证码，发送与倒计时防重复且�
   await expect(page).toHaveURL(/#\/auth$/);
   await expect(
     page.getByRole('heading', { name: '欢迎使用 Tyde 潮汐协作平台', level: 1 }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('heading', { name: '登录 / 注册', level: 1, exact: true }),
   ).toBeVisible();
-  await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
   await expect(page.getByRole('tab')).toHaveCount(2);
   await expect(page.getByRole('tab', { name: '验证码登录', exact: true })).toHaveAttribute(
     'aria-selected',
@@ -187,6 +189,17 @@ test('密码页首次提供验证码注册入口，密码校验与显隐仅在�
   await expect(page.getByRole('status', { name: '操作提示' })).toHaveCount(0);
   await mkdir('artifacts/screenshots', { recursive: true });
   await page.screenshot({ path: 'artifacts/screenshots/frontend-password.png', fullPage: true });
+  const desktopViewport = page.viewportSize() ?? { width: 1280, height: 720 };
+  await page.setViewportSize({ width: 375, height: 812 });
+  await expect(page.getByRole('button', { name: '验证码注册', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+  await page.screenshot({
+    path: 'artifacts/screenshots/frontend-password-mobile.png',
+    fullPage: true,
+  });
+  await page.setViewportSize(desktopViewport);
   await page.getByRole('button', { name: '验证码注册', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toBeFocused();
   await expect(password).toHaveCount(0);
@@ -238,6 +251,35 @@ test('密码页首次提供验证码注册入口，密码校验与显隐仅在�
 });
 
 test('个人资料页保留个人字段，校验后仅提示尚未提交', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  async function assertSinglePage() {
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const form = document.querySelector('form');
+          return {
+            documentFits:
+              Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) <=
+              window.innerHeight + 1,
+            atTop: window.scrollY === 0,
+            formFits: Boolean(form && form.scrollHeight <= form.clientHeight + 1),
+            internalScrolls: Array.from(form?.querySelectorAll('*') ?? []).some(
+              (element) =>
+                element instanceof HTMLElement &&
+                /auto|scroll/.test(getComputedStyle(element).overflowY) &&
+                element.scrollHeight > element.clientHeight + 1,
+            ),
+          };
+        }),
+      )
+      .toEqual({ documentFits: true, atTop: true, formFits: true, internalScrolls: false });
+    for (const field of ['登录密码', '确认密码', '姓名', '昵称', '身份证号', '邮箱']) {
+      await expect(page.getByLabel(new RegExp('^' + field))).toBeInViewport({ ratio: 1 });
+    }
+    await expect(page.getByRole('button', { name: '提交', exact: true })).toBeInViewport({
+      ratio: 1,
+    });
+  }
   const requests: string[] = [];
   page.on('request', (request) => {
     if (request.url().includes('/api/')) requests.push(request.url());
@@ -251,9 +293,11 @@ test('个人资料页保留个人字段，校验后仅提示尚未提交', async
   await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toHaveCount(0);
   await expect(page.getByLabel(/^组织名称/)).toHaveCount(0);
   await expect(page.locator('input[type="file"]')).toHaveCount(0);
-  await page.getByRole('button', { name: '完成注册', exact: true }).click();
+  await assertSinglePage();
+  await page.getByRole('button', { name: '提交', exact: true }).click();
   await expect(page.getByText('请输入密码', { exact: true })).toBeVisible();
   await expect(page.getByText('请输入姓名', { exact: true })).toBeVisible();
+  await assertSinglePage();
   await page.getByLabel(/^登录密码/).fill('Password123');
   await page.getByLabel(/^确认密码/).fill('Different123');
   await page.getByLabel(/^姓名/).fill('测试小明');
@@ -262,10 +306,11 @@ test('个人资料页保留个人字段，校验后仅提示尚未提交', async
   await page.getByLabel(/^昵称/).fill('潮汐测试员');
   await page.getByLabel(/^身份证号/).fill('123456789012345');
   await page.getByLabel(/^邮箱/).fill('sample@example.com');
-  await page.getByRole('button', { name: '完成注册', exact: true }).click();
+  await page.getByRole('button', { name: '提交', exact: true }).click();
   await expect(page.getByRole('status', { name: '操作提示' })).toContainText(
     '注册功能暂未开放，个人资料尚未提交',
   );
+  await assertSinglePage();
   await expect(page).toHaveURL(/#\/register$/);
   await expect(page.getByRole('button', { name: '退出登录', exact: true })).toHaveCount(0);
   expect(requests).toEqual([]);
@@ -351,12 +396,32 @@ test('375px 窄屏支持键盘操作，入口和资料表单无横向溢出', as
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true,
   );
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) <=
+          window.innerHeight + 1,
+      ),
+    )
+    .toBe(true);
+  for (const field of ['登录密码', '确认密码', '姓名', '昵称', '身份证号', '邮箱']) {
+    await expect(page.getByLabel(new RegExp('^' + field))).toBeInViewport({ ratio: 1 });
+  }
+  await expect(page.getByRole('button', { name: '提交', exact: true })).toBeInViewport({
+    ratio: 1,
+  });
+  await mkdir('artifacts/screenshots', { recursive: true });
+  await page.screenshot({
+    path: 'artifacts/screenshots/frontend-register-mobile.png',
+    fullPage: true,
+    animations: 'disabled',
+  });
   await page.getByLabel(/^邮箱/).scrollIntoViewIfNeeded();
   const emailBox = await page.getByLabel(/^邮箱/).boundingBox();
-  const submitBox = await page.getByRole('button', { name: '完成注册', exact: true }).boundingBox();
+  const submitBox = await page.getByRole('button', { name: '提交', exact: true }).boundingBox();
   if (!emailBox || !submitBox) throw new Error('窄屏个人资料字段与提交按钮必须可见');
   expect(submitBox.y).toBeGreaterThanOrEqual(emailBox.y + emailBox.height);
-  await mkdir('artifacts/screenshots', { recursive: true });
   await page.screenshot({
     path: 'artifacts/screenshots/frontend-mobile.png',
     fullPage: true,
@@ -415,8 +480,10 @@ test('Electron 仅通过受限 bridge 发送验证码，保留安全隔离和个
       const page = await app.firstWindow();
       await expect(
         page.getByRole('heading', { name: '欢迎使用 Tyde 潮汐协作平台', level: 1 }),
+      ).toHaveCount(0);
+      await expect(
+        page.getByRole('heading', { name: '登录 / 注册', level: 1, exact: true }),
       ).toBeVisible();
-      await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
       await expect(page.getByRole('tab')).toHaveCount(2);
       expect(requests).toEqual([]);
       await page.getByRole('button', { name: '获取验证码', exact: true }).click();
@@ -450,7 +517,7 @@ test('Electron 仅通过受限 bridge 发送验证码，保留安全隔离和个
       await page.getByLabel(/^登录密码/).fill('Password123');
       await page.getByLabel(/^确认密码/).fill('Password123');
       await page.getByLabel(/^姓名/).fill('测试小明');
-      await page.getByRole('button', { name: '完成注册', exact: true }).click();
+      await page.getByRole('button', { name: '提交', exact: true }).click();
       await expect(page.getByRole('status', { name: '操作提示' })).toContainText(
         '个人资料尚未提交',
       );
@@ -543,7 +610,7 @@ test('DEV 的 Web 与 Electron 本地验证码引导新账号填写个人资料�
     await currentPage.getByLabel(/^昵称/).fill('潮汐测试员');
     await currentPage.getByLabel(/^身份证号/).fill('123456789012345');
     await currentPage.getByLabel(/^邮箱/).fill('sample@example.com');
-    await currentPage.getByRole('button', { name: '完成注册', exact: true }).click();
+    await currentPage.getByRole('button', { name: '提交', exact: true }).click();
     await expect(currentPage.getByRole('status', { name: '操作提示' })).toContainText(
       '注册功能暂未开放，个人资料尚未提交',
     );

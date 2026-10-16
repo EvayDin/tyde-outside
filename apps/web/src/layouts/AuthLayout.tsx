@@ -1,15 +1,13 @@
 import type { PropsWithChildren } from 'react';
 import { TideIcon } from '@/components/icons';
-import AuthIllustration from '@/modules/auth/components/AuthIllustration';
 
-/** 直接复用 tyde-web 的认证页视觉外壳，双端保持同一布局。 */
+/** 双端共用满页品牌背景与白色悬浮认证卡片。 */
 export function AuthLayout({
   children,
   registration = false,
 }: PropsWithChildren<{ registration?: boolean }>) {
-  const mode = registration ? 'register' : 'login';
   return (
-    <div className="auth-page box-border grid h-screen grid-cols-[51.4%_48.6%] overflow-hidden border-t-4 border-transparent bg-white text-left text-[#173443] [border-image:linear-gradient(90deg,#4eb1c3,#0097a9_55%,#003c44)_1] [&_*]:box-border max-[900px]:h-auto max-[900px]:min-h-screen max-[900px]:grid-cols-1 max-[900px]:overflow-visible">
+    <div className="auth-page flex min-h-svh flex-col bg-[#eaf5f7] px-[40px] py-[24px] text-left text-foreground [background-image:radial-gradient(ellipse_at_12%_28%,rgba(94,194,207,0.18),transparent_48%),radial-gradient(ellipse_at_90%_85%,rgba(144,210,219,0.22),transparent_50%)] [&_*]:box-border max-[580px]:px-[16px] max-[580px]:py-[20px]">
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-50 focus:rounded-md focus:bg-white focus:px-4 focus:py-2"
@@ -20,44 +18,48 @@ export function AuthLayout({
       >
         跳转到主要内容
       </a>
-      <aside className="relative h-[calc(100vh-4px)] overflow-hidden bg-[#eff8fb] [background-image:radial-gradient(circle_at_8%_24%,rgba(113,205,221,0.23),transparent_22%),radial-gradient(circle_at_85%_83%,rgba(117,199,210,0.14),transparent_18%)] px-[16px] pt-[35px] pb-[16px] after:absolute after:top-[2%] after:right-[5%] after:h-[210px] after:w-[210px] after:rounded-full after:bg-[rgba(255,255,255,0.38)] after:blur-[15px] after:[content:''] max-[900px]:h-[300px] max-[900px]:min-h-[300px] max-[900px]:p-[24px] max-[580px]:h-[220px] max-[580px]:min-h-[220px]">
-        <header className="relative z-[2] flex items-center gap-[12px]">
-          <span className="grid h-[42px] w-[42px] place-items-center rounded-[11px] bg-[#2fa9be] text-white shadow-[0_7px_14px_rgba(29,132,153,0.22)]">
-            <TideIcon className="h-[27px] w-[27px] fill-none stroke-current [stroke-linecap:round] [stroke-width:2]" />
-          </span>
-          <div>
-            <div className="text-[21px] leading-[1.1] font-[650] text-[#0c3542]">
-              Tyde{' '}
-              <span className="ml-[5px] inline-block translate-y-[-3px] rounded-[8px] bg-[#db9cab] px-[6px] py-[3px] text-[12px] text-white">
-                潮汐
-              </span>
-            </div>
-            <div className="mt-[6px] font-mono text-[12px] leading-[1.2] tracking-[1px] text-[#3ca2b8]">
-              MARITIME RESOURCE COORDINATION
-            </div>
+      <header className="mx-auto flex w-full max-w-[1120px] items-center gap-[12px]">
+        <span className="grid h-[42px] w-[42px] place-items-center rounded-[11px] bg-[#2fa9be] text-white shadow-[0_7px_14px_rgba(29,132,153,0.22)]">
+          <TideIcon className="h-[27px] w-[27px] fill-none stroke-current [stroke-linecap:round] [stroke-width:2]" />
+        </span>
+        <div>
+          <div className="text-[21px] leading-[1.1] font-[650] text-[#0c3542]">
+            Tyde{' '}
+            <span className="ml-[5px] inline-block translate-y-[-3px] rounded-[8px] bg-[#db9cab] px-[6px] py-[3px] text-[12px] text-white">
+              潮汐
+            </span>
           </div>
-        </header>
-
-        <div className="absolute top-[26%] left-1/2 z-[1] w-[470px] -translate-x-1/2 text-center max-[900px]:top-[82px] max-[900px]:origin-top max-[900px]:scale-[0.65] max-[580px]:top-[65px] max-[580px]:scale-[0.46]">
-          <AuthIllustration />
-          <h2 className="mt-[32px] mb-[10px] text-[18px] font-[750] tracking-[1px] text-[#153844] max-[900px]:hidden">
-            潮汐流转，智领航向
-          </h2>
-          <p className="text-[12px] leading-[1.8] text-[#7d91a5] max-[900px]:hidden">
-            连接领航员 · 策略官 · 执行专家，构建以潮汐为节奏的高效
-            <br />
-            协作闭环
-          </p>
+          <div className="mt-[6px] font-mono text-[10px] leading-[1.2] tracking-[1px] text-[#3ca2b8]">
+            MARITIME RESOURCE COORDINATION
+          </div>
         </div>
-      </aside>
+      </header>
 
-      <main
-        id="main-content"
-        tabIndex={-1}
-        className={`flex h-[calc(100vh-4px)] min-h-0 justify-center overflow-hidden bg-white px-[7%] pt-[60px] pb-[32px] max-[900px]:h-auto max-[900px]:min-h-0 max-[900px]:overflow-visible max-[900px]:px-[24px] max-[900px]:pt-[45px] max-[900px]:pb-[60px] max-[580px]:px-[18px] max-[580px]:pt-[35px] max-[580px]:pb-[50px] ${mode === 'login' ? 'items-center' : 'items-stretch'}`}
+      <div
+        className={`mx-auto grid w-full max-w-[1120px] flex-1 items-center gap-[80px] py-[12px] max-[1100px]:gap-[40px] max-[900px]:block max-[900px]:pt-[24px] ${registration ? 'grid-cols-[minmax(0,1fr)_minmax(0,600px)]' : 'grid-cols-[minmax(0,1fr)_minmax(0,460px)]'}`}
       >
-        {children}
-      </main>
+        <aside className="min-w-0 text-left max-[900px]:hidden">
+          <p className="text-[11px] tracking-[2.5px] text-primary">YOUR NEXT CHAPTER</p>
+          <p className="mt-[20px] text-[clamp(34px,4.3vw,52px)] leading-[1.45] font-[650] tracking-[-1px] text-foreground">
+            从潮汐，
+            <br />
+            开启新的可能。
+          </p>
+          <p className="mt-[24px] text-[16px] leading-[1.9] text-muted-foreground">
+            让每一次协作，都顺势而为
+            <br />
+            欢迎来到 tyde
+          </p>
+        </aside>
+
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className={`w-full min-w-0 rounded-[24px] border border-white/80 bg-card shadow-[0_24px_70px_-20px_rgba(28,87,101,0.25),0_4px_16px_rgba(28,87,101,0.04)] max-[900px]:mx-auto max-[900px]:max-w-[600px] max-[580px]:rounded-[20px] max-[580px]:py-[24px] ${registration ? 'px-[28px] py-[24px] max-[580px]:px-[16px]' : 'p-[36px] max-[580px]:px-[24px]'}`}
+        >
+          {children}
+        </main>
+      </div>
     </div>
   );
 }

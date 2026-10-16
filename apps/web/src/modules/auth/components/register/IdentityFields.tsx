@@ -6,7 +6,7 @@ import type { RegisterFormController } from '../../types';
 import { registerInputClassName } from '../../styles';
 import { FormSection } from '../RegisterFormParts';
 
-/** 渲染个人实名、昵称及身份证号字段。 */
+/** 渲染个人实名、昵称、身份证号及邮箱字段。 */
 export default function IdentityFields({
   controller,
   inputNameSuffix,
@@ -27,7 +27,7 @@ export default function IdentityFields({
   const nicknameField = form.register('nickname');
 
   return (
-    <FormSection number="2" title="身份信息">
+    <FormSection number="2" title="个人信息">
       <AuthFormField
         htmlFor={realNameId}
         label={
@@ -85,6 +85,29 @@ export default function IdentityFields({
           placeholder="15或18位身份证（选填）"
           aria-invalid={Boolean(errors.idCardNo)}
           {...form.register('idCardNo')}
+        />
+      </AuthFormField>
+      <AuthFormField
+        htmlFor="email"
+        label={
+          <span>
+            邮箱 <small>（选填）</small>
+          </span>
+        }
+        error={errors.email}
+      >
+        <Input
+          id="email"
+          size="authRegister"
+          className={registerInputClassName}
+          type="email"
+          autoComplete="off"
+          maxLength={128}
+          placeholder="用于备用通知"
+          aria-invalid={Boolean(errors.email)}
+          {...form.register('email', {
+            pattern: { value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/, message: '请输入有效邮箱' },
+          })}
         />
       </AuthFormField>
     </FormSection>

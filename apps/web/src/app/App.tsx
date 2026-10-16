@@ -21,26 +21,22 @@ function RootLayout() {
   const registration = pathname === '/register';
   return (
     <AuthLayout registration={registration}>
-      <div
-        className={`flex w-[min(568px,100%)] flex-col ${registration ? 'min-h-0' : 'flex-[0_1_auto]'} max-[900px]:min-h-0`}
-      >
+      <div className="flex min-w-0 flex-col">
         <header className={`flex-none ${registration ? 'mb-0' : 'mb-[28px]'}`}>
-          <h1 className="m-0 text-[30px] leading-[1.2] font-[760] tracking-[1px] text-[var(--color-primary)] max-[580px]:text-[25px]">
-            欢迎使用 <span className="font-bold">Tyde 潮汐协作平台</span>
-          </h1>
-          <p className="mt-[6px] text-[12px] text-[#8aa0ad]">让每一次协作，都顺势而为</p>
-          <h2 className="mt-[28px] text-[20px] font-semibold text-foreground">
+          <h1
+            className={`m-0 font-semibold text-foreground ${registration ? 'text-[20px]' : 'text-[24px]'}`}
+          >
             {registration ? '完善个人资料' : '登录 / 注册'}
-          </h2>
+          </h1>
           <p className="mt-[8px] text-[13px] leading-relaxed text-muted-foreground">
             {registration
-              ? '首次使用时补充个人信息，已有账号无需重复填写。'
+              ? '请完善个人信息，完成账号注册。'
               : '使用手机号登录，新账号通过验证码注册。'}
           </p>
           {registration && (
             <Link
               to="/auth"
-              className="mt-[12px] inline-flex min-h-11 items-center rounded-md text-[13px] text-primary hover:underline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary"
+              className="mt-[4px] inline-flex min-h-[44px] items-center rounded-md text-[12px] text-primary hover:underline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary"
             >
               返回登录 / 注册
             </Link>
