@@ -1,7 +1,9 @@
 import { createApp } from './application.js';
 import { readConfig } from './config/index.js';
+import { registerWeb } from './web.js';
 const config = readConfig();
 const app = await createApp(config);
+await registerWeb(app);
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
     void app.close().then(() => process.exit(0));

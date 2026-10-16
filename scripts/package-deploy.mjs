@@ -33,6 +33,7 @@ if (kind === 'web') {
     '.nvmrc',
     'apps/server/package.json',
     'apps/server/dist',
+    'apps/server/public',
     'apps/server/prisma',
     'apps/server/.env.example',
     'packages/shared/package.json',

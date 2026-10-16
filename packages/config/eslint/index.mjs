@@ -13,6 +13,7 @@ export default tseslint.config(
       '.pnpm-store/**',
       '.local/**',
       '**/generated/**',
+      'apps/server/public/**',
     ],
   },
   js.configs.recommended,

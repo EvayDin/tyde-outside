@@ -1,0 +1,23 @@
+# 合并部署：只替换域名和证书路径，所有页面与 API 均由同一个后端提供。
+server {
+    listen 80;
+    server_name test.example.com;
+    return 301 https://$host$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name test.example.com;
+    ssl_certificate /etc/nginx/certs/test.example.com.pem;
+    ssl_certificate_key /etc/nginx/certs/test.example.com.key;
+    client_max_body_size 16k;
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Origin $http_origin;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 20s;
+    }
+}
