@@ -135,7 +135,7 @@ export const smsRegisterSchema = Type.Object(
       Type.String({
         maxLength: 64,
         description:
-          '昵称，选填；省略、空串或仅空白时使用 realName（真实姓名），保存前去除首尾空格。',
+          '昵称，选填；省略、空串或仅空白时使用 realName（真实姓名），保存前去除首尾空格；含默认姓名在内的昵称必须唯一，冲突返回409。',
         examples: ['小明'],
       }),
     ),
@@ -290,6 +290,82 @@ export const smsRegisterSchema = Type.Object(
     ],
   },
 );
+// 与旧 UserProfileUpdateRequest 一致：null 与省略均不修改，空串清空可清空字段。
+const optionalText = (maxLength: number, description: string) =>
+  Type.Optional(Type.Union([Type.String({ maxLength }), Type.Null()], { description }));
+export const nicknameCheckSchema = Type.Object(
+  {
+    nickname: Type.String({
+      minLength: 1,
+      maxLength: 64,
+      description:
+        '待检查昵称，必填；去除首尾空格后不能为空，最多64字符。按新库精确匹配，不预留昵称。',
+      examples: ['小明'],
+    }),
+  },
+  {
+    ...options,
+    description: '匿名昵称去重查询。无请求体；建议值仅为查询时可用，注册时仍可能冲突。',
+    examples: [{ nickname: '小明' }],
+  },
+);
+export const userProfileUpdateSchema = Type.Object(
+  {
+    avatarUrl: optionalText(
+      512,
+      '头像地址或文件 objectKey，最多512字符；省略/null保持，空白清空，保存前trim。沿用旧字符串字段，不进行远程抓取或文件认领，也不授予文件读取权限。',
+    ),
+    bio: optionalText(1000, '个人简介，最多1000字符；省略/null保持，空白清空，保存前trim。'),
+    idCardNo: optionalText(
+      32,
+      '身份证号，15位数字或18位（末位可为X）；trim并转大写。省略/null保持，空白清空未认证号码。已认证仅允许原号码，变更或清空403；响应脱敏。',
+    ),
+    newPassword: Type.Optional(
+      Type.Union([password, Type.Null()], {
+        description:
+          '新密码，8～64位且含字母与数字，字符范围见pattern；省略/null表示不改。填写时须同时提交相同confirmNewPassword，成功撤销全部客户端会话及刷新令牌。',
+      }),
+    ),
+    confirmNewPassword: optionalText(
+      64,
+      '确认新密码；修改密码时条件必填且须与newPassword完全一致；未修改时省略/null。',
+    ),
+    roles: Type.Optional(
+      Type.Union(
+        [
+          Type.Array(role, { minItems: 1, maxItems: 3, description: '旧兼容角色列表，1～3项。' }),
+          Type.Null(),
+        ],
+        {
+          description:
+            '旧兼容角色列表；省略/null保持。已知值NAVIGATOR=领航员、PM=策略官、EXPERT=执行专家、OPS=运营均忽略，实际固定EXPERT，不授予其他角色也不因该字段撤销会话。',
+        },
+      ),
+    ),
+  },
+  {
+    ...options,
+    description:
+      '仅更新当前会话本人；未传/null保持，空串可清空头像/简介/未认证证件。无昵称、姓名、邮箱或目标用户ID字段。空对象可用；密码更新撤销全部会话。',
+    examples: [
+      {
+        avatarUrl: 'https://example.com/avatar.png',
+        bio: '数据标注专家',
+        idCardNo: '11010119900101001X',
+        roles: ['EXPERT'],
+      },
+      { newPassword: 'Changed123!', confirmNewPassword: 'Changed123!' },
+      { avatarUrl: '', bio: '', idCardNo: '' },
+    ],
+  },
+);
+export type UserProfileUpdateInput = Static<typeof userProfileUpdateSchema>;
+export interface NicknameCheckResult {
+  nickname: string;
+  available: boolean;
+  suggestion: string;
+  message: string;
+}
 export type SmsSendInput = Static<typeof smsSendSchema>;
 export type SmsLoginInput = Static<typeof smsLoginSchema>;
 export type LoginInput = Static<typeof loginSchema>;

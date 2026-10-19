@@ -14,6 +14,8 @@
 | POST `/auth/password/reset`  | 验证码重置密码并全端下线          |
 | POST `/auth/logout`          | 撤销当前会话                      |
 | GET `/users/me`              | 当前用户资料                      |
+| GET `/users/nickname/check`  | 匿名昵称可用性与推荐昵称          |
+| POST `/users/me/update`      | 本人资料更新、改密并全端下线      |
 | GET `/health/live`           | 存活状态                          |
 | GET `/health/ready`          | 数据库就绪状态                    |
 
@@ -85,3 +87,27 @@ OSS物理主目录为 `lsh-oss-agi-tool-platform/tyde/`。API与台账的 `objec
 组织注册的 `organization.businessLicense` 接受 BUSINESS_LICENSE 的 `objectKey/uploadToken`，默认24小时内一次认领（可配置），原文凭证不落库。无记录/类型错误/存储对象缺失或大小不符400，错误凭证403，过期/重复409，存储关闭/不可达503。认领、验证码消费、组织与用户创建同事务，失败回滚；`organization.businessLicenseUrl` 保留旧字段名，返回objectKey或null，不是公开URL。
 
 Swagger 已提供 multipart 输入、全部请求/响应/查询字段中文说明和完整schema示例，文件代理200按真实媒体类型记录二进制响应。测试使用真实专用PostgreSQL及内存对象存储，2026-10-19复跑34项集成通过；2026-10-19 已用 ali-oss 接入用户指定 bucket，服务端内网读写与外网签名端点分离，新对象显式私有且禁止覆盖；接口方法、字段和权限不变。示例默认 FILE_STORAGE_PROVIDER=disabled，本地后端已配置启用；用户本机已通过真实OSS独立验证（上传/HEAD/流读取/两种有效期签名GET/删除与幂等），五个文件入口已通过运行中后端+开发库+真实OSS的HTTP联调（含上传/批量/代理/签名下载/删除及权限拒绝），真实营业执照认领及后续业务附件关系仍待验收，步骤见[部署说明](DEPLOY_TEST.md#文件存储与上传01)。
+
+## 用户资料与昵称（02）
+
+- `GET /users/nickname/check?nickname=小明` 可匿名，无请求体。trim后非空，最多64字符；返回 `nickname/available/suggestion/message`。占用时从1递增推荐，最长64字符（必要时截短原昵称）；最多尝试1000次，耗尽409。查询不预留昵称；注册默认真实姓名生成的昵称同样受唯一约束，重复409且注册事务回滚。新PostgreSQL按大小写敏感精确匹配，旧MySQL排序规则差异待兼容验收。
+- `POST /users/me/update` 需本人会话，body所有字段可选：`avatarUrl`（512字符）、`bio`（1000字符）、`idCardNo`（32字符）、`newPassword`、`confirmNewPassword`（64字符）、`roles`（1～3个已知角色）。省略/null保持；头像、简介、未认证身份证传空白可清空，非空值trim，身份证转大写。未知字段400，不能提交目标用户ID、昵称、姓名、邮箱或实名状态。
+- 身份证沿用15位或18位格式验证，非完整证件真实性/校验码核验；已认证号码仅可提交同一号码，改号/清空403，重复号码409。`idVerified`从数据库读取，注册默认0，没有自助认证入口。姓名/邮箱继续只在注册入口验证。
+- 密码必须成对一致且满足既有强度规则；资料更新与全部Web/桌面会话及刷新令牌撤销同事务，Web成功清除Cookie。服务端复用登录/重置的手机号锁并在锁内复查会话，拒绝并发中已撤销的凭据。角色兼容字段沿用固定EXPERT规则：已知角色选择忽略，不授予其他角色，不单独触发下线。
+- 成功返回完整UserDTO；头像/简介/实名状态读取实际保存值。沿用旧更新服务回读语义，更新响应 `selectedRole=null/hasExpertManagementRole=false`；后续 `GET /users/me` 按当前会话返回EXPERT。主管/组织/信用仍有后续任务回补，改密后presence置离线待14。
+- 头像保持旧字符串契约，不新增uploadToken字段，不抓取远程URL、不认领文件；存储objectKey不获得读取或保留权限，文件生命周期仍按01台账执行，未认领上传文件会过期。完整头像文件生命周期未作为本批交付。敏感文件不能因头像字段而公开。
+
+资料更新请求示例（可在Swagger验证）：
+
+```json
+{ "avatarUrl": "https://example.com/avatar.png", "bio": "数据标注专家", "roles": ["EXPERT"] }
+```
+
+新增 `20261019010000_user_profile` 迁移，增加头像、简介、实名状态、修改人及昵称唯一索引。部署前先人工检查历史昵称重复；迁移遇到重复会原子回滚，不自动改名。用户已在专用测试库应用且41项集成全部通过；本地运行后端已通过51项HTTP检查，证明新资料字段与昵称冲突保护生效。本轮未执行迁移或查询迁移历史；开发库迁移记录核对、部署及兼容验收仍待完成；最新验收以[02任务记录](../../backend-migration/02-user-profile/todoTask.md)为准。本机专用测试库迁移/复验命令（本轮已由用户成功执行）：
+
+```sh
+node scripts/migrate-test-database.mjs
+pnpm test:integration
+```
+
+脚本仅接受已有 `.env.test` 中 `APP_ENV=test/TEST_DATABASE_RESET=true`、本机且以 `_test` 结尾的库，不创建库、不清表；集成测试会清空该专用库。切勿用开发库替换测试配置。昵称重复可先只读检查 `SELECT "displayName", COUNT(*) FROM "User" GROUP BY "displayName" HAVING COUNT(*) > 1;`，经用户决定后处理存量，不自动改名或删号。

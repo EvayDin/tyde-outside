@@ -288,6 +288,7 @@ test('organization creation and code consumption roll back when user uniqueness 
         ...registration,
         phone: otherPhone,
         email: 'other@example.com',
+        nickname: '其他用户',
       })
     ).statusCode,
   ).toBe(200);
@@ -565,7 +566,7 @@ test('HTTP owned sensitive file denies other user and deletion is once-only', as
     (
       await post(
         '/auth/register',
-        { ...registration, phone: '13912345678', email: 'other@example.com' },
+        { ...registration, phone: '13912345678', email: 'other@example.com', nickname: '其他用户' },
         desktop,
       )
     ).statusCode,
@@ -847,4 +848,239 @@ test('concurrent registration with one grant creates exactly one account', async
   const results = await Promise.all([post('/auth/register', form), post('/auth/register', form)]);
   expect(results.map((result) => result.statusCode).sort()).toEqual([200, 400]);
   expect(await db.user.count()).toBe(1);
+});
+
+test('anonymous nickname check trims, rejects blanks and recommends the first available suffix', async () => {
+  await register();
+  await db.user.create({
+    data: {
+      phoneE164: '+8613912345678',
+      phoneRegion: 'CN',
+      username: 'other',
+      displayName: '小明1',
+    },
+  });
+  const check = async (value: string) =>
+    app.inject(`/api/v1/users/nickname/check?nickname=${encodeURIComponent(value)}`);
+  expect((await check(' 小明 ')).json()).toEqual({
+    code: 200,
+    message: '操作成功',
+    data: {
+      nickname: '小明',
+      available: false,
+      suggestion: '小明2',
+      message: '昵称已存在，可使用推荐昵称「小明2」',
+    },
+  });
+  expect((await check(' 新名字 ')).json().data).toMatchObject({
+    nickname: '新名字',
+    available: true,
+    suggestion: '新名字',
+  });
+  for (const value of ['', '   ', 'a'.repeat(65)])
+    expect((await check(value)).statusCode).toBe(400);
+  expect((await app.inject('/api/v1/users/nickname/check')).statusCode).toBe(400);
+});
+
+test('concurrent registrations with one nickname have one winner and roll back the loser credential', async () => {
+  await send('register');
+  await send('register', '13912345678');
+  const results = await Promise.all([
+    post('/auth/register', { ...registration, nickname: '同名' }),
+    post('/auth/register', {
+      ...registration,
+      nickname: '同名',
+      phone: '13912345678',
+      email: 'other@example.com',
+    }),
+  ]);
+  expect(results.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+  expect(await db.user.count()).toBe(1);
+  expect(await db.verificationChallenge.count({ where: { consumedAt: null } })).toBe(1);
+});
+
+test('profile persists only own fields, trims values, ignores known roles and supports null/clearing', async () => {
+  await register();
+  const other = await db.user.create({
+    data: {
+      phoneE164: '+8613912345678',
+      phoneRegion: 'CN',
+      username: 'other',
+      displayName: '另一人',
+      bio: '其他用户原简介',
+    },
+  });
+  const tokens = (await login(desktop)).json().data;
+  const headers = bearer(tokens.accessToken);
+  const updated = await post(
+    '/users/me/update',
+    {
+      avatarUrl: ' common/avatar.png ',
+      bio: ' 专家简介 ',
+      idCardNo: '11010119900101001x',
+      roles: ['OPS', 'PM'],
+    },
+    headers,
+  );
+  expect(updated.statusCode).toBe(200);
+  expect(updated.json().data).toMatchObject({
+    avatarUrl: 'common/avatar.png',
+    bio: '专家简介',
+    idCardNo: '110***********001X',
+    role: 'EXPERT',
+    roles: ['EXPERT'],
+    selectedRole: null,
+    hasExpertManagementRole: false,
+  });
+  expect((await db.user.findUniqueOrThrow({ where: { id: other.id } })).bio).toBe('其他用户原简介');
+  const saved = await db.user.findUniqueOrThrow({ where: { phoneE164: `+86${phone}` } });
+  expect(saved.updatedBy).toBe(saved.uid);
+  expect(saved.role).toBe('EXPERT');
+  expect(saved.idCardNo).toBe('11010119900101001X');
+  expect(
+    (
+      await post(
+        '/users/me/update',
+        {
+          avatarUrl: null,
+          bio: null,
+          idCardNo: null,
+          newPassword: null,
+          confirmNewPassword: null,
+          roles: null,
+        },
+        headers,
+      )
+    ).statusCode,
+  ).toBe(200);
+  const me = await app.inject({ url: '/api/v1/users/me', headers });
+  expect(me.json().data).toMatchObject({
+    avatarUrl: 'common/avatar.png',
+    bio: '专家简介',
+    selectedRole: 'EXPERT',
+  });
+  const cleared = await post(
+    '/users/me/update',
+    { avatarUrl: ' ', bio: '', idCardNo: '' },
+    headers,
+  );
+  expect(cleared.json().data).toMatchObject({ avatarUrl: null, bio: null, idCardNo: null });
+});
+
+test('profile rejects anonymous, other-user targets, unsupported fields, invalid values and browser origin spoofing', async () => {
+  await register();
+  const headers = bearer((await login(desktop)).json().data.accessToken);
+  expect((await post('/users/me/update', {}, {})).json()).toMatchObject({ code: 401, data: null });
+  for (const payload of [
+    { userId: 'other' },
+    { nickname: '改名' },
+    { realName: '改名' },
+    { email: 'other@example.com' },
+    { idVerified: 1 },
+    { idCardNo: 'bad' },
+    { bio: 'a'.repeat(1001) },
+    { avatarUrl: 'a'.repeat(513) },
+    { roles: [] },
+    { roles: ['INVALID'] },
+    { newPassword: 'onlyletters', confirmNewPassword: 'onlyletters' },
+    { newPassword: 'Changed123!' },
+    { confirmNewPassword: 'Changed123!' },
+    { newPassword: 'Changed123!', confirmNewPassword: 'Wrong123!' },
+  ]) {
+    const response = await post('/users/me/update', payload, headers);
+    expect(response.statusCode, JSON.stringify(payload)).toBe(400);
+    expect(response.json()).toMatchObject({ code: 400, data: null });
+  }
+  const cookie = (await login(web)).cookies[0]!;
+  expect(
+    (
+      await post(
+        '/users/me/update',
+        { bio: '非法' },
+        { origin: 'https://evil.test', cookie: `${cookie.name}=${cookie.value}` },
+      )
+    ).statusCode,
+  ).toBe(403);
+  expect((await db.user.findFirstOrThrow()).bio).toBeNull();
+});
+
+test('verified identity is immutable and duplicate identity rolls back all profile changes', async () => {
+  await register({ idCardNo: '11010119900101001X' });
+  const headers = bearer((await login(desktop)).json().data.accessToken);
+  await db.user.updateMany({ data: { idVerified: 1 } });
+  expect(
+    (await post('/users/me/update', { idCardNo: '11010119900101001x' }, headers)).statusCode,
+  ).toBe(200);
+  for (const idCardNo of ['', '11010119900101002X'])
+    expect((await post('/users/me/update', { idCardNo }, headers)).statusCode).toBe(403);
+  expect((await app.inject({ url: '/api/v1/users/me', headers })).json().data.idVerified).toBe(1);
+  await db.user.updateMany({ data: { idVerified: 0 } });
+  await db.user.create({
+    data: {
+      phoneE164: '+8613912345678',
+      phoneRegion: 'CN',
+      username: 'other',
+      displayName: '其他人',
+      idCardNo: '11010119900101002X',
+    },
+  });
+  const conflict = await post(
+    '/users/me/update',
+    {
+      idCardNo: '11010119900101002x',
+      bio: '应回滚',
+      newPassword: 'Changed123!',
+      confirmNewPassword: 'Changed123!',
+    },
+    headers,
+  );
+  expect(conflict.statusCode).toBe(409);
+  expect((await db.user.findUniqueOrThrow({ where: { phoneE164: `+86${phone}` } })).bio).toBeNull();
+  expect((await app.inject({ url: '/api/v1/users/me', headers })).statusCode).toBe(200);
+  expect((await login(desktop)).statusCode).toBe(200);
+});
+
+test('profile password change clears web cookie and revokes access and refresh tokens on all clients', async () => {
+  await register();
+  const browser = await login(web);
+  const cookie = browser.cookies[0]!;
+  const tokens = (await login(desktop)).json().data;
+  const changed = await post(
+    '/users/me/update',
+    { newPassword: 'Changed123!', confirmNewPassword: 'Changed123!' },
+    { ...web, cookie: `${cookie.name}=${cookie.value}` },
+  );
+  expect(changed.statusCode).toBe(200);
+  expect(changed.cookies[0]?.value).toBe('');
+  expect(await db.session.count({ where: { revokedAt: null } })).toBe(0);
+  for (const accessToken of [browser.json().data.accessToken, tokens.accessToken])
+    expect(
+      (await app.inject({ url: '/api/v1/users/me', headers: bearer(accessToken) })).statusCode,
+    ).toBe(401);
+  expect(
+    (await post('/auth/refresh', { refreshToken: browser.json().data.refreshToken }, web))
+      .statusCode,
+  ).toBe(401);
+  expect(
+    (await post('/auth/refresh', { refreshToken: tokens.refreshToken }, desktop)).statusCode,
+  ).toBe(401);
+  expect(
+    (await post('/users/me/update', { bio: 'stale' }, bearer(tokens.accessToken))).statusCode,
+  ).toBe(401);
+  expect(
+    (await post('/auth/login', { account: phone, password: 'Password123' }, desktop)).statusCode,
+  ).toBe(401);
+  expect((await login(desktop, { password: 'Changed123!' })).statusCode).toBe(200);
+});
+
+test('concurrent profile password changes cannot both succeed with a revoked session', async () => {
+  await register();
+  const headers = bearer((await login(desktop)).json().data.accessToken);
+  const results = await Promise.all(
+    ['Changed123!', 'Changed456!'].map((newPassword) =>
+      post('/users/me/update', { newPassword, confirmNewPassword: newPassword }, headers),
+    ),
+  );
+  expect(results.map((r) => r.statusCode).sort()).toEqual([200, 401]);
+  expect(await db.session.count({ where: { revokedAt: null } })).toBe(0);
 });

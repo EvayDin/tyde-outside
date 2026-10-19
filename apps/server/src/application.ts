@@ -27,6 +27,8 @@ export function fastifyOptions(config: Config): FastifyServerOptions {
         '*.password',
         '*.confirmPassword',
         '*.newPassword',
+        '*.confirmNewPassword',
+        '*.idCardNo',
         '*.accessToken',
         '*.refreshToken',
         '*.uploadToken',
@@ -55,7 +57,7 @@ export async function createApp(
     const legacy =
       req.url.startsWith(`${API_PREFIX}/auth/`) ||
       req.url.startsWith(`${API_PREFIX}/files`) ||
-      req.url.split('?')[0] === `${API_PREFIX}/users/me`;
+      req.url.startsWith(`${API_PREFIX}/users/`);
     const failure = (status: number, code: string, message: string) =>
       legacy
         ? { code: status === 429 ? 4292 : status, message, data: null }

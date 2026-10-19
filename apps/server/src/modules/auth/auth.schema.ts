@@ -98,11 +98,16 @@ export const userResponse = {
     idCardNo: text('脱敏身份证号；未填写时为 null，仅保留前 3 位和后 4 位。', null, true),
     idVerified: {
       type: 'integer',
-      description: '实名认证状态：0=未认证，1=已认证。当前实名能力尚未迁移，固定返回 0。',
+      description:
+        '实名认证状态：0=未认证，1=已认证。来自数据库，注册默认0；实名核验流程尚未迁移，本接口不能更改该状态。',
       examples: [0],
     },
-    avatarUrl: text('头像地址；当前头像资料能力尚未迁移，固定为 null。', null, true),
-    bio: text('个人简介；当前资料能力尚未迁移，固定为 null。', null, true),
+    avatarUrl: text(
+      '头像地址或objectKey，未填写/清空时为null；只存字符串，不代表拥有文件读取权限。',
+      null,
+      true,
+    ),
+    bio: text('个人简介，未填写或清空时为null。', null, true),
     role: { ...text('账号主角色，固定为 EXPERT（执行专家）。', 'EXPERT'), enum: ['EXPERT'] },
     roles: {
       type: 'array',
@@ -112,7 +117,7 @@ export const userResponse = {
     },
     selectedRole: {
       ...text(
-        '当前会话角色：查询 /users/me 时为 EXPERT；注册响应尚无会话，因此为 null。',
+        '当前会话角色：查询 /users/me 时为 EXPERT；注册及资料更新响应为 null（沿用旧更新服务返回资料的语义）。',
         null,
         true,
       ),
@@ -121,7 +126,7 @@ export const userResponse = {
     hasExpertManagementRole: {
       type: 'boolean',
       description:
-        '当前会话是否具备执行专家管理职责；当前简化为查询本人资料且组织身份为 OWNER/ADMIN，完整项目负责人规则待迁移。注册响应为 false。',
+        '当前会话是否具备执行专家管理职责；当前简化为查询本人资料且组织身份为 OWNER/ADMIN，完整项目负责人规则待迁移。注册及资料更新响应为 false；不作为业务权限凭据。',
       examples: [false],
     },
     status: text(
@@ -143,6 +148,32 @@ export const userResponse = {
     createdAt: text('账号创建时间，ISO 8601 UTC 时间字符串。', userExample.createdAt),
     updatedAt: text('账号最近更新时间，ISO 8601 UTC 时间字符串。', userExample.updatedAt),
   },
+};
+export const nicknameCheckResponse = {
+  type: 'object',
+  description: '昵称校验结果，建议仅保证查询时可用，不预留昵称。',
+  required: ['nickname', 'available', 'suggestion', 'message'],
+  properties: {
+    nickname: text('去除首尾空格后的原昵称。', '小明'),
+    available: {
+      type: 'boolean',
+      description: '是否可用：true=未占用，false=已占用。',
+      examples: [false],
+    },
+    suggestion: text(
+      '可用时等于原昵称；占用时推荐从1递增的数字后缀，最长64字符，必要时截短原昵称。最多尝试1000个，无可用值返回409。',
+      '小明1',
+    ),
+    message: text('中文校验提示。', '昵称已存在，可使用推荐昵称「小明1」'),
+  },
+  examples: [
+    {
+      nickname: '小明',
+      available: false,
+      suggestion: '小明1',
+      message: '昵称已存在，可使用推荐昵称「小明1」',
+    },
+  ],
 };
 export const loginResponse = {
   type: 'object',
@@ -233,6 +264,10 @@ export function resultSchema(data: DocumentedSchema) {
   };
 }
 const operationDescriptions: Record<string, string> = {
+  checkNickname:
+    '可匿名调用，无请求体，必填查询参数nickname；trim后检查唯一性，按数字后缀给出建议。不预留昵称，注册冲突仍返回409。新库按大小写敏感精确匹配，旧MySQL排序规则兼容性待验收。',
+  updateCurrentUser:
+    '仅更新当前有效会话本人，无目标用户参数；未传/null保持，头像/简介/未认证身份证空白可清空。姓名、邮箱及昵称不在旧更新字段中。已认证证件更改403、重复证件409。密码必须成对一致，更新与全部会话撤销同事务；成功清除Web Cookie并须重新登录。roles沿用固定EXPERT兼容策略，忽略已知角色选择。响应selectedRole=null、hasExpertManagementRole=false，与旧更新服务返回资料语义一致。未接入在线状态/实时通知，多组织及完整管理能力待后续回补。',
   sendCode:
     '按 scene 发送验证码。不同场景独立验证，手机号跨场景共用 60 秒发送冷却；验证码 5 分钟有效，错误尝试最多 5 次。当前开发/测试仅 mock，不实际发短信，验证码为字符串 095270。',
   register:
@@ -255,7 +290,7 @@ const errorDescriptions: Record<number, string> = {
   401: '账号密码错误、手机号未注册，或会话/刷新令牌无效、过期、已撤销。',
   403: '账号已禁用、请求来源或客户端凭据组合不被允许。',
   404: '需要操作的账号不存在。',
-  409: '手机号、邮箱、身份证或组织信息与已有数据冲突。',
+  409: '手机号、昵称、邮箱、身份证或组织信息与已有数据冲突，或昵称推荐耗尽。',
   413: '请求体超过服务端大小限制。',
   429: '操作频率或验证码错误次数超限；业务码 4292，Retry-After 响应头表示建议等待秒数。',
   500: '内部处理失败。',

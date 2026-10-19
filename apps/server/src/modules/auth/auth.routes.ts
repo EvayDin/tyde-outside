@@ -2,6 +2,9 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import {
   API_PREFIX,
   smsSendSchema,
+  nicknameCheckSchema,
+  userProfileUpdateSchema,
+  type UserProfileUpdateInput,
   smsLoginSchema,
   smsRegisterSchema,
   loginSchema,
@@ -22,6 +25,7 @@ import {
   authSchema,
   resultSchema,
   userResponse,
+  nicknameCheckResponse,
   loginResponse,
   smsLoginResponse,
 } from './auth.schema.js';
@@ -45,7 +49,7 @@ export async function authRoutes(app: FastifyInstance, service: AuthService, con
   app.addHook('onRequest', async (req, reply) => {
     if (
       !req.url.startsWith(`${API_PREFIX}/auth/`) &&
-      req.url.split('?')[0] !== `${API_PREFIX}/users/me`
+      ![`${API_PREFIX}/users/me`, `${API_PREFIX}/users/me/update`].includes(req.url.split('?')[0]!)
     )
       return;
     reply.header('Cache-Control', 'no-store');
@@ -166,6 +170,41 @@ export async function authRoutes(app: FastifyInstance, service: AuthService, con
     `${API_PREFIX}/users/me`,
     { schema: authSchema('getCurrentUser', '获取当前用户', resultSchema(userResponse), true) },
     async (req) => success(await service.me(token(req), client(req))),
+  );
+  app.get<{ Querystring: { nickname: string } }>(
+    `${API_PREFIX}/users/nickname/check`,
+    {
+      schema: {
+        ...authSchema('checkNickname', '昵称去重校验', resultSchema(nicknameCheckResponse)),
+        tags: ['User'],
+        querystring: nicknameCheckSchema,
+      },
+    },
+    async (req, reply) => {
+      reply.header('Cache-Control', 'no-store');
+      return success(await service.checkNickname(req.query.nickname));
+    },
+  );
+  app.post<{ Body: UserProfileUpdateInput }>(
+    `${API_PREFIX}/users/me/update`,
+    {
+      schema: {
+        ...authSchema(
+          'updateCurrentUser',
+          '编辑当前登录用户信息',
+          resultSchema(userResponse),
+          true,
+        ),
+        tags: ['User'],
+        body: userProfileUpdateSchema,
+      },
+    },
+    async (req, reply) => {
+      const user = await service.updateCurrentUser(token(req), client(req), req.body);
+      if (req.body.newPassword != null && client(req) === 'web')
+        reply.clearCookie(cookieName, cookieOptions);
+      return success(user);
+    },
   );
   app.post(
     `${API_PREFIX}/auth/logout`,

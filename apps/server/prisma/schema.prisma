@@ -12,7 +12,11 @@ model User {
   phoneE164      String        @unique @db.VarChar(16)
   phoneRegion    String        @db.VarChar(2)
   username       String        @unique @db.VarChar(32)
-  displayName    String        @db.VarChar(320)
+  displayName    String        @unique @db.VarChar(320)
+  avatarUrl      String?       @db.VarChar(512)
+  bio            String?       @db.VarChar(1000)
+  idVerified     Int           @default(0) @db.SmallInt
+  updatedBy      String?       @db.VarChar(36)
   createdAt      DateTime      @default(now()) @db.Timestamptz(3)
   updatedAt      DateTime      @updatedAt @db.Timestamptz(3)
   sessions       Session[]
