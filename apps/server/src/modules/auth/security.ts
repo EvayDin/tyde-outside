@@ -7,9 +7,15 @@ export function digest(value: string): string {
 export function newToken(): string {
   return randomBytes(32).toString('base64url');
 }
-export function codeDigest(secret: string, id: string, phone: string, code: string): string {
+export function codeDigest(
+  secret: string,
+  id: string,
+  phone: string,
+  code: string,
+  purpose = 'login',
+): string {
   return createHmac('sha256', secret)
-    .update(JSON.stringify([id, phone, 'login', code]))
+    .update(JSON.stringify([id, phone, purpose, code]))
     .digest('hex');
 }
 export function matchesDigest(left: string, right: string): boolean {

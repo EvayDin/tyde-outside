@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "predev": "npm --prefix ../../packages/shared run build && npm --prefix ../../packages/platform run build",
-    "dev": "vite --host 127.0.0.1 --port 3001 --strictPort",
+    "dev": "vite --port 3001 --strictPort",
     "build": "pnpm --filter @tyde/shared build && pnpm --filter @tyde/platform build && tsc --noEmit && vite build",
-    "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
+    "preview": "vite preview --port 4173 --strictPort",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -32,6 +32,7 @@
     "@tailwindcss/vite": "4.2.2",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-basic-ssl": "2.3.0",
     "@vitejs/plugin-react": "5.0.4",
     "tailwindcss": "4.2.2",
     "vite": "7.3.6",

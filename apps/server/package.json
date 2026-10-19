@@ -5,6 +5,7 @@
   "type": "module",
   "files": [
     "dist",
+    "public",
     "prisma"
   ],
   "scripts": {
@@ -18,20 +19,26 @@
     "db:deploy": "prisma migrate deploy",
     "db:cleanup": "tsx --env-file=.env src/cleanup.ts",
     "test": "pnpm --filter @tyde/shared build && vitest run --exclude '**/*.integration.test.ts'",
-    "test:integration": "pnpm --filter @tyde/shared build && prisma generate && vitest run tests/auth.integration.test.ts"
+    "test:integration": "pnpm --filter @tyde/shared build && prisma generate && vitest run tests/auth.integration.test.ts",
+    "storage:verify": "tsx --env-file=.env src/verify-oss.ts"
   },
   "dependencies": {
     "@fastify/cookie": "11.0.2",
+    "@fastify/multipart": "9.3.0",
+    "@fastify/static": "9.3.0",
     "@fastify/swagger": "9.9.2",
     "@fastify/swagger-ui": "5.2.6",
     "@prisma/client": "6.19.3",
     "@tyde/shared": "workspace:*",
+    "ali-oss": "6.23.0",
     "fastify": "5.6.2",
     "libphonenumber-js": "1.12.24",
     "prisma": "6.19.3"
   },
   "devDependencies": {
+    "@types/ali-oss": "6.23.3",
     "tsx": "4.23.15",
+    "undici-types": "7.18.2",
     "vitest": "3.2.7"
   }
 }

@@ -1,13 +1,14 @@
 import { randomInt, randomUUID } from 'node:crypto';
-import { Prisma, PrismaClient, type User as DbUser } from '@prisma/client';
-import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
+import { Prisma, PrismaClient, type User, type Organization } from '@prisma/client';
 import type {
-  Authenticated,
-  PhoneInput,
-  RegisterInput,
-  User,
-  VerifyInput,
-  VerifyResult,
+  AuthUser,
+  LoginInput,
+  LoginResponse,
+  SmsSendInput,
+  SmsLoginInput,
+  SmsLoginResponse,
+  SmsRegisterInput,
+  PasswordResetInput,
 } from '@tyde/shared';
 import type { Config } from '../../config/index.js';
 import { AuthError } from './auth.error.js';
@@ -17,46 +18,88 @@ import {
   matchesDigest,
   MOCK_CODE,
   newToken,
-  normalizeProfile,
   SESSION_DAYS,
   type ClientType,
 } from './security.js';
+import { hashPassword, verifyPassword } from './password.js';
 import { MockSmsProvider, type SmsProvider } from './sms.js';
-
+import { FileRegistryService } from '../files/file-registry.service.js';
+import { createObjectStorage } from '../files/object-storage.js';
 type Tx = Prisma.TransactionClient;
-export type ServerAuthResult = VerifyResult & { sessionToken?: string };
-function publicUser(user: DbUser): User {
+type Profile = User & { organization?: Organization | null };
+// 服务端业务身份；角色只表示登录身份，业务权限和数据范围仍由各模块检查。
+export interface AuthPrincipal {
+  userId: string;
+  uid: string;
+  sessionId: string;
+  role: 'EXPERT';
+  clientType: ClientType;
+}
+const invalid = (message: string) => new AuthError(400, 'VALIDATION_ERROR', message);
+const unauthorized = () => new AuthError(401, 'UNAUTHENTICATED', '登录已过期，请重新登录');
+function phoneNumber(phone: string): string {
+  return `+86${phone}`;
+}
+async function lock(tx: Tx, key: string) {
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))::text`;
+}
+function publicUser(user: Profile, current = false): AuthUser {
+  const org = user.organization;
   return {
     id: user.id,
-    phoneE164: user.phoneE164,
-    phoneRegion: user.phoneRegion,
-    username: user.username,
-    displayName: user.displayName,
+    uid: user.uid,
+    accountType: user.accountType as AuthUser['accountType'],
+    phone: user.phoneE164.slice(3).replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2'),
+    nickname: user.displayName,
+    realName: user.realName ?? user.displayName,
+    idCardNo: user.idCardNo
+      ? `${user.idCardNo.slice(0, 3)}${'*'.repeat(user.idCardNo.length - 7)}${user.idCardNo.slice(-4)}`
+      : null,
+    idVerified: 0,
+    avatarUrl: null,
+    bio: null,
+    role: 'EXPERT',
+    roles: ['EXPERT'],
+    selectedRole: current ? 'EXPERT' : null,
+    hasExpertManagementRole: Boolean(
+      current && org && ['OWNER', 'ADMIN'].includes(user.orgPosition ?? ''),
+    ),
+    status: user.status,
+    creditScore: 100,
+    lastLoginAt: user.lastLoginAt?.toISOString() ?? null,
+    lastLoginIp: user.lastLoginIp,
     createdAt: user.createdAt.toISOString(),
+    updatedAt: user.updatedAt.toISOString(),
+    organization: org
+      ? {
+          id: org.id,
+          name: org.name,
+          unifiedCreditCode: org.unifiedCreditCode,
+          description: org.description,
+          businessLicenseUrl: org.businessLicenseKey ?? null,
+          logoUrl: org.logoUrl,
+          expertiseTags: org.expertiseTags,
+          verifyStatus: 'PENDING',
+          status: 'ACTIVE',
+          position: user.orgPosition,
+          joinStatus: 'ACTIVE',
+          createdAt: org.createdAt.toISOString(),
+        }
+      : null,
   };
-}
-function canonical(input: PhoneInput): string {
-  const phone = parsePhoneNumberFromString(input.phone.trim(), 'CN');
-  if (
-    input.region !== 'CN' ||
-    !phone?.isValid() ||
-    phone.country !== 'CN' ||
-    phone.getType() !== 'MOBILE'
-  )
-    throw new AuthError(400, 'VALIDATION_ERROR', '请输入有效的中国大陆手机号码');
-  return phone.number;
-}
-async function lockPhone(tx: Tx, phone: string): Promise<void> {
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${phone}, 0))::text`;
 }
 export class AuthService {
   constructor(
     readonly db: PrismaClient,
     private readonly config: Config,
     private readonly sms: SmsProvider = new MockSmsProvider(),
+    private readonly files = new FileRegistryService(
+      db,
+      createObjectStorage(config.files),
+      config.files,
+    ),
   ) {}
-
-  private async rate(entries: { key: string; max: number; seconds: number }[]): Promise<void> {
+  private async rate(entries: { key: string; max: number; seconds: number }[]) {
     const now = Date.now();
     const limited = await this.db.$transaction(async (tx) => {
       let retry = 0;
@@ -75,16 +118,15 @@ export class AuthService {
     });
     if (limited) throw new AuthError(429, 'RATE_LIMITED', '操作过于频繁，请稍后重试', limited);
   }
-
-  async sendCode(input: PhoneInput, ip: string) {
-    const phone = canonical(input);
+  async sendCode(input: SmsSendInput, ip: string) {
+    const phone = phoneNumber(input.phone);
     await this.rate([
       { key: `send-phone:${phone}`, max: 5, seconds: 900 },
       { key: `send-ip:${digest(ip)}`, max: 30, seconds: 900 },
     ]);
     const result = await this.db.$transaction(
       async (tx) => {
-        await lockPhone(tx, phone);
+        await lock(tx, phone);
         const now = new Date();
         const recent = await tx.verificationChallenge.findFirst({
           where: { phoneE164: phone },
@@ -97,158 +139,302 @@ export class AuthService {
         const id = randomUUID();
         const code =
           this.sms.mode === 'mock' ? MOCK_CODE : String(randomInt(0, 1_000_000)).padStart(6, '0');
-        const expiresAt = new Date(now.getTime() + 300_000);
         await tx.verificationChallenge.updateMany({
-          where: { phoneE164: phone, consumedAt: null, invalidatedAt: null },
+          where: { phoneE164: phone, purpose: input.scene, consumedAt: null, invalidatedAt: null },
           data: { invalidatedAt: now },
         });
         await tx.verificationChallenge.create({
           data: {
             id,
             phoneE164: phone,
-            codeDigest: codeDigest(this.config.codeSecret, id, phone, code),
-            expiresAt,
+            purpose: input.scene,
+            codeDigest: codeDigest(this.config.codeSecret, id, phone, code, input.scene),
+            expiresAt: new Date(now.getTime() + 300_000),
           },
         });
         await this.sms.send(phone, code, id);
-        return {
-          challengeId: id,
-          expiresAt: expiresAt.toISOString(),
-          resendAfterSeconds: 60,
-          mode: this.sms.mode,
-        };
+        return '验证码已发送，请注意查收';
       },
       { timeout: 10_000 },
     );
     if (result instanceof AuthError) throw result;
     return result;
   }
-
-  private async createSession(
+  private async consume(
     tx: Tx,
-    user: DbUser,
-    client: ClientType,
-  ): Promise<Authenticated & { sessionToken: string }> {
-    const token = newToken();
+    phone: string,
+    scene: string,
+    code: string,
+  ): Promise<AuthError | undefined> {
+    const row = await tx.verificationChallenge.findFirst({
+      where: { phoneE164: phone, purpose: scene },
+      orderBy: { createdAt: 'desc' },
+    });
+    const now = new Date();
+    if (!row || row.expiresAt <= now || row.consumedAt || row.invalidatedAt)
+      return invalid('验证码错误或已过期');
+    if (row.failedAttempts >= 5)
+      return new AuthError(
+        429,
+        'CODE_ATTEMPTS_EXCEEDED',
+        '验证码尝试次数已用尽，请重新获取',
+        Math.max(1, Math.ceil((row.expiresAt.getTime() - now.getTime()) / 1000)),
+      );
+    if (
+      !matchesDigest(row.codeDigest, codeDigest(this.config.codeSecret, row.id, phone, code, scene))
+    ) {
+      await tx.verificationChallenge.update({
+        where: { id: row.id },
+        data: { failedAttempts: { increment: 1 } },
+      });
+      return invalid('验证码错误或已过期');
+    }
+    await tx.verificationChallenge.update({ where: { id: row.id }, data: { consumedAt: now } });
+  }
+  private async issue(tx: Tx, user: User, client: ClientType, ip?: string): Promise<LoginResponse> {
+    if (user.status !== 'ACTIVE')
+      throw new AuthError(403, 'FORBIDDEN', '账户已被禁用，请联系平台运营');
+    if (ip !== undefined)
+      await tx.user.update({
+        where: { id: user.id },
+        data: { lastLoginAt: new Date(), lastLoginIp: ip },
+      });
+    const accessToken = newToken(),
+      refreshToken = newToken();
     const expiresAt = new Date(Date.now() + SESSION_DAYS * 86_400_000);
     await tx.session.create({
-      data: { tokenDigest: digest(token), userId: user.id, clientType: client, expiresAt },
+      data: {
+        tokenDigest: digest(accessToken),
+        refreshDigest: digest(refreshToken),
+        refreshExpiresAt: expiresAt,
+        userId: user.id,
+        clientType: client,
+        expiresAt,
+      },
     });
-    return {
-      status: 'authenticated',
-      user: publicUser(user),
-      sessionExpiresAt: expiresAt.toISOString(),
-      sessionToken: token,
-    };
+    return { accessToken, refreshToken, tokenType: 'Bearer', expiresIn: SESSION_DAYS * 86_400 };
   }
-
-  async verify(input: VerifyInput, ip: string, client: ClientType): Promise<ServerAuthResult> {
-    const phone = canonical(input);
+  async register(input: SmsRegisterInput, ip: string): Promise<AuthUser> {
+    if (Boolean(input.code) === Boolean(input.registrationToken))
+      throw invalid('验证码和注册凭证必须且只能提交一个');
+    if (input.password !== input.confirmPassword) throw invalid('两次输入的密码不一致');
+    const realName = input.realName.trim();
+    if (!/^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z\-·]{0,63}$/.test(realName))
+      throw invalid('姓名格式不正确，仅支持中英文、连字符与间隔号');
+    const idCardNo = input.idCardNo?.trim().toUpperCase() || null;
+    if (idCardNo && !/^(\d{15}|\d{17}[0-9X])$/.test(idCardNo)) throw invalid('身份证号格式不正确');
+    const email = input.email?.trim().toLowerCase() || null;
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw invalid('邮箱格式不正确');
+    const org = input.accountType === 'ORGANIZATION' ? input.organization : undefined;
+    if (input.accountType === 'ORGANIZATION' && !org?.name.trim())
+      throw invalid('组织账号需填写组织信息');
+    const passwordHash = await hashPassword(input.password);
+    await this.rate([{ key: `register-ip:${digest(ip)}`, max: 100, seconds: 900 }]);
+    try {
+      const result = await this.db.$transaction(async (tx) => {
+        const phone = phoneNumber(input.phone);
+        await lock(tx, phone);
+        if (input.registrationToken) {
+          const used = await tx.registrationGrant.updateMany({
+            where: {
+              tokenDigest: digest(`sms-registration:${input.registrationToken}`),
+              phoneE164: phone,
+              consumedAt: null,
+              expiresAt: { gt: new Date() },
+            },
+            data: { consumedAt: new Date() },
+          });
+          if (used.count !== 1) return invalid('注册凭证无效或已过期，请重新获取登录验证码');
+        } else {
+          const error = await this.consume(tx, phone, 'register', input.code!);
+          if (error) return error;
+        }
+        const organization = org
+          ? await tx.organization.create({
+              data: {
+                name: org.name.trim(),
+                unifiedCreditCode: org.unifiedCreditCode?.trim() || null,
+                description: org.description?.trim() || null,
+                logoUrl: org.logoUrl?.trim() || null,
+                expertiseTags: org.expertiseTags ?? [],
+              },
+            })
+          : null;
+        if (organization && org?.businessLicense) {
+          const file = await this.files.claimForOrganizationRegistration(
+            tx,
+            org.businessLicense.objectKey,
+            org.businessLicense.uploadToken,
+            organization.id,
+          );
+          organization.businessLicenseKey = file.objectKey;
+          await tx.organization.update({
+            where: { id: organization.id },
+            data: { businessLicenseKey: file.objectKey },
+          });
+        }
+        const uid = randomUUID().replaceAll('-', '');
+        const user = await tx.user.create({
+          data: {
+            uid,
+            // 初始迁移要求 username 以字母开头且不超过 32 字符；uid 保留完整 UUID。
+            username: `u${uid.slice(1)}`,
+            phoneE164: phone,
+            phoneRegion: 'CN',
+            displayName: input.nickname?.trim() || realName,
+            realName,
+            passwordHash,
+            email,
+            idCardNo,
+            accountType: input.accountType,
+            role: 'EXPERT',
+            organizationId: organization?.id,
+            orgPosition: organization ? (input.orgPosition ?? 'OWNER') : null,
+          },
+          include: { organization: true },
+        });
+        return publicUser(user);
+      });
+      if (result instanceof AuthError) throw result;
+      return result;
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')
+        throw new AuthError(409, 'DUPLICATE', '手机号/邮箱/身份证/组织信息已被占用，请更换后重试');
+      throw error;
+    }
+  }
+  async login(input: LoginInput, ip: string, client: ClientType) {
+    const account = input.account.trim().toLowerCase();
+    await this.rate([
+      { key: `login-ip:${digest(ip)}`, max: 100, seconds: 900 },
+      { key: `login-account:${digest(account)}`, max: 10, seconds: 900 },
+    ]);
+    const user = await this.db.user.findFirst({
+      where: { OR: [{ phoneE164: phoneNumber(account) }, { email: account }, { uid: account }] },
+    });
+    if (!(await verifyPassword(input.password, user?.passwordHash ?? null)) || !user)
+      throw new AuthError(401, 'BAD_CREDENTIALS', '账号或密码错误');
+    return this.db.$transaction(async (tx) => {
+      await lock(tx, user.phoneE164);
+      // Re-read under the password-reset lock so old passwords cannot create new sessions after reset.
+      const current = await tx.user.findUniqueOrThrow({ where: { id: user.id } });
+      if (current.passwordHash !== user.passwordHash)
+        throw new AuthError(401, 'BAD_CREDENTIALS', '账号或密码错误');
+      return this.issue(tx, current, client, ip);
+    });
+  }
+  async loginBySms(
+    input: SmsLoginInput,
+    ip: string,
+    client: ClientType,
+  ): Promise<SmsLoginResponse> {
     await this.rate([{ key: `verify-ip:${digest(ip)}`, max: 100, seconds: 900 }]);
     const result = await this.db.$transaction(async (tx) => {
-      await lockPhone(tx, phone);
-      const row = await tx.verificationChallenge.findUnique({ where: { id: input.challengeId } });
-      const now = new Date();
-      if (!row || row.phoneE164 !== phone)
-        return new AuthError(400, 'CODE_INVALID', '验证码或验证请求不正确');
-      if (row.expiresAt <= now || row.consumedAt || row.invalidatedAt)
-        return new AuthError(410, 'CODE_EXPIRED', '验证码已失效，请重新获取');
-      if (row.failedAttempts >= 5)
-        return new AuthError(
-          429,
-          'CODE_ATTEMPTS_EXCEEDED',
-          '验证码尝试次数已用尽，请重新获取',
-          Math.max(1, Math.ceil((row.expiresAt.getTime() - now.getTime()) / 1000)),
-        );
-      if (
-        !matchesDigest(
-          row.codeDigest,
-          codeDigest(this.config.codeSecret, row.id, phone, input.code),
-        )
-      ) {
-        await tx.verificationChallenge.update({
-          where: { id: row.id },
-          data: { failedAttempts: { increment: 1 } },
-        });
-        return new AuthError(400, 'CODE_INVALID', '验证码不正确');
-      }
-      await tx.verificationChallenge.update({ where: { id: row.id }, data: { consumedAt: now } });
+      const phone = phoneNumber(input.phone);
+      await lock(tx, phone);
+      const error = await this.consume(tx, phone, 'login', input.code);
+      if (error) return error;
       const user = await tx.user.findUnique({ where: { phoneE164: phone } });
-      if (user) return this.createSession(tx, user, client);
-      const token = newToken();
-      const expiresAt = new Date(now.getTime() + 600_000);
-      await tx.registrationGrant.create({
-        data: {
-          tokenDigest: digest(token),
-          phoneE164: phone,
-          phoneRegion: input.region,
-          expiresAt,
-        },
-      });
-      return {
-        status: 'registration_required' as const,
-        registrationToken: token,
-        expiresAt: expiresAt.toISOString(),
-      };
+      if (!user) {
+        const registrationToken = newToken();
+        const expiresAt = new Date(Date.now() + 600_000);
+        // 重新验证同一手机号时使之前的注册凭证失效，只保留最新一次。
+        await tx.registrationGrant.updateMany({
+          where: { phoneE164: phone, consumedAt: null },
+          data: { consumedAt: new Date() },
+        });
+        await tx.registrationGrant.create({
+          data: {
+            tokenDigest: digest(`sms-registration:${registrationToken}`),
+            phoneE164: phone,
+            phoneRegion: 'CN',
+            expiresAt,
+          },
+        });
+        return {
+          status: 'registration_required' as const,
+          registrationToken,
+          expiresAt: expiresAt.toISOString(),
+        };
+      }
+      return this.issue(tx, user, client, ip);
     });
     if (result instanceof AuthError) throw result;
     return result;
   }
-
-  async register(
-    input: RegisterInput,
-    client: ClientType,
-  ): Promise<Authenticated & { sessionToken: string }> {
-    let profile: ReturnType<typeof normalizeProfile>;
-    try {
-      profile = normalizeProfile(input.username, input.displayName);
-    } catch (error) {
-      throw new AuthError(400, 'VALIDATION_ERROR', (error as Error).message);
-    }
-    try {
-      return await this.db.$transaction(async (tx) => {
-        const tokenDigest = digest(input.registrationToken);
-        const initial = await tx.registrationGrant.findUnique({ where: { tokenDigest } });
-        if (!initial)
-          throw new AuthError(410, 'REGISTRATION_EXPIRED', '注册验证已失效，请重新验证手机号');
-        await lockPhone(tx, initial.phoneE164);
-        const grant = await tx.registrationGrant.findUnique({ where: { tokenDigest } });
-        const now = new Date();
-        if (!grant || grant.consumedAt || grant.expiresAt <= now)
-          throw new AuthError(410, 'REGISTRATION_EXPIRED', '注册验证已失效，请重新验证手机号');
-        if (await tx.user.findUnique({ where: { phoneE164: grant.phoneE164 } }))
-          throw new AuthError(409, 'PHONE_ALREADY_REGISTERED', '手机号已注册，请返回登录');
-        const user = await tx.user.create({
-          data: { ...profile, phoneE164: grant.phoneE164, phoneRegion: grant.phoneRegion },
-        });
-        await tx.registrationGrant.update({ where: { id: grant.id }, data: { consumedAt: now } });
-        return this.createSession(tx, user, client);
+  async resetPassword(input: PasswordResetInput, ip: string) {
+    await this.rate([{ key: `reset-ip:${digest(ip)}`, max: 100, seconds: 900 }]);
+    const passwordHash = await hashPassword(input.newPassword);
+    const result = await this.db.$transaction(async (tx) => {
+      const phone = phoneNumber(input.phone);
+      await lock(tx, phone);
+      const error = await this.consume(tx, phone, 'reset_password', input.code);
+      if (error) return error;
+      const user = await tx.user.findUnique({ where: { phoneE164: phone } });
+      if (!user) return new AuthError(404, 'NOT_FOUND', '手机号未注册');
+      await tx.user.update({ where: { id: user.id }, data: { passwordHash } });
+      await tx.session.updateMany({
+        where: { userId: user.id, revokedAt: null },
+        data: { revokedAt: new Date() },
       });
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')
-        throw new AuthError(409, 'USERNAME_TAKEN', '用户名已被使用，请换一个');
-      throw error;
-    }
+    });
+    if (result instanceof AuthError) throw result;
   }
-
-  async me(token: string | undefined, client: ClientType) {
-    if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token))
-      throw new AuthError(401, 'UNAUTHENTICATED', '请先登录');
+  async refresh(refreshToken: string, client: ClientType) {
+    if (!/^[A-Za-z0-9_-]{43}$/.test(refreshToken)) throw unauthorized();
+    const initial = await this.db.session.findUnique({
+      where: { refreshDigest: digest(refreshToken) },
+      include: { user: true },
+    });
+    if (!initial) throw unauthorized();
+    return this.db.$transaction(async (tx) => {
+      await lock(tx, initial.user.phoneE164);
+      const now = new Date();
+      const used = await tx.session.updateMany({
+        where: {
+          id: initial.id,
+          revokedAt: null,
+          clientType: client,
+          refreshExpiresAt: { gt: now },
+        },
+        data: { revokedAt: now },
+      });
+      if (used.count !== 1) throw unauthorized();
+      const user = await tx.user.findUniqueOrThrow({ where: { id: initial.userId } });
+      return this.issue(tx, user, client);
+    });
+  }
+  private async requireSession(token: string | undefined, client: ClientType) {
+    if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) throw unauthorized();
     const session = await this.db.session.findUnique({
       where: { tokenDigest: digest(token) },
-      include: { user: true },
+      include: { user: { include: { organization: true } } },
     });
     if (
       !session ||
       session.revokedAt ||
       session.expiresAt <= new Date() ||
-      session.clientType !== client
+      session.clientType !== client ||
+      session.user.status !== 'ACTIVE'
     )
-      throw new AuthError(401, 'UNAUTHENTICATED', '登录已过期，请重新登录');
-    return { user: publicUser(session.user), sessionExpiresAt: session.expiresAt.toISOString() };
+      throw unauthorized();
+    return session;
   }
-
-  async logout(token: string | undefined): Promise<void> {
+  async authenticate(token: string | undefined, client: ClientType): Promise<AuthPrincipal> {
+    const session = await this.requireSession(token, client);
+    return {
+      userId: session.userId,
+      uid: session.user.uid,
+      sessionId: session.id,
+      role: 'EXPERT',
+      clientType: client,
+    };
+  }
+  async me(token: string | undefined, client: ClientType) {
+    const session = await this.requireSession(token, client);
+    return publicUser(session.user, true);
+  }
+  async logout(token: string | undefined) {
     if (token)
       await this.db.session.updateMany({
         where: { tokenDigest: digest(token), revokedAt: null },

@@ -1,4 +1,7 @@
+import { readFileConfig, type FileConfig } from '../modules/files/file.config.js';
+
 export interface Config {
+  files: FileConfig;
   env: 'development' | 'test' | 'production';
   host: string;
   port: number;
@@ -54,6 +57,7 @@ export function readConfig(source: NodeJS.ProcessEnv = process.env): Config {
   const proxy = source.TRUST_PROXY;
   if (proxy === 'true') throw new Error('TRUST_PROXY 不允许 true，请设置 false 或可信代理 IP/CIDR');
   return {
+    files: readFileConfig(source),
     env: env as Config['env'],
     host: source.HOST ?? '127.0.0.1',
     port,

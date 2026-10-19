@@ -1,16 +1,17 @@
 # 测试环境部署（无 Docker）
 
-目标为阿里云 Linux，具体 ECS/RDS、CPU、域名和证书申请完成后填写。部署包可先在 Mac 本地生成；不能把 Mac 的 node_modules 复制到 Linux。
+阿里云 Linux 使用包含 Web 的后端包部署，Vercel 使用同一套合并构建。具体 ECS/RDS、CPU、域名和证书申请完成后填写。部署包可先在 Mac 本地生成；不能把 Mac 的 node_modules 复制到 Linux。
 
 ## 生成产物
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm package:web
 pnpm package:server
+# 仅在需要独立静态站点交付时另行执行：
+# pnpm package:web
 ```
 
-`artifacts/tyde-web-0.1.0.tar.gz` 包含静态资源和 Nginx 示例；`artifacts/tyde-server-0.1.0.tar.gz` 包含编译后的后端、共享包、迁移、原始 lockfile 与部署模板，不含秘密、数据库或开发机运行依赖。旁边 `.sha256` 用于校验。安装依赖时仍需目标机网络；此交付不是无网络全离线镜像。
+`artifacts/tyde-server-0.1.0.tar.gz` 包含编译后的后端、Web 静态资源（`apps/server/public`）、共享包、迁移、原始 lockfile 与部署模板，不含秘密、数据库或开发机运行依赖。阿里云部署只需这个包，不需要另传 Web 包。可选的 `artifacts/tyde-web-0.1.0.tar.gz` 仍用于独立静态站点交付。旁边 `.sha256` 用于校验。安装依赖时仍需目标机网络；此交付不是无网络全离线镜像。
 
 ## 后端
 
@@ -20,7 +21,9 @@ pnpm package:server
 4. 复制 `apps/server/.env.example` 为 `.env`，设置权限 0600，并填写下表配置。
 5. 执行 `pnpm --filter @tyde/server db:generate`，在目标 OS 生成 Prisma 引擎。
 6. 执行 `pnpm --filter @tyde/server db:deploy`，应用提交的迁移。变更已有环境前先备份，不执行 `migrate reset` 或 `db push`。
-7. 在 `apps/server` 执行 `node --env-file=.env dist/main.js` 验证启动，然后使用 `deploy/tyde.service.example` 配置 systemd。
+7. 在 `apps/server` 执行 `node --env-file=.env dist/main.js` 验证启动，然后使用 `deploy/tyde.service.example` 配置 systemd。该进程同时提供 Web 与 API，Web 资源路径相对于编译模块解析，不依赖启动工作目录。
+8. 使用 `deploy/nginx-server.conf.example` 配置 HTTPS，把全部路径代理至 `127.0.0.1:3000`。无需独立静态站点目录；保留 `/api/v1` 前缀。页面域名须加入 `WEB_ORIGINS`。
+9. 验证 HTTPS 根路径登录页、JS/CSS、live / ready、Swagger，以及登录、刷新恢复和退出。缺少页面时检查是否使用完整后端包，不要只复制 `dist`。
 
 | 配置             | 测试环境设置                                                     |
 | ---------------- | ---------------------------------------------------------------- |
@@ -37,31 +40,72 @@ pnpm package:server
 
 Prisma CLI 放在服务端生产依赖中用于迁移和目标平台生成；不得为缩小包而移除必需 CLI 后继续声称可部署。`pnpm-workspace.yaml` 的生产允许脚本与依赖覆盖需一同保留。
 
-## Vercel 构建排障
+## Vercel 前后端合并部署
 
-### Web
+保留现有后端 Vercel 项目（`tyde-outside-server`），由同一次部署发布 Web 静态资源与 Fastify API。浏览器访问同一个域名的 `/` 和 `/api/v1/*`，不再需要独立 Web 项目的跨项目转发。Electron 继续连接该域名的 API。
 
-从完整仓库导入项目，Framework Preset 选择 `Vite`，Root Directory 设为 `apps/web`，开启 **Include source files outside of the Root Directory in the Build Step**，让构建可以读取 `packages/` 与根配置。该选项见 [Vercel Monorepos FAQ](https://vercel.com/docs/monorepos/monorepo-faq)。使用 Node.js 24，Install Command 为 `pnpm install --frozen-lockfile`（保留开发依赖），Build Command 为 `pnpm run build`，Output Directory 为 `dist`。
+### 一次性项目设置
 
-Web 的 `build` 会依次编译 shared、platform，再执行 Web 类型检查与 Vite 构建；仓库根目录的 `pnpm build:web` 调用同一流程。这两个共享包的导出指向 `dist`，仅安装依赖不会生成产物，缺少产物会导致 `Cannot find module '@tyde/shared'` / `@tyde/platform` 及后续属性类型错误。无需提交 `dist`，也不要将构建命令覆盖为单独的 `vite build`。
+在现有后端项目的 Settings 中确认以下设置；代码无法代替控制台修改 Root Directory、Git 关联或环境变量。
 
-Vercel 静态部署不会使用 `vite.config.ts` 的开发 / preview 代理。`apps/web/vercel.json` 已将 `/api/:path*` 转发到固定后端域名 `https://tyde-outside-server.vercel.app/api/:path*`，保留 `/api/` 前缀。后端迁移域名时同步修改该配置，避免使用每次部署生成的专属地址。
+| 设置                                                                 | 值                                              |
+| -------------------------------------------------------------------- | ----------------------------------------------- |
+| Git Repository / Production Branch                                   | 关联本仓库与实际发布分支，保持 Git 自动部署开启 |
+| Root Directory                                                       | `apps/server`                                   |
+| Include source files outside of the Root Directory in the Build Step | 开启；构建需要 `apps/web`、`packages/` 与根配置 |
+| Node.js Version                                                      | `24.x`                                          |
+| Framework Preset                                                     | `Fastify`                                       |
+| Output Directory                                                     | 关闭 Override，使用 Fastify 默认值              |
+| Skip deployment / Skip unaffected projects                           | 关闭，确保仅修改 Web 也会触发合并部署           |
 
-当前 Web 固定域名为 `https://tyde-outside-eva-y.vercel.app`。在后端 Vercel 项目的环境变量中设置 `WEB_ORIGINS=https://tyde-outside-eva-y.vercel.app,https://tyde-outside-server.vercel.app`（同时允许 Web 与后端 Swagger 调试）和 `COOKIE_SECURE=true`，保存后重新部署后端。提交转发配置并部署 Web 后，从 Web 域名访问 `/api/v1/health/live`、`/api/v1/health/ready` 和 `/api/v1/docs/` 验收，再验证登录、刷新恢复会话与退出。新增允许的源时使用逗号分隔，不带路径或结尾斜线。
+`apps/server/vercel.json` 随代码指定 Install Command 为 `pnpm install --frozen-lockfile`，Build Command 为 `pnpm --dir ../.. build:vercel`，并用 `outputDirectory: null` 恢复框架默认输出设置。控制台 Output Directory 同样建议关闭 Override，不显式指定 `public` 或 `dist`：Fastify 构建器会在显式输出目录中寻找后端入口，而 `public` 仅包含前端资源，会导致入口检测失败。页面资源通过文件追踪随 Function 一起打包，`src/app.ts` 注册与阿里云相同的静态托管。不要依赖 Fastify preset 自动发布构建后才生成的 `public` 目录。清理旧的构建覆盖配置，部署日志应执行上述合并命令，而不是旧的 `pnpm run build`。`ignoreCommand: exit 1` 表示继续构建，避免旧的 Ignored Build Step 只检查后端变更；它不能代替关闭控制台的 Skip unaffected projects。
 
-### Server
+安装需保留开发依赖，不要使用 `--prod`。完整仓库可访问选项见 [Vercel Monorepos FAQ](https://vercel.com/docs/monorepos/monorepo-faq)，构建跳过机制见 [Vercel Monorepos](https://vercel.com/docs/monorepos)。
 
-从完整仓库导入项目，Root Directory 设为 `apps/server`，并开启包含 Root Directory 之外源码的选项；server 依赖 `packages/shared`、`packages/config` 和仓库根配置，不能只上传 `apps/server`。使用 Node.js 24，Install Command 为 `pnpm install --frozen-lockfile`，Build Command 为 `pnpm run build`，安装时保留开发依赖。
+### 构建与请求路由
 
-server 的 `build` 会依次编译 shared、执行 `prisma generate`、编译 server。仓库根目录执行 `pnpm build:server` 使用同一流程。不要把构建命令覆盖为单独的 `tsc`：缺少 shared 产物会报 `Cannot find module '@tyde/shared'`；缺少 Prisma Client 会引发 `User`、Prisma 错误类型缺失及事务参数隐式 `any` 等连锁错误。该构建流程不执行数据库迁移。
+在仓库根目录可执行与 Vercel 相同的构建：
 
-按 [Vercel Fastify 文档](https://vercel.com/docs/frameworks/backend/fastify)，平台要求可识别的服务入口。`src/app.ts` 直接导入 `fastify` 并创建实例，复用 `src/application.ts` 的配置与路由装配，等待插件就绪后默认导出底层 Node HTTP server，由 Vercel 管理监听。入口只间接引用 Fastify 会报 `No entrypoint found which imports fastify`；只导出 `createApp` 工厂会报 `Invalid export found`。本地/独立服务继续通过 `src/main.ts` 监听端口。Framework Preset 选择 `Fastify`，不要把 `dist` 当作静态站点的 Output Directory；部署后以健康检查接口验收，根路径 `/` 没有业务页面。
+```sh
+pnpm build:vercel
+```
 
-运行环境需配置上表中的数据库、密钥、HTTPS 源与 Cookie 等变量，测试部署使用 `APP_ENV=test`、`SMS_PROVIDER=mock`；当前 `APP_ENV=production` 会被拒绝启动。数据库必须能从 Vercel 访问，先对目标测试库执行迁移，再验收 live / ready 接口。Web 仍需同源 `/api` 代理。
+`build:vercel` 调用与阿里云交付相同的 `pnpm build:server`。该命令先编译 shared、platform、检查 Web 类型，再让 Vite 将 Web 输出到 `apps/server/public`；随后编译 shared、生成 Prisma Client、编译后端。Vite 每次清理专用输出目录，避免旧资源残留。该目录已从 Git、ESLint 和 Prettier 检查中忽略，只提交源码、锁文件与构建配置。普通 `pnpm build:web` 仍输出 `apps/web/dist`，供 Electron 与独立 Web 交付使用。
+
+Vercel 通过 `src/app.ts` 默认导出的 HTTP server 提供页面和 API，入口注册 `registerWeb` 托管 `public`。`web.ts` 直接枚举固定的 Web 目录，使文件追踪包含 HTML 与动态命名的 JS/CSS。根路径直接返回首页，不依赖 `/` 的平台重写；页面采用 HashRouter，无需全路径 SPA fallback，未知 API 不会变成 HTML 页面。入口 HTML 每次使用前重新验证缓存，Vite 带内容摘要的 `/assets/*` 资源允许长期缓存。Fastify 部署入口约束见 [Vercel Fastify 文档](https://vercel.com/docs/frameworks/backend/fastify)。
+
+```text
+同一个 Vercel 项目、同一个域名
+  /、/index.html、/assets/* → Fastify Function 提供 Web
+  /api/v1/*               → Fastify Function 提供 API
+```
+
+阿里云的独立入口 `src/main.ts` 与 Vercel 的 `src/app.ts` 均在 API 装配后注册 `src/web.ts`，托管同一个 `public` 目录。本地未构建 Web 时 `pnpm dev:server` 可仅启动 API；存在构建产物时也能访问根路径页面。
+
+### 环境变量与迁移
+
+沿用后端数据库与密钥配置，设置 `APP_ENV=test`、`SMS_PROVIDER=mock`、`COOKIE_SECURE=true`。`WEB_ORIGINS` 必须包含用户实际访问页面的完整 HTTPS 源，例如 `https://tyde-outside-server.vercel.app`；如使用 `https://aact.pw` 等自定义域名，也须逐个加入。保留仍在使用的 HTTPS 本地开发源，多个地址以逗号分隔，不带路径或结尾斜线。
+
+Preview 部署要进行登录联调时，也需显式允许其实际源地址；不自动放行任意 Preview 域名。环境变量变化后重新部署。当前 `APP_ENV=production` 会被配置校验拒绝，Vercel 的 Production 发布环境仍使用上述测试业务配置。
+
+数据库必须能从 Vercel 访问，发布前对目标库执行已有迁移。合并构建不执行数据库迁移，也不将后端 `.env` 复制到 Web 产物；后端密钥不得改为 `VITE_*` 环境变量。
+
+### 切换与验收
+
+1. 提交并 push 源码到发布分支，确认现有后端项目自动执行合并构建。
+2. 访问后端固定域名 `/`，确认显示登录页，浏览器 Network 中 JS/CSS 成功加载，API 请求访问同域 `/api/v1/*`。
+3. 验证 `/api/v1/health/live`、`/api/v1/health/ready`、`/api/v1/docs/` 与 `/api/v1/docs/json`。ready 必须成功；未知 `/api/v1/not-found` 应返回 404，不能返回 Web HTML。
+4. 验证验证码登录、新用户注册、刷新恢复、退出；验证 Electron 仍可登录并恢复会话。
+5. 再提交一次仅修改 Web 源码的变更，确认也能触发后端项目自动部署并更新页面。
+6. 如需保留原 Web 自定义域名，先迁移至合并项目并更新 `WEB_ORIGINS`、验证登录；完成后再由项目管理员下架原独立 Web 项目。原 `*.vercel.app` 项目域名不能当作自定义域名直接迁移。
+
+`apps/web/vercel.json` 是原独立 Web 项目的过渡配置，合并项目不会读取它；在旧项目下架前保留，便于切换期间继续使用。现有 Web 会话 Cookie 属于原域名，改用后端域名后通常需要重新登录。
 
 ## Web 与 HTTPS
 
-把 Web 包的 `web/` 内容部署到 Nginx 静态根目录，按实际域名、证书和目录修改 `nginx.conf.example`。保留 `/api/` 路径转发至后端，不剥离 `/api/v1`。Web 使用 hash 路由，无需 history fallback。
+默认的阿里云合并部署使用 `deploy/nginx-server.conf.example`：Nginx 终止 HTTPS，所有请求转发给同一个 Fastify 服务。入口 HTML 重新验证缓存，`/assets/*` 使用长期缓存；缺失页面或 API 返回 404，不做全路径 HTML 回退。
+
+如果需要分开交付，仍可使用原独立静态站点方式：把 Web 包的 `web/` 内容部署到 Nginx 静态根目录，按实际域名、证书和目录修改 `nginx.conf.example`。保留 `/api/` 路径转发至后端，不剥离 `/api/v1`。Web 使用 hash 路由，无需 history fallback。
 
 ```sh
 nginx -t
@@ -70,7 +114,7 @@ curl --fail https://test.example.com/api/v1/health/live
 curl --fail https://test.example.com/api/v1/health/ready
 ```
 
-HTTPS 测试环境的网页与桌面可连接同一域名：网页经 `/api` 同源代理，桌面 main 直接请求该域名 `/api/v1`。不要为了桌面而启用任意 CORS。仅开放必要网络入口，数据库不对测试人员电脑直接暴露。
+HTTPS 环境的网页与桌面连接同一域名：合并部署中页面和 API 均由同一后端提供，桌面 main 直接请求该域名 `/api/v1`。不要为了桌面而启用任意 CORS。仅开放必要网络入口，数据库不对测试人员电脑直接暴露。
 
 ## Swagger 文档验收
 
@@ -100,3 +144,34 @@ Windows PowerShell：先 `$env:TYDE_API_BASE_URL='https://真实测试域名'`�
 - 更新前备份数据库与当前版本，应用迁移再切换服务；回退前检查迁移兼容性，不能承诺任意数据库变更可直接回滚。
 
 所有 example 域名、目录和配置均为占位；本文不表示已完成阿里云部署。
+
+### 文件存储与上传（01）
+
+上传、批量上传、鉴权代理、非敏感签名链接和本人未认领文件删除接口已接入。适配器使用 `ali-oss@6.23.0`，类型依赖 `@types/ali-oss@6.23.3`；保留 SDK V1 签名以兼容旧图片最大有效期。接口及权限边界见 [API](API.md#文件上传凭证与访问)。SDK 参考 [ali-oss 官方说明](https://github.com/ali-sdk/ali-oss#readme)。
+
+2026-10-19 用户明确指定使用上海区域 bucket `lsh-oss-agi-tool-platform`。本地后端 `.env` 已配置，密钥仅留在被 Git 忽略的后端环境文件；其他部署环境须单独注入，示例仍默认 `FILE_STORAGE_PROVIDER=disabled`。本次授权使用指定 bucket 不代表旧台账与新库互通，也不修改 bucket 设置或既有对象。新上传对象显式 `private`，并设置禁止覆盖同名对象；RAM 凭据须允许相应对象上传、读取和删除。
+
+- `FILE_STORAGE_PROVIDER=oss`：启用存储。
+- `OSS_ENDPOINT=https://oss-cn-shanghai-internal.aliyuncs.com`：后端读写端点，适用于具备上海 OSS 内网连通性的阿里云环境；本机/Vercel 使用 `https://oss-cn-shanghai.aliyuncs.com`，不会自动降级或切换网络。
+- `OSS_PUBLIC_ENDPOINT=https://oss-cn-shanghai.aliyuncs.com`：非敏感文件签名链接端点。省略时从读写端点推导同区域外网端点，禁止内网或不同区域端点；不支持自定义 CNAME。两个端点均接受省略 `https://` 的主机名，但拒绝 HTTP、bucket 子域、路径、查询、用户信息。
+- 项目物理主目录固定为 `lsh-oss-agi-tool-platform/tyde/`；OSS适配器对上传、HEAD、流读取、签名和删除统一添加 `tyde/`。例如业务键 `common/2026/10/19/<UUID>.png` 对应OSS键 `tyde/common/2026/10/19/<UUID>.png`。API和台账保留相对业务键，客户端原样传入，不自行添加前缀；本次未搬迁既有根目录对象，也不回退访问根目录对象。
+- `OSS_BUCKET`、`OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET`：仅供后端使用，不配置到 Web/Electron。不要将实际密钥或签名链接写入文档和日志。
+
+从 `tyde/` 执行独立存储验证（不连接数据库）：
+
+```bash
+# 本机用外网端点；shell 环境变量优先于后端 .env。
+OSS_ENDPOINT=https://oss-cn-shanghai.aliyuncs.com pnpm --filter @tyde/server storage:verify
+# 阿里云同区域环境直接使用 .env 的内网配置。
+pnpm --filter @tyde/server storage:verify
+```
+
+脚本仅写入随机 `tyde/common/oss-verification/<UUID>.txt` 并在 finally 尝试删除，不枚举或删除既有对象。验证 PUT、HEAD、流式 GET 内容、普通/图片最大有效期外网签名 GET、DELETE、删除后 HEAD=null/GET=404 和重复 DELETE。若清理失败，按输出的对象键人工删除本次对象。SDK 同步异常和下载流中途异常对接口统一脱敏；404 的 NoSuchKey 与 bucket/权限错误区分，其他失败返回503。此脚本通过只代表基础对象操作通过，HTTP 上传/台账/认领及真实失败恢复仍需业务环境验收。2026-10-19 用户本机以外网端点执行此脚本，全部步骤通过且测试对象已删除（当时尚无tyde/前缀）；随后用户启动后端，Agent通过curl调用实际HTTP服务，tyde/前缀下五个文件入口的上传、批量、代理、签名下载、删除及权限拒绝已通过，保留3个测试对象、删除1个供用户查看，路径与证据统一见[01记录](../../backend-migration/01-files/todoTask.md#完成与交接记录)。内网端点连通性、真实营业执照认领链路与故障恢复仍未验证。
+
+新增迁移 `20261016010000_uploaded_files` 包含 UploadedFile 台账和 Organization.businessLicenseKey。2026-10-16用户本机已在专用 `_test` 库应用；2026-10-19 Agent启动本地库后复跑34项数据库集成通过（对象存储使用内存适配）。用户已于2026-10-19在开发库 `tyde_outside` 执行 `pnpm db:deploy` 应用文件迁移，解决实测上传P2021/500；部署环境迁移未执行。其他环境部署前须应用全部迁移。集成测试会清表，只能连接 `.env.test` 指定的专用库；确认 APP_ENV=test、库名以 `_test` 结尾、TEST_DATABASE_RESET=true。不要对开发库运行测试。
+
+默认单文件50MiB、总请求100MiB（按原始流统计，含multipart开销）、批量10个；反向代理也须允许相应请求大小。整个请求文件内容在内存中有界缓冲后校验，部署需按并发和内存预算收紧 `.env.example` 的大小/数量配置；Vercel/网关的平台限制独立于应用上限，未做大文件远程验收。当前配置参数统一为字节整数（不接受旧100MB字符串）。
+
+`pnpm db:cleanup` 在存储启用时附加清理到期的 UPLOADED/RELEASED 文件（默认每批100）。与认领共用行锁，成功删除对象后物理删除台账，失败保留供重试；存储关闭时跳过文件清理。该命令尚未部署定时调度。对象存储和数据库不共享事务：对象删除成功但台账提交失败时由下次幂等清理恢复；上传后登记失败会尽力删除对象，若删除也失败，须通过bucket与台账对账回收无记录对象。真实失败恢复/调度仍待环境验证。
+
+已认领项目/考试附件读取暂返回403，须在对应业务迁移中接实真实关系授权；不能放宽为“任何EXPERT均可读取”。旧普通敏感文件仅要求登录，新接口按台账归属收紧；新旧bucket与对象台账不默认互通。

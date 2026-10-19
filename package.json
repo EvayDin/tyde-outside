@@ -26,7 +26,8 @@
     "dev:electron:test": "node --env-file=apps/electron/config/test.env scripts/dev-electron.mjs",
     "build:packages": "pnpm --filter @tyde/shared build && pnpm --filter @tyde/platform build",
     "build:web": "pnpm --filter @tyde/web build",
-    "build:server": "pnpm --filter @tyde/server build",
+    "build:server": "pnpm --filter @tyde/web build --outDir ../server/public --emptyOutDir && pnpm --filter @tyde/server build",
+    "build:vercel": "pnpm build:server",
     "build:electron": "pnpm build:web && pnpm --filter @tyde/electron build",
     "package:mac": "pnpm build:electron && pnpm --filter @tyde/electron package:mac",
     "package:win": "pnpm build:electron && pnpm --filter @tyde/electron package:win",
@@ -38,7 +39,7 @@
     "format:check": "prettier --check .",
     "test": "pnpm --filter @tyde/server test",
     "test:integration": "pnpm --filter @tyde/server test:integration",
-    "test:core": "node --test tests/*.test.mjs",
+    "test:core": "tsx --test tests/*.test.mjs",
     "db:generate": "pnpm --filter @tyde/server db:generate",
     "db:migrate": "pnpm --filter @tyde/server db:migrate",
     "db:deploy": "pnpm --filter @tyde/server db:deploy",
@@ -57,6 +58,7 @@
     "husky": "9.1.7",
     "lint-staged": "17.6.0",
     "prettier": "3.9.8",
+    "tsx": "4.23.15",
     "typescript": "5.9.3",
     "typescript-eslint": "8.70.1"
   }

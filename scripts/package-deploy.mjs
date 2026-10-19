@@ -34,6 +34,7 @@ if (kind === 'web') {
     'scripts/install-hooks.mjs',
     'apps/server/package.json',
     'apps/server/dist',
+    'apps/server/public',
     'apps/server/prisma',
     'apps/server/.env.example',
     'packages/shared/package.json',

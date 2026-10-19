@@ -1,0 +1,192 @@
+# 注册登录后端迁移上下文
+
+## 约定与范围（2026-10-16）
+
+- 用户负责后端，本次仅修改 `apps/server`、后端需要的共享 DTO/schema 和 Markdown 文档；不修改 Web、Electron、平台适配层或前端 E2E。
+- 旧接口来源：`../tyde-core/src/main/java/com/tyde/platform/module/auth/controller/{AuthController,SmsAuthController}.java`，请求/响应字段来自同模块 `dto/`，用户响应来自 `module/user/dto/UserDTO.java`。
+- 保持旧接口名称、路径和字段名；不再要求选择身份。注册固定写入 `EXPERT`，登录也固定使用执行专家身份。为兼容旧调用保留可选 `role` / `roles` 字段，传其他已知角色也不改变最终身份。
+- 当前按旧接口保留个人和组织注册；账号类型 `accountType` 与业务角色不同。组织注册是否保留曾询问用户，尚未得到明确选择，因此沿用旧接口能力。
+- 沿用新项目 Fastify + Prisma + PostgreSQL，不复制 Spring/Redis 基础设施；新旧项目数据库和令牌不互通。
+
+## 接口契约
+
+前缀 `/api/v1`；成功 HTTP 200，响应 `{ "code": 200, "message": "操作成功", "data": ... }`。错误同样使用 `code/message/data`，`data` 为 null；常见业务码 400/401/403/404/409/413/500/503，频率限制 4292（HTTP 429，含 `Retry-After`）。
+
+| 方法与路径                  | 请求字段                                                    | 成功 data                |
+| --------------------------- | ----------------------------------------------------------- | ------------------------ |
+| POST `/auth/sms/send`       | `phone`, `scene`（`login` / `register` / `reset_password`） | 字符串发送提示           |
+| POST `/auth/register`       | 见下文                                                      | 用户资料 UserDTO         |
+| POST `/auth/login`          | `account`, `password`, 可选 `role`                          | LoginResponse            |
+| POST `/auth/sms/login`      | `phone`, `code`, 可选 `role`                                | LoginResponse 或注册指引 |
+| POST `/auth/refresh`        | `refreshToken`                                              | 新 LoginResponse         |
+| POST `/auth/password/reset` | `phone`, `code`, `newPassword`                              | null                     |
+| POST `/auth/logout`         | 无请求体；可携带当前认证凭据                                | null                     |
+| GET `/users/me`             | 当前认证凭据                                                | 用户资料 UserDTO         |
+
+注册必填字段：`accountType`、`password`、`confirmPassword`、`realName`、`phone`；另外必须且只能提交 `code`（注册场景验证码）或 `registrationToken`（短信登录返回的注册凭证）。
+可选字段：`roles`、`nickname`、`idCardNo`、`orgPosition`、`email`、`organization`。
+
+`accountType` 为 `INDIVIDUAL` / `ORGANIZATION`。昵称默认真实姓名。个人账号忽略组织信息；组织账号要求 `organization.name`，组织内身份默认 `OWNER`，可沿用 `ADMIN` / `MEMBER`。
+组织信息保留字段 `name`、`unifiedCreditCode`、`businessLicense`（`objectKey` / `uploadToken`）、`description`、`logoUrl`、`expertiseTags`。**营业执照已接入文件上传台账认领：先调用 POST /files/upload 且 bizType=BUSINESS_LICENSE，再提交 objectKey/uploadToken。默认24小时有效（可配置）；注册组织、创建用户、消费验证码和认领同事务，失败回滚。businessLicenseUrl 保留旧字段名，返回objectKey或null，不返回公开链接；已认领营业执照仅本组织OWNER/ADMIN通过鉴权代理读取。配置模板默认关闭文件存储；本地后端已启用用户指定OSS，2026-10-19五个文件HTTP入口与真实OSS联调已通过。营业执照注册认领完整链路仍只在PostgreSQL+内存存储验证，尚无真实OSS闭环结果。**
+
+LoginResponse 字段严格使用 `accessToken`、`refreshToken`、`tokenType`（`Bearer`）、`expiresIn`（秒）。注册仅创建账号并返回资料，不自动登录；未注册手机号短信登录返回 HTTP 200 和 `{ status: "registration_required", registrationToken, expiresAt }`，不创建账号或登录会话、不设置登录 Cookie；客户端据此进入资料填写页。注册凭证绑定手机号、10 分钟有效、一次性使用，再次验证同手机号会使旧凭证失效；放弃填写后，下次重新获取登录验证码并验证仍返回注册指引。
+
+UserDTO 使用 `id`、`uid`、`accountType`、`phone`、`nickname`、`realName`、`idCardNo`、`idVerified`、`avatarUrl`、`bio`、`role`、`roles`、`selectedRole`、`hasExpertManagementRole`、`status`、`creditScore`、`lastLoginAt`、`lastLoginIp`、`organization`、`createdAt`、`updatedAt`。手机号和身份证号脱敏。新项目 `id` 仍为 UUID 字符串，时间仍为 ISO 8601；字段名沿用旧项目，不承诺旧数据库主键类型或日期格式兼容。
+
+## 验证码登录后填写资料注册
+
+1. `POST /auth/sms/send` 提交 `{ "phone": "13812345678", "scene": "login" }`。
+2. `POST /auth/sms/login` 提交 `{ "phone": "13812345678", "code": "095270" }`。已注册用户返回原 LoginResponse；新手机号返回：
+
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "status": "registration_required",
+    "registrationToken": "ggggggggggggggggggggggggggggggggggggggggggg",
+    "expiresAt": "2026-10-16T12:10:00.000Z"
+  }
+}
+```
+
+3. 前端判断 `data.status === "registration_required"`，展示表单并暂存手机号/凭证；凭证仅用于注册，不能作为登录令牌。填写后向 `POST /auth/register` 提交：
+
+```json
+{
+  "accountType": "INDIVIDUAL",
+  "phone": "13812345678",
+  "registrationToken": "ggggggggggggggggggggggggggggggggggggggggggg",
+  "realName": "小明",
+  "password": "Password123",
+  "confirmPassword": "Password123"
+}
+```
+
+示例凭证不可实际使用，需替换为本次返回的真实值。密码/确认密码、真实姓名及账号类型继续沿用既有注册要求，组织账号仍需组织资料。`code` 和 `registrationToken` 必须且只能提交一个；原 `scene=register` 验证码注册仍保留。凭证消费、用户/组织创建和营业执照认领在同一事务内，业务失败回滚，可修正表单重试；过期/错误/手机号不匹配/已消费凭证返回 HTTP 400。注册成功仍只返回用户资料，不自动登录，随后可用注册密码登录或重新获取登录验证码。实际页面跳转和表单对接由前端任务完成，本次未改 Web/Electron。
+
+复用既有 `RegistrationGrant` 表，无新增数据库迁移；摘要增加 `sms-registration:` 用途隔离，历史旧流程凭证不能用于此入口。过期凭证沿用现有认证清理命令。
+
+## 安全与实现入口
+
+- `packages/shared/src/auth.ts`：新增请求 schema 与兼容 DTO。原 `index.ts` 中的前端 DTO 暂时保留，新增导出不会改变前端现有类型。
+- `auth.routes.ts`：路由、Cookie、客户端类型、来源校验。
+- `auth.service.ts`：场景化验证码、注册、密码/短信登录、刷新、重置、资料查询及退出。`authenticate(token, client)` 统一验证会话有效期、撤销状态、客户端及账号状态，返回服务端身份（userId/uid/sessionId/role/clientType）；与 me 共用校验，不提供管理权限，调用方仍须验证业务权限和数据范围。
+- `password.ts`：Node 内置 scrypt、独立随机盐和恒定时间摘要比较；不存储明文密码。
+- `auth.schema.ts`：Swagger 元数据和响应序列化。
+- `application.ts`：认证错误的 Result 包装、敏感字段日志脱敏。
+- `prisma/schema.prisma` 和 `20261016000000_legacy_auth/migration.sql`：持久化字段和迁移。
+
+用户已确认暂用开发/测试 mock 短信，固定字符串验证码 `095270`，有效期 5 分钟；真实短信未接入，现有配置继续禁止 mock 生产启动。验证码按 `phone + scene` 隔离；发送冷却和发送限流跨场景共用，错误次数持久化，成功消费一次。注册、验证码消费、重置密码及刷新使用事务和手机号 advisory lock。
+
+令牌仍采用新项目的随机不透明值，数据库只存摘要，默认有效 30 天；并非旧项目 JWT。刷新后原访问/刷新令牌对失效；重置密码撤销全部会话；普通退出撤销当前会话。当前实现允许 Web/桌面及同客户端多个会话并存；单账号踢号、退出范围、刷新重放强制下线等兼容策略仍待用户确认，不能视为已验收。角色切换按固定 EXPERT 规则暂缓。
+
+Web 使用 HttpOnly Cookie；有 Origin 的写请求必须来自 `WEB_ORIGINS`。桌面使用 `X-Tyde-Client: desktop` 与 Bearer，禁止 Origin、Cookie 和浏览器 fetch 头。无浏览器头、Cookie 和客户端声明的 API 调试请求按 Bearer 客户端处理，因此旧式 API 客户端无需额外自定义头。
+
+## 联调与数据库
+
+先在目标环境配置数据库，并在部署代码前运行 `pnpm db:deploy`。迁移保留已有账号/会话，补充 `uid`、`realName` 和默认执行专家角色。旧验证码流程创建的账号没有密码，可走短信登录或重置密码设置密码。
+
+示例：
+
+```json
+{ "phone": "13812345678", "scene": "register" }
+```
+
+```json
+{
+  "accountType": "INDIVIDUAL",
+  "phone": "13812345678",
+  "code": "095270",
+  "password": "Password123",
+  "confirmPassword": "Password123",
+  "realName": "小明"
+}
+```
+
+```json
+{ "account": "13812345678", "password": "Password123" }
+```
+
+API 客户端登录后使用 `Authorization: Bearer <accessToken>` 调用 `/users/me`。
+
+**前端尚未适配**：原 Web/Electron 仍调用 `/auth/code`、`/auth/verify`、`/auth/me`，并向 `/auth/register` 提交 `registrationToken/username/displayName`。这些与新后端契约不同；按用户限定，本次不修改前端，也不宣称双端登录可用。后续前端任务需单独按本文及 Swagger 对接。
+
+## 验证
+
+2026-10-16 最新结果：此前 Agent 服务端单测 34 项、服务端 typecheck 和改动文件 ESLint 通过；用户本机专用测试库已应用 init、legacy_auth 两个迁移，16:24:24 执行 `pnpm test:integration`，1 个文件 / 10 项全部通过，用时 3.45 秒。证据来自用户完整终端输出。开发库迁移、真实短信及 Web/Electron 联调未执行。
+
+- `pnpm test`：服务端安全、Swagger、静态页面路由、身份校验及注册 SQL 约束回归。
+- `pnpm test:integration`：真实 PostgreSQL 注册、场景隔离、错误次数、并发注册/短信消费、刷新重放、重置下线、组织原子性/回滚、禁用用户和来源/客户端隔离。读取 `.env.test`，要求库名以 `_test` 结尾且 `TEST_DATABASE_RESET=true`。
+
+Agent 的 TCP/socket 连接受执行环境限制，数据库验证已由用户本机完成。首次 4 通过 / 6 失败的注册问题已修复并复测通过。逐接口状态、兼容差异和续做位置以 [00 认证任务](../../backend-migration/00-auth/todoTask.md) 为准；兼容策略仍待确认，不能仅据测试通过宣称旧业务完全迁移。
+
+### 在本机终端完成认证数据库验证
+
+在 `tyde/` 目录执行：
+
+```sh
+node scripts/verify-auth-database.mjs
+```
+
+脚本读取 `apps/server/.env` 的本地数据库连接，使用该账号连接维护库 `postgres`，创建随机命名、以 `_test` 结尾的独立测试库（无需开发库已存在），生成权限为 0600 且被 Git 忽略的 `apps/server/.env.test`，对新测试库执行 `prisma migrate deploy` 和 `pnpm test:integration`。测试会清空独立测试库业务表，开发库不清表、不应用迁移；测试库保留供检查。账号需有 CREATEDB 权限，PostgreSQL 工具默认使用 Postgres.app，可通过 `PG_BIN` 指定工具目录。已有 `.env.test` 时脚本拒绝覆盖。
+
+若提示 permission denied to create database，请让本机数据库管理员执行以下命令后重试脚本（需管理员判断该开发账号是否应具备建库权限）：
+
+```sql
+ALTER ROLE tyde_outside_dev CREATEDB;
+```
+
+若脚本已经生成 `.env.test` 后迁移或测试失败，保留配置。修复失败原因后，在 `tyde/` 目录执行以下命令，继续使用原独立测试库：
+
+```sh
+node --env-file=apps/server/.env.test --input-type=module -e 'import { spawnSync } from "node:child_process"; process.exit(spawnSync("pnpm", ["exec", "prisma", "migrate", "deploy"], { cwd: "apps/server", stdio: "inherit", env: process.env }).status ?? 1)'
+pnpm test:integration
+```
+
+执行结果交回后再更新数据库验收状态；不要提交 `.env` 或 `.env.test`，无需发送密码。辅助脚本已由用户本机成功建库并迁移；注册修复后直接执行 `pnpm test:integration`，10/10 通过。
+
+### 本地账号认证失败的修复
+
+历史排障记录（已解决）：用户本机确认项目 PostgreSQL 启动成功后，验证脚本曾返回 `password authentication failed for user "tyde_outside_dev"`；此错误可能是角色不存在或本地密码与 `.env` 不一致。失败发生在 CREATE DATABASE 执行前，本次未建测试库、未生成 `.env.test`，迁移/测试未开始。切换连接地址不会同步远程账号凭据；已有 `.env` 时 `setup:local` 会拒绝覆盖配置，不适合直接重跑。
+
+在 `tyde/` 目录通过项目 Unix socket 进入本地管理员连接（默认使用当前系统账号）：
+
+```sh
+/Applications/Postgres.app/Contents/Versions/latest/bin/psql -X -h "$PWD/.local/postgres" -d postgres
+```
+
+在 psql 内执行以下语句，缺角色时创建，已有角色时保留；为验证脚本授予本地建库权限：
+
+```sql
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'tyde_outside_dev') THEN
+    CREATE ROLE tyde_outside_dev LOGIN;
+  END IF;
+END $$;
+ALTER ROLE tyde_outside_dev LOGIN CREATEDB;
+```
+
+然后在 psql 内执行：
+
+```text
+\password tyde_outside_dev
+```
+
+按提示两次输入 `apps/server/.env` 中 DATABASE_URL 对应的密码（输入不回显），再执行 `\q` 退出，重跑 `node scripts/verify-auth-database.mjs`。该操作仅修复本地角色，不修改远程账号、不清理开发库；若其他本地程序使用该角色旧密码，需要同步其配置。若管理员连接失败，保留原配置并提供不含凭据的错误信息。Agent 本轮 TCP 和 Unix socket 均受执行环境限制，未自行操作数据库。
+
+历史排障记录（已解决）：本地角色及密码修复后，认证错误消失；随后因开发库 `tyde_outside` 不存在而失败。辅助脚本已修正为连接维护库 `postgres` 执行建库，无需先创建开发库。直接重跑验证脚本即可；此前失败仍未创建测试库、未生成 `.env.test`、未执行迁移或测试。
+
+### PostgreSQL 首轮验证与注册修复
+
+用户本机已在专用库 `tyde_auth_1792138803808_563211cb_test` 成功应用两个迁移（init、legacy_auth）。首次 10 项集成测试中 4 通过、6 失败，失败集中于注册返回 500。核对发现注册将随机 UUID 直接作为 username，可能以数字开头，违反初始迁移的 `User_username_format` CHECK（须以字母开头、长度 3～32）。已将内部 username 改为 `u` 加 31 位 UUID 字符，保留完整对外 uid；不修改原约束、不新增迁移。新增首位 0–f 共 16 项回归测试，服务端单测本轮合计 34 项通过。
+
+修复后用户本机于 2026-10-16 16:24:24 执行 `pnpm test:integration`，10 项全部通过（3.45 秒）。现有 `.env.test` 和测试库保留，无需重新建库。数据库验证已完成，兼容策略仍待确认；开发库未应用迁移。
+
+## 核心基线交接
+
+2026-10-16 用户授权遗留项备注后交接 01，当前任务指针已切换为文件存储与上传凭证。00 核心测试通过，完整业务验收未完成，兼容差异未自动获得接受。短信暂用 mock 095270，真实短信为上线依赖；营业执照在 01 回补，资料/组织/主管/presence 分别依赖 02/03/07/14。其余兼容决定、公共能力及联调待办见 [00 遗留项与回补条件](../../backend-migration/00-auth/todoTask.md#遗留项与回补条件)。本次仅交接，不启动 01 实现。
+
+01最新环境补充（2026-10-19）：用户已在开发库tyde_outside应用uploaded_files迁移，解决文件上传P2021；文件HTTP入口真实OSS联调通过，详情见[01记录](../../backend-migration/01-files/todoTask.md#完成与交接记录)。以下为历史测试记录。
+
+01 回补进展（2026-10-16）：用户本机已应用第三个迁移 `20261016010000_uploaded_files`（专用测试库，非开发库），并安装 multipart 依赖。修复大小不符测试中两个字符串同为10字节的夹具错误，改用台账大小+1；Agent先复测21项全部通过，再接入文件HTTP接口并扩展为29项集成全部通过（真实PostgreSQL+内存对象存储）。API-002营业执照上传/注册/认领/代理链路已验证；原API-002仍为部分迁移，多组织/昵称等其他回补不变。文件业务权限及真实OSS联调限制见 [01 记录](../../backend-migration/01-files/todoTask.md)。

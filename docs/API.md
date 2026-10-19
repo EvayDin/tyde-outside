@@ -1,66 +1,93 @@
 # API 与 Swagger 使用说明
 
-后端使用 `@fastify/swagger` 9 和 `@fastify/swagger-ui` 5，生成 OpenAPI 3.0.3。版本兼容关系见 [Swagger 插件](https://github.com/fastify/fastify-swagger#compatibility)及 [UI 插件](https://github.com/fastify/fastify-swagger-ui#compatibility)。
+运行 `pnpm dev:server` 后访问 `http://127.0.0.1:3000/api/v1/docs/`。OpenAPI JSON/YAML 分别位于 `/api/v1/docs/json` 和 `/api/v1/docs/yaml`；文档读取不依赖数据库。
 
-## 访问入口
+认证后端已迁移到下表的接口路径与字段，注册和登录固定为执行专家 `EXPERT`，不要求选择身份。完整字段、联调示例、迁移说明和已知依赖见 [认证后端上下文](AUTH_BACKEND.md)。
 
-执行 `pnpm dev:server` 后：
+当前 Web/Electron 使用 Tailwind CSS、shadcn/ui 与 TanStack Router，开发模式只执行本地验证码 mock 和个人资料交互；真实登录与资料提交尚未开放。生产平台适配仍请求此前的 `/auth/code`、`/auth/verify`、`/auth/me` 及注册响应格式，与当前后端不兼容，需独立迁移。后端能力应通过本页 Swagger 或 API 客户端调试，不能视为前端已完成联调。
 
-| 地址                                 | 用途                              |
-| ------------------------------------ | --------------------------------- |
-| `http://127.0.0.1:3000/api/v1/docs/` | Swagger UI                        |
-| `/api/v1/docs/json`                  | OpenAPI JSON，可导入 API 调试工具 |
-| `/api/v1/docs/yaml`                  | OpenAPI YAML                      |
+执行 `pnpm dev:web` 后可通过 `http://127.0.0.1:3001/api/v1/docs/` 访问同源文档；`API_PROXY_TARGET` 指向 HTTPS 后端时使用 `https://localhost:3001/api/v1/docs/`。部署包及 Vercel 由同一个 Fastify 服务托管 Web 与 API，数据库状态以 `/api/v1/health/ready` 为准。
 
-执行 `pnpm dev:web` 后也可从 `http://127.0.0.1:3001/api/v1/docs/` 访问。路径在 `/api/` 下，Vite 与部署 Nginx 均沿用现有同源代理。文档随服务启动开放，不依赖数据库连接；数据库状态仍以 `/api/v1/health/ready` 为准。
+| 方法与路径（前缀 `/api/v1`） | 用途                              |
+| ---------------------------- | --------------------------------- |
+| POST `/auth/sms/send`        | 按 `scene` 发送验证码             |
+| POST `/auth/register`        | 注册并返回用户资料                |
+| POST `/auth/login`           | 手机号 / 邮箱 / uid + 密码登录    |
+| POST `/auth/sms/login`       | 手机号 + 验证码登录或返回注册指引 |
+| POST `/auth/refresh`         | 轮换访问和刷新令牌                |
+| POST `/auth/password/reset`  | 验证码重置密码并全端下线          |
+| POST `/auth/logout`          | 撤销当前会话                      |
+| GET `/users/me`              | 当前用户资料                      |
+| GET `/health/live`           | 存活状态                          |
+| GET `/health/ready`          | 数据库就绪状态                    |
 
-## 接口与响应
+认证成功统一 HTTP 200，使用 `{code: 200, message: "操作成功", data: ...}`。登录 data 包含 `accessToken/refreshToken/tokenType/expiresIn`，注册返回 UserDTO，退出与重置返回 null。失败使用 `code/message/data`，限流 HTTP 429 携带 `Retry-After`。健康检查保留原 `status` 结构。
 
-以下路径均以 `/api/v1` 为前缀，具体字段以生成的 schema 为准。
+Swagger 的 Try it out 会真实执行注册、登录、重置和退出。浏览器页面来源须加入 `WEB_ORIGINS`；Web 登录自动建立 HttpOnly Cookie。`COOKIE_SECURE=true` 时使用 HTTPS 与 `__Host-tyde_session`，否则使用 `tyde_session`。
 
-| 方法与路径            | 成功结果                                              | 业务失败                                       |
-| --------------------- | ----------------------------------------------------- | ---------------------------------------------- |
-| POST `/auth/code`     | 200：challengeId、expiresAt、resendAfterSeconds、mode | 400 输入错误；429 限流                         |
-| POST `/auth/verify`   | 200：authenticated 或 registration_required           | 400 验证码错误；410 过期；429 限流或锁定       |
-| POST `/auth/register` | 201：authenticated                                    | 400 资料不合法；409 资料冲突；410 注册凭证过期 |
-| GET `/auth/me`        | 200：user、sessionExpiresAt                           | 401 未登录或会话过期                           |
-| POST `/auth/logout`   | 204：无响应体，无会话也成功                           | 来源校验或服务错误                             |
-| GET `/health/live`    | 200：status=ok、application                           | —                                              |
-| GET `/health/ready`   | 200：status=ready                                     | 503：status=unavailable                        |
-
-认证接口通用错误结构为 `code`、`message`、`requestId`。来源校验失败为 403，请求体过大为 413，内部错误为 500，数据库不可用为 503；429 携带 `Retry-After`，单位为秒。
-
-## Web 调试
-
-Swagger UI 中选择 Try it out 即可发送请求。POST 会执行真实业务，验证码挑战、注册和退出都会实际生效。
-
-文档页面所在的源地址必须包含在 `WEB_ORIGINS` 中。默认开发配置允许 Web 的 3001 源，建议通过 Web 代理打开文档；若从 3000 直接调试，请显式把 `http://127.0.0.1:3000` 加入允许列表。浏览器自动发送 Origin，不在 Swagger 中手动伪造该头。
-
-1. 调用 `/auth/code`，请求体示例：`{"region":"CN","phone":"13800138000"}`。使用约定测试号码。
-2. 调用 `/auth/verify`，带上返回的 challengeId、相同 region/phone 和字符串验证码 `095270`。
-3. 若返回 registration_required，调用 `/auth/register`，带上 registrationToken、username、displayName。
-4. 调用 `/auth/me` 查看会话，或 `/auth/logout` 退出。
-
-Web 登录通过响应 `Set-Cookie` 自动建立 HttpOnly 会话。Swagger 的 Authorize 无法手动设置 HttpOnly Cookie；完成登录后由浏览器自动携带。`COOKIE_SECURE=true` 时使用 HTTPS，Cookie 名为 `__Host-tyde_session`，否则为 `tyde_session`。用户名会去空格并转小写，须为 3～32 位、字母开头且仅含字母/数字/下划线；姓名去空格、NFC 归一化后为 1～80 个字符且不含控制字符。
-
-## 桌面调试
-
-桌面 HTTP 请求由 Electron main 发出，设置 `X-Tyde-Client: desktop`。登录或注册成功时 JSON 额外返回 sessionToken；后续 `/auth/me` 使用 `Authorization: Bearer <sessionToken>`，退出时也带当前令牌。该令牌仅在 main 内保存，不返回 renderer。
-
-用 curl 或 API 客户端调试桌面协议；浏览器 Swagger UI 自带 Origin 或 sec-fetch-* 头，会被桌面传输校验拒绝。桌面请求禁止带 Origin、Cookie 或 sec-fetch-*，也不能同时携带 Cookie 与 Authorization。
+API 客户端可直接通过 Bearer 认证；Electron 使用 `X-Tyde-Client: desktop`。桌面传输不能带 Origin、Cookie 或 sec-fetch-*，Cookie 与 Authorization 也不能混用。
 
 ```sh
-curl http://127.0.0.1:3000/api/v1/auth/me \
-  -H 'X-Tyde-Client: desktop' \
-  -H 'Authorization: Bearer <sessionToken>'
+curl http://127.0.0.1:3000/api/v1/users/me \
+  -H 'Authorization: Bearer <accessToken>'
 ```
 
-## 维护约定
+维护入口：请求 schema 与 DTO 在 `packages/shared/src/auth.ts`；响应与路由元数据在 `apps/server/src/modules/auth/auth.schema.ts`；Swagger 插件注册在 `apps/server/src/docs.ts`，须先于业务路由。新增接口维护唯一 operationId、summary、tags、请求与响应 schema；响应 schema 会影响实际序列化，必须验证字段完整性。
 
-- `apps/server/src/docs.ts` 注册插件与双端安全方案，必须在业务路由之前调用。
-- 请求 schema 复用 `packages/shared/src/index.ts`；认证响应及公共路由元数据位于 `apps/server/src/modules/auth/auth.schema.ts`，健康检查 schema 位于 `app.ts`。
-- 新增路由填写唯一 operationId、summary、tags、请求 schema、实际状态码与响应 schema。只有要求登录的接口添加 security；退出允许无会话，不声明强制认证。
-- 响应 schema 同时影响 Fastify 序列化。修改时校验 Web Cookie、桌面 sessionToken 和 verify 的两种结果，防止字段丢失或令牌泄漏。
-- `pnpm test` 包含文档端点、静态资源、接口覆盖与响应序列化验证，无需数据库。认证数据库行为另执行 `pnpm test:integration`；完整验证步骤见根目录 README。
+## Swagger 文档标准
 
-测试环境部署与文档访问控制见 [部署说明](DEPLOY_TEST.md)。
+后续新增、迁移和修改的后端接口统一遵循本标准。Swagger 必须能让调用方直接理解字段与使用条件；中文说明写进实际 JSON Schema/OpenAPI，TypeScript/Java 注释或独立 Markdown 不能替代它。
+
+1. **接口级说明**：提供中文 `summary` 和 `description`、唯一 `operationId`、业务 `tags`；说明用途、认证方式、前置条件、关键副作用、幂等/重复调用及已知限制。HTTP 方法、路径和字段名保持迁移约定。
+2. **每个字段都有中文含义**：请求 body、path/query/header 参数、响应包装和业务数据都要写中文 `description`。对象本身、对象内部字段、数组及数组项递归补齐，不能只写 string/integer 或把字段名翻译成同名英文。无请求体的接口明确说明即可，不编造参数。
+3. **取值与业务规则**：枚举逐值解释，例如 `INDIVIDUAL=个人、ORGANIZATION=组织`；说明实际默认行为、格式/长度、数值单位、日期格式/时区、脱敏和 null/空数组的意义。`required` 由实际 schema 声明；条件必填在字段和接口说明写清，例如组织账号必须填写 `organization.name`。不要为了展示默认值给 schema 添加会改变 AJV 入参的 `default`。
+4. **枚举可读性**：普通字符串枚举优先输出 `type: string` + `enum`，避免把每个字面量展开为一层 `anyOf`。保留现有合法取值、TypeScript 类型推导和验证语义；只有真实联合结构才使用 `oneOf/anyOf`。
+5. **完整示例**：每个有请求体的接口至少一个可通过实际 schema 校验的请求示例；个人/组织等主要分支分别给示例。成功响应提供实际结构示例，失败响应说明 HTTP 状态、业务码、中文原因和必要响应头（例如 `Retry-After` 单位为秒）。示例里的密码、令牌、手机号和证件均为演示值，不能使用环境密钥或真实用户数据。
+6. **文档与当前实现一致**：字段未接入、固定值、兼容字段被忽略、暂不支持的分支必须明确说明，不能把规划能力写成已上线。注册 `roles` 可省略且固定 EXPERT、文件存储默认关闭、已认领项目/考试附件访问授权尚未接入等限制需在页面直接可见。
+7. **响应 schema 保真**：响应 schema 会影响 Fastify 序列化。给原自由对象补嵌套字段时核验字段与 null 不丢失；文档补充不得暗改校验、字段名、HTTP 状态或业务行为。发现业务差异按迁移任务另外记录。
+8. **交付验收**：查看生成的 `/api/v1/docs/json`，检查中文字段说明、嵌套结构、枚举和完整示例确实存在；示例通过实际请求校验；验证响应序列化及现有契约不变。`apps/server/tests/docs.test.ts` 已递归检查当前请求/响应字段的中文说明，并校验示例与枚举、组织响应字段保留；有 path/query/header 或新响应结构时扩展相应检查。不能仅靠 schema 源码有注释就通过验收。
+
+TypeBox 示例：
+
+```ts
+const body = Type.Object(
+  {
+    phone: Type.String({
+      pattern: '^1[3-9][0-9]{9}$',
+      description: '中国大陆手机号，11 位数字，不含 +86。',
+      examples: ['13812345678'],
+    }),
+  },
+  {
+    additionalProperties: false,
+    description: '请求用途、前置条件和关键限制。',
+    examples: [{ phone: '13812345678' }],
+  },
+);
+```
+
+请求标准入口 `packages/shared/src/auth.ts`，响应与错误说明范例 `apps/server/src/modules/auth/auth.schema.ts`。字段说明修改与接口代码一同交付，不要求调用方另找字段中文对照表。
+
+## 文件上传、凭证与访问
+
+OSS 物理主目录为配置的 `OSS_BUCKET` 下的 `tyde/`。API 与台账的 `objectKey` 使用该目录内的相对业务键，例如 `business-license/...`；客户端原样传入，不自行添加 `tyde/` 或 bucket 名。签名 URL 会包含物理前缀。
+
+以下路径均加 `/api/v1`，沿用 `{code,message,data}`，失败 data=null；`GET /files/view` 成功时直接返回文件字节，不用 JSON 包装。
+
+| 方法与路径                 | 字段                                                  | 身份与结果                                                                                                    |
+| -------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| POST `/files/upload`       | multipart：`file` 必填，`bizType/category` 选填       | 可匿名；项目/考试附件必须登录。返回可信元数据、objectKey、一次性 uploadToken；敏感文件 url=null。             |
+| POST `/files/upload/batch` | multipart：重复 `files` 字段，`bizType/category` 选填 | 默认最多10个文件，按顺序返回；后续上传失败时前面成功的对象保留，未认领对象过期清理。                          |
+| GET `/files/view`          | query：`objectKey` 必填                               | 需登录；安全图片/PDF内联，其余强制下载；no-store, private 与 nosniff。匿名请求403。                           |
+| GET `/files/access-url`    | query：`objectKey` 必填，`expireSeconds` 选填         | 需登录；敏感目录或台账一律403。非敏感图片默认2147483647秒，其他默认604800秒；非正数视为默认，最大32位正整数。 |
+| DELETE `/files`            | query：`objectKey` 必填                               | 需登录且为本人未认领文件；匿名上传对象、已认领对象和重复删除403。成功data=true。                              |
+
+`bizType` 默认 COMMON，`category` 默认由业务推断；忽略大小写和首尾空白，未知值400。固定业务大类不能被 category 放宽，ANY 仍受已知安全类型白名单。全局单文件默认50MiB、请求100MiB（含multipart边界/字段）、批量10个；图片/JSON10MiB，文档/Excel20MiB，视频/业务附件/ANY50MiB，均可被全局硬上限收紧。文件名、声明MIME和实际内容须一致；拒绝SVG/HTML/脚本及伪装内容；Office ZIP 检查结构和CRC，最多检查200项、解压2MiB，不解包落盘。文件和请求超限413，字段/内容不符400。
+
+敏感文件只通过鉴权代理读取：未认领对象只允许上传者；匿名预上传在组织认领前不能读取（uploadToken不是读取凭据）。已认领营业执照仅所属组织 OWNER/ADMIN 可读取，不使用 hasExpertManagementRole 展示字段授权。**已认领项目/考试附件读取依赖后续业务关系，当前明确403，不能用于完整项目/考试流程。** 非敏感文件沿用登录后访问规则。只接受新项目存活台账，不接收旧bucket未登记对象；这与旧普通文件“只要登录即可查看”存在收紧差异，尚未作为完整兼容验收通过。
+
+组织注册的 `organization.businessLicense` 接受 BUSINESS_LICENSE 的 `objectKey/uploadToken`，默认24小时内一次认领（可配置），原文凭证不落库。无记录/类型错误/存储对象缺失或大小不符400，错误凭证403，过期/重复409，存储关闭/不可达503。认领、验证码消费、组织与用户创建同事务，失败回滚；`organization.businessLicenseUrl` 保留旧字段名，返回objectKey或null，不是公开URL。
+
+Swagger 提供 multipart 输入、请求/响应/查询字段中文说明和完整 schema 示例，文件代理 200 按实际媒体类型记录二进制响应。文件与注册测试使用专用 PostgreSQL 和内存对象存储；真实 OSS 可通过 `pnpm --filter @tyde/server storage:verify` 独立验证，不能把测试替身结果视为真实存储验收。
+
+示例配置默认 `FILE_STORAGE_PROVIDER=disabled`。启用时仅在后端配置 OSS bucket 与密钥；服务端读写使用 `OSS_ENDPOINT`，客户端下载签名使用 `OSS_PUBLIC_ENDPOINT`，两者按网络环境选择内网或外网端点。新对象显式私有且禁止覆盖。真实存储、营业执照认领及后续业务附件关系需按实际环境验收，步骤见[部署说明](DEPLOY_TEST.md#文件存储与上传01)。

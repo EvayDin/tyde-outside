@@ -1,0 +1,332 @@
+import { Type, type Static } from '@sinclair/typebox';
+import type { RegistrationRequired } from './index.js';
+const options = { additionalProperties: false };
+// 输出普通 string + enum，避免 Swagger 把枚举拆成多个 anyOf，保留字面量类型推导。
+function stringEnum<const T extends readonly string[]>(values: T, description: string) {
+  return Type.Unsafe<T[number]>({ type: 'string', enum: [...values], description });
+}
+const phone = Type.String({
+  pattern: '^1[3-9][0-9]{9}$',
+  description: '中国大陆手机号，11 位数字，不含 +86；用于接收验证码及登录。',
+  examples: ['13812345678'],
+});
+const code = Type.String({
+  minLength: 4,
+  maxLength: 8,
+  description:
+    '手机验证码，须先按当前操作对应的 scene 获取；有效期 5 分钟，验证成功后仅消费一次。开发/测试 mock 固定为字符串 095270，须保留前导零。',
+  examples: ['095270'],
+});
+export const passwordPattern =
+  '^(?=.*[A-Za-z])(?=.*[0-9])[A-Za-z0-9!@#$%^&*()_+\\-=\\[\\]{};\':",.<>/?]{8,64}$';
+const password = Type.String({
+  minLength: 8,
+  maxLength: 64,
+  pattern: passwordPattern,
+  description:
+    '登录密码，8～64 位，必须同时包含英文字母和数字，可包含 pattern 中列出的特殊字符；不支持空格或中文。',
+  examples: ['Example123!'],
+});
+const role = stringEnum(
+  ['NAVIGATOR', 'PM', 'EXPERT', 'OPS'],
+  '旧接口兼容身份字段，可省略；NAVIGATOR=领航员，PM=策略官，EXPERT=执行专家，OPS=平台运营。新后端忽略身份选择，始终使用 EXPERT（执行专家）。',
+);
+export const smsSendSchema = Type.Object(
+  {
+    phone,
+    scene: stringEnum(
+      ['login', 'register', 'reset_password'],
+      '短信业务场景：login=登录，register=注册，reset_password=重置密码。不同场景的验证码独立，不能跨场景使用。',
+    ),
+  },
+  {
+    ...options,
+    description:
+      '发送验证码请求。发送冷却和频率限制按手机号跨场景共用；当前仅开发/测试 mock，不实际发送短信。',
+    examples: [{ phone: '13812345678', scene: 'register' }],
+  },
+);
+export const smsLoginSchema = Type.Object(
+  { phone, code, role: Type.Optional(role) },
+  {
+    ...options,
+    description:
+      '短信登录请求。code 必须来自 scene=login；已注册返回登录令牌；未注册返回 status=registration_required 和一次性注册凭证，不创建账号或会话，客户端据此展示注册表单。登录身份固定为执行专家。',
+    examples: [{ phone: '13812345678', code: '095270' }],
+  },
+);
+export const loginSchema = Type.Object(
+  {
+    account: Type.String({
+      minLength: 1,
+      maxLength: 128,
+      description:
+        '登录账号，支持中国大陆手机号、注册时填写的备用邮箱或平台 uid；去除首尾空格后匹配。邮箱不区分大小写。',
+      examples: ['13812345678'],
+    }),
+    password: Type.String({
+      minLength: 1,
+      maxLength: 64,
+      description:
+        '该账号的现有登录密码，按原值校验；仅通过旧验证码流程创建且未设置密码的账号需先重置密码。',
+      examples: ['Example123!'],
+    }),
+    role: Type.Optional(role),
+  },
+  {
+    ...options,
+    description: '账号密码登录请求。无需选择身份，成功后签发访问令牌与刷新令牌。',
+    examples: [{ account: '13812345678', password: 'Example123!' }],
+  },
+);
+export const passwordResetSchema = Type.Object(
+  {
+    phone,
+    code,
+    newPassword: Type.String({
+      ...password,
+      description:
+        '重置后的新登录密码，8～64 位，必须包含英文字母和数字，字符范围见 pattern；重置成功后全部客户端会话及刷新令牌失效。',
+    }),
+  },
+  {
+    ...options,
+    description: '验证码重置密码请求。code 必须来自 scene=reset_password；手机号必须已注册。',
+    examples: [{ phone: '13812345678', code: '095270', newPassword: 'Changed123!' }],
+  },
+);
+export const refreshSchema = Type.Object(
+  {
+    refreshToken: Type.String({
+      minLength: 1,
+      maxLength: 4096,
+      description:
+        '登录或上次刷新返回的刷新令牌原值，不能使用 accessToken 替代；刷新成功后原访问/刷新令牌对失效。须与原登录客户端类型一致。',
+      examples: ['r'.repeat(43)],
+    }),
+  },
+  {
+    ...options,
+    description: '刷新访问令牌请求。刷新令牌只能成功轮换一次，请保存本次返回的新令牌对。',
+    examples: [{ refreshToken: 'r'.repeat(43) }],
+  },
+);
+export const smsRegisterSchema = Type.Object(
+  {
+    accountType: stringEnum(
+      ['INDIVIDUAL', 'ORGANIZATION'],
+      '账号类型：INDIVIDUAL=个人账号，ORGANIZATION=组织账号。与登录身份不同；两类账号均固定为执行专家。组织账号必须填写 organization。',
+    ),
+    roles: Type.Optional(
+      Type.Array(role, {
+        description:
+          '旧接口兼容的角色列表，可省略；即使提交其他已知角色，实际注册角色仍固定为 [EXPERT]。无需展示角色选择。',
+        examples: [['EXPERT']],
+      }),
+    ),
+    password,
+    confirmPassword: Type.String({
+      minLength: 1,
+      maxLength: 64,
+      description: '确认密码，必须与 password 完全一致。',
+      examples: ['Example123!'],
+    }),
+    nickname: Type.Optional(
+      Type.String({
+        maxLength: 64,
+        description:
+          '昵称，选填；省略、空串或仅空白时使用 realName（真实姓名），保存前去除首尾空格。',
+        examples: ['小明'],
+      }),
+    ),
+    realName: Type.String({
+      minLength: 1,
+      maxLength: 64,
+      description:
+        '真实姓名，必填；去除首尾空格后须以中文或英文字母开头，后续允许中英文、连字符 - 和间隔号 ·，最多 64 字符，不支持姓名中的空格。',
+      examples: ['王小明'],
+    }),
+    idCardNo: Type.Optional(
+      Type.String({
+        maxLength: 32,
+        description:
+          '身份证号，选填；支持 15 位数字或 18 位（末位可为数字或 X），保存时去除首尾空格并将 x 转大写；响应只返回脱敏值。',
+        examples: ['11010119900101001X'],
+      }),
+    ),
+    orgPosition: Type.Optional(
+      stringEnum(
+        ['OWNER', 'ADMIN', 'MEMBER'],
+        '组织内身份：OWNER=组织主管，ADMIN=管理员，MEMBER=成员。仅组织账号生效，省略时服务端按 OWNER 创建；个人账号忽略该字段。与 EXPERT 业务角色无关。',
+      ),
+    ),
+    phone,
+    code: Type.Optional(code),
+    registrationToken: Type.Optional(
+      Type.String({
+        pattern: '^[A-Za-z0-9_-]{43}$',
+        description:
+          '短信登录返回的一次性注册凭证，10 分钟有效，绑定已验证手机号；与 code 必须且只能提交一个。使用此凭证无需重新获取注册验证码，不能用于登录鉴权；示例不可实际使用。',
+        examples: ['g'.repeat(43)],
+      }),
+    ),
+    email: Type.Optional(
+      Type.String({
+        maxLength: 128,
+        description:
+          '备用邮箱，选填；填写非空值时必须是有效邮箱，保存前去除首尾空格并转小写，也可作为密码登录账号。',
+        examples: ['expert@example.com'],
+      }),
+    ),
+    organization: Type.Optional(
+      Type.Object(
+        {
+          name: Type.String({
+            minLength: 1,
+            maxLength: 128,
+            description: '组织名称，组织账号必填；去除首尾空格后不能为空，名称不能与已有组织重复。',
+            examples: ['示例标注团队'],
+          }),
+          unifiedCreditCode: Type.Optional(
+            Type.String({
+              maxLength: 32,
+              description: '统一社会信用代码，选填；非空值不能与已有组织重复。',
+              examples: ['EXAMPLE_CREDIT_CODE'],
+            }),
+          ),
+          businessLicense: Type.Optional(
+            Type.Object(
+              {
+                objectKey: Type.String({
+                  minLength: 1,
+                  maxLength: 512,
+                  description:
+                    '文件上传登记的营业执照对象存储 Key，不能提交可访问 URL；须与 uploadToken 对应。先通过 POST /files/upload 且 bizType=BUSINESS_LICENSE 上传。',
+                  examples: ['business-license/example.jpg'],
+                }),
+                uploadToken: Type.String({
+                  minLength: 1,
+                  maxLength: 256,
+                  description:
+                    '文件上传接口返回的一次性认领凭证，须与 objectKey 对应；示例仅作字段说明，不能用于实际认领。',
+                  examples: ['example-upload-token'],
+                }),
+              },
+              {
+                ...options,
+                description:
+                  '营业执照上传凭证，选填。仅接受 BUSINESS_LICENSE 登记对象及其一次性 uploadToken；默认 24 小时内认领（可配置），重复/过期 HTTP 409，错误凭证 HTTP 403，无登记对象 HTTP 400。认领与注册同事务；存储未配置或不可达时 HTTP 503。',
+              },
+            ),
+          ),
+          description: Type.Optional(
+            Type.String({
+              maxLength: 1024,
+              description: '组织简介，选填，最多 1024 字符。',
+              examples: ['提供数据标注与质量检查服务。'],
+            }),
+          ),
+          logoUrl: Type.Optional(
+            Type.String({
+              maxLength: 512,
+              description: '组织 Logo 地址，选填；该字段不用于营业执照等敏感文件。',
+              examples: ['https://example.com/logo.png'],
+            }),
+          ),
+          expertiseTags: Type.Optional(
+            Type.Array(
+              Type.String({
+                minLength: 1,
+                maxLength: 128,
+                description: '单个擅长领域标签，1～128 字符。',
+                examples: ['图像标注'],
+              }),
+              {
+                description:
+                  '组织擅长领域标签列表，选填，可多选；省略时保存为空列表。当前实现未要求至少选择一个。',
+                examples: [['图像标注', '文本审核']],
+              },
+            ),
+          ),
+        },
+        {
+          ...options,
+          description:
+            '组织资料；accountType=ORGANIZATION 时必填，INDIVIDUAL 时不使用该资料创建组织。',
+        },
+      ),
+    ),
+  },
+  {
+    ...options,
+    description:
+      '手机号注册请求。必须且只能提交 code（scene=register）或 registrationToken（未注册手机号短信登录返回）；无需 roles。成功只返回用户资料，不自动登录。示例 1 为个人注册，示例 2 为组织注册，示例 3 为短信登录后凭证注册，均省略选填的营业执照凭证；如需提交，须先通过文件上传取得真实 objectKey/uploadToken，不能使用示例凭证。',
+    examples: [
+      {
+        accountType: 'INDIVIDUAL',
+        password: 'Example123!',
+        confirmPassword: 'Example123!',
+        realName: '王小明',
+        phone: '13812345678',
+        code: '095270',
+      },
+      {
+        accountType: 'ORGANIZATION',
+        password: 'Example123!',
+        confirmPassword: 'Example123!',
+        realName: '王小明',
+        phone: '13912345678',
+        code: '095270',
+        organization: { name: '示例标注团队', expertiseTags: ['图像标注'] },
+      },
+      {
+        accountType: 'INDIVIDUAL',
+        password: 'Example123!',
+        confirmPassword: 'Example123!',
+        realName: '王小明',
+        phone: '13812345678',
+        registrationToken: 'g'.repeat(43),
+      },
+    ],
+  },
+);
+export type SmsSendInput = Static<typeof smsSendSchema>;
+export type SmsLoginInput = Static<typeof smsLoginSchema>;
+export type LoginInput = Static<typeof loginSchema>;
+export type SmsRegisterInput = Static<typeof smsRegisterSchema>;
+export type PasswordResetInput = Static<typeof passwordResetSchema>;
+export type SmsLoginResponse = LoginResponse | RegistrationRequired;
+export interface LoginResponse {
+  accessToken: string;
+  refreshToken: string;
+  tokenType: 'Bearer';
+  expiresIn: number;
+}
+export interface Result<T> {
+  code: number;
+  message: string;
+  data: T;
+}
+export interface AuthUser {
+  id: string;
+  uid: string;
+  accountType: 'INDIVIDUAL' | 'ORGANIZATION';
+  phone: string;
+  nickname: string;
+  realName: string;
+  idCardNo: string | null;
+  idVerified: number;
+  avatarUrl: string | null;
+  bio: string | null;
+  role: 'EXPERT';
+  roles: ['EXPERT'];
+  selectedRole: 'EXPERT' | null;
+  hasExpertManagementRole: boolean;
+  status: string;
+  creditScore: number;
+  lastLoginAt: string | null;
+  lastLoginIp: string | null;
+  organization: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+}

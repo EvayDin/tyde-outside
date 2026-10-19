@@ -16,6 +16,7 @@ export async function registerDocs(app: FastifyInstance, config: Config) {
       },
       tags: [
         { name: 'Auth', description: '验证码、注册与会话' },
+        { name: 'Files', description: '文件上传、一次性认领凭证与鉴权代理' },
         { name: 'Health', description: '存活与数据库就绪检查' },
       ],
       components: {
@@ -29,7 +30,8 @@ export async function registerDocs(app: FastifyInstance, config: Config) {
           desktopSession: {
             type: 'http',
             scheme: 'bearer',
-            description: '仅桌面 main 使用，须传 X-Tyde-Client: desktop，不能带浏览器头或 Cookie。',
+            description:
+              'API 客户端或桌面使用 accessToken。桌面声明 X-Tyde-Client: desktop，禁止浏览器头或 Cookie；普通 API 客户端无浏览器头/Cookie 时可直接使用 Bearer。',
           },
         },
       },

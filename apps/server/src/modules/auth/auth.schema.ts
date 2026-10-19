@@ -1,96 +1,297 @@
 import type { FastifySchema } from 'fastify';
-
-const dateTime = { type: 'string', format: 'date-time' };
-const user = {
+type DocumentedSchema = Record<string, unknown>;
+function text(description: string, example: string | null, nullable = false) {
+  return {
+    type: 'string',
+    description,
+    examples: [example],
+    ...(nullable ? { nullable: true } : {}),
+  };
+}
+const organizationResponse = {
   type: 'object',
-  required: ['id', 'phoneE164', 'phoneRegion', 'username', 'displayName', 'createdAt'],
+  nullable: true,
+  additionalProperties: true,
+  description:
+    '当前关联组织资料；没有组织时为 null。当前注册和资料查询仅返回新项目已保存的组织信息，完整多组织关系待迁移。',
   properties: {
-    id: { type: 'string' },
-    phoneE164: { type: 'string' },
-    phoneRegion: { type: 'string' },
-    username: { type: 'string' },
-    displayName: { type: 'string' },
-    createdAt: dateTime,
-  },
-};
-export const sessionResponse = {
-  type: 'object',
-  required: ['user', 'sessionExpiresAt'],
-  properties: { user, sessionExpiresAt: dateTime },
-};
-export const authenticatedResponse = {
-  ...sessionResponse,
-  required: [...sessionResponse.required, 'status'],
-  properties: {
-    ...sessionResponse.properties,
-    status: { type: 'string', enum: ['authenticated'] },
-    sessionToken: {
-      type: 'string',
-      description: '仅桌面 main 响应包含；Web 通过 Set-Cookie 建立会话。',
+    id: text('组织主键 ID，新项目为 UUID 字符串。', '00000000-0000-4000-8000-000000000002'),
+    name: text('组织名称。', '示例标注团队'),
+    unifiedCreditCode: text('统一社会信用代码，未填写时为 null。', null, true),
+    description: text('组织简介，未填写时为 null。', '提供数据标注服务。', true),
+    businessLicenseUrl: text(
+      '已认领营业执照的 objectKey（保留旧字段名，不是公开 URL）；未填写时为 null。读取须走鉴权文件代理；已认领营业执照仅本组织主管/管理员可读取。',
+      null,
+      true,
+    ),
+    logoUrl: text('组织 Logo 地址，未填写时为 null。', null, true),
+    expertiseTags: {
+      type: 'array',
+      description: '组织擅长领域标签列表，未填写时为空数组。',
+      items: text('单个擅长领域标签。', '图像标注'),
+      examples: [['图像标注']],
     },
+    verifyStatus: text(
+      '组织审核状态；当前实现固定返回 PENDING（待审核），审核流程尚未迁移。',
+      'PENDING',
+    ),
+    status: text('组织状态；当前实现固定返回 ACTIVE（正常）。', 'ACTIVE'),
+    position: {
+      ...text(
+        '当前用户在组织内的身份：OWNER=组织主管，ADMIN=管理员，MEMBER=成员；无身份记录时为 null。',
+        'OWNER',
+        true,
+      ),
+      enum: ['OWNER', 'ADMIN', 'MEMBER', null],
+    },
+    joinStatus: text(
+      '当前用户的组织加入状态；当前实现固定返回 ACTIVE（已加入），完整加入/退出流程尚未迁移。',
+      'ACTIVE',
+    ),
+    createdAt: text('组织创建时间，ISO 8601 UTC 时间字符串。', '2026-10-16T08:00:00.000Z'),
   },
 };
-export const verifyResponse = {
-  anyOf: [
-    authenticatedResponse,
+const userExample = {
+  id: '00000000-0000-4000-8000-000000000001',
+  uid: '00000000000040008000000000000001',
+  accountType: 'INDIVIDUAL',
+  phone: '138****5678',
+  nickname: '小明',
+  realName: '王小明',
+  idCardNo: null,
+  idVerified: 0,
+  avatarUrl: null,
+  bio: null,
+  role: 'EXPERT',
+  roles: ['EXPERT'],
+  selectedRole: null,
+  hasExpertManagementRole: false,
+  status: 'ACTIVE',
+  creditScore: 100,
+  lastLoginAt: null,
+  lastLoginIp: null,
+  organization: null,
+  createdAt: '2026-10-16T08:00:00.000Z',
+  updatedAt: '2026-10-16T08:00:00.000Z',
+};
+export const userResponse = {
+  type: 'object',
+  description:
+    '用户资料。注册成功和查询当前用户均返回该结构；手机号、身份证号只返回脱敏值，当前未迁移能力以字段说明中的固定值或 null 返回。',
+  examples: [userExample],
+  properties: {
+    id: text('用户主键 ID，新项目为 UUID 字符串，与旧项目数值 ID 类型不同。', userExample.id),
+    uid: text(
+      '用户全局业务标识，可用作密码登录账号；新注册账号为不含连字符的 32 位 UUID 字符串。',
+      userExample.uid,
+    ),
+    accountType: {
+      ...text(
+        '账号类型：INDIVIDUAL=个人，ORGANIZATION=组织；与 EXPERT 业务角色不同。',
+        'INDIVIDUAL',
+      ),
+      enum: ['INDIVIDUAL', 'ORGANIZATION'],
+    },
+    phone: text('已脱敏的中国大陆手机号，隐藏中间 4 位，不含 +86。', '138****5678'),
+    nickname: text('昵称；注册未填写时使用真实姓名。', '小明'),
+    realName: text('真实姓名。', '王小明'),
+    idCardNo: text('脱敏身份证号；未填写时为 null，仅保留前 3 位和后 4 位。', null, true),
+    idVerified: {
+      type: 'integer',
+      description: '实名认证状态：0=未认证，1=已认证。当前实名能力尚未迁移，固定返回 0。',
+      examples: [0],
+    },
+    avatarUrl: text('头像地址；当前头像资料能力尚未迁移，固定为 null。', null, true),
+    bio: text('个人简介；当前资料能力尚未迁移，固定为 null。', null, true),
+    role: { ...text('账号主角色，固定为 EXPERT（执行专家）。', 'EXPERT'), enum: ['EXPERT'] },
+    roles: {
+      type: 'array',
+      description: '账号已授予的角色列表，当前固定为 [EXPERT]。',
+      items: { ...text('角色代码，EXPERT=执行专家。', 'EXPERT'), enum: ['EXPERT'] },
+      examples: [['EXPERT']],
+    },
+    selectedRole: {
+      ...text(
+        '当前会话角色：查询 /users/me 时为 EXPERT；注册响应尚无会话，因此为 null。',
+        null,
+        true,
+      ),
+      enum: ['EXPERT', null],
+    },
+    hasExpertManagementRole: {
+      type: 'boolean',
+      description:
+        '当前会话是否具备执行专家管理职责；当前简化为查询本人资料且组织身份为 OWNER/ADMIN，完整项目负责人规则待迁移。注册响应为 false。',
+      examples: [false],
+    },
+    status: text(
+      '账号状态，ACTIVE=正常；其他状态禁止登录，旧状态 FROZEN=冻结、BANNED=封禁。新注册账号为 ACTIVE。',
+      'ACTIVE',
+    ),
+    creditScore: {
+      type: 'integer',
+      description: '信用分；信用体系尚未迁移，当前固定返回 100。',
+      examples: [100],
+    },
+    lastLoginAt: text(
+      '最近一次密码或短信登录成功时间，ISO 8601 UTC；尚未登录时为 null，刷新令牌不更新此字段。',
+      null,
+      true,
+    ),
+    lastLoginIp: text('最近一次密码或短信登录的客户端 IP；尚未登录时为 null。', null, true),
+    organization: organizationResponse,
+    createdAt: text('账号创建时间，ISO 8601 UTC 时间字符串。', userExample.createdAt),
+    updatedAt: text('账号最近更新时间，ISO 8601 UTC 时间字符串。', userExample.updatedAt),
+  },
+};
+export const loginResponse = {
+  type: 'object',
+  description:
+    '登录或刷新成功的令牌对。默认有效期 30 天；Web 同时设置 HttpOnly Cookie，API/桌面后续使用 accessToken 进行 Bearer 认证。',
+  required: ['accessToken', 'refreshToken', 'tokenType', 'expiresIn'],
+  examples: [
     {
-      type: 'object',
-      required: ['status', 'registrationToken', 'expiresAt'],
-      properties: {
-        status: { type: 'string', enum: ['registration_required'] },
-        registrationToken: { type: 'string' },
-        expiresAt: dateTime,
-      },
+      accessToken: 'a'.repeat(43),
+      refreshToken: 'r'.repeat(43),
+      tokenType: 'Bearer',
+      expiresIn: 2592000,
     },
   ],
-};
-export const codeResponse = {
-  type: 'object',
-  required: ['challengeId', 'expiresAt', 'resendAfterSeconds', 'mode'],
   properties: {
-    challengeId: { type: 'string', format: 'uuid' },
-    expiresAt: dateTime,
-    resendAfterSeconds: { type: 'integer' },
-    mode: { type: 'string', enum: ['mock', 'sms'] },
+    accessToken: text(
+      '访问令牌原值；后续 API 请求使用 Authorization: Bearer <accessToken>。当前为随机不透明字符串，不能按 JWT 解析；示例不是真实令牌。',
+      'a'.repeat(43),
+    ),
+    refreshToken: text(
+      '刷新令牌原值，用于 POST /auth/refresh。刷新成功后原令牌对失效；请使用新返回的刷新令牌，示例不可用于认证。',
+      'r'.repeat(43),
+    ),
+    tokenType: { ...text('令牌认证类型，固定为 Bearer。', 'Bearer'), enum: ['Bearer'] },
+    expiresIn: {
+      type: 'integer',
+      description: '访问令牌有效时长，单位：秒；当前默认 2592000 秒（30 天），从本次签发开始计算。',
+      examples: [2592000],
+    },
   },
 };
-const failure = {
+const registrationRequiredResponse = {
   type: 'object',
-  required: ['code', 'message', 'requestId'],
+  description:
+    '手机号已验证但尚未注册。客户端展示注册资料表单；不创建用户、登录会话或登录 Cookie。',
+  required: ['status', 'registrationToken', 'expiresAt'],
+  examples: [
+    {
+      status: 'registration_required',
+      registrationToken: 'g'.repeat(43),
+      expiresAt: '2026-10-16T12:10:00.000Z',
+    },
+  ],
   properties: {
-    code: { type: 'string' },
-    message: { type: 'string' },
-    requestId: { type: 'string' },
+    status: {
+      ...text('处理状态，registration_required=需要填写资料并注册。', 'registration_required'),
+      enum: ['registration_required'],
+    },
+    registrationToken: text(
+      '一次性注册凭证，绑定本次手机号，10 分钟有效；仅用于 /auth/register，不能访问受保护接口。再次验证该手机号后旧凭证失效；示例不可实际使用。',
+      'g'.repeat(43),
+    ),
+    expiresAt: text(
+      '注册凭证到期时间，ISO 8601 UTC；到期后重新获取登录验证码。',
+      '2026-10-16T12:10:00.000Z',
+    ),
   },
+};
+export const smsLoginResponse = {
+  description:
+    '已注册返回登录令牌对；未注册返回注册指引。根据 status=registration_required 展示表单，未填写不产生账号。',
+  anyOf: [loginResponse, registrationRequiredResponse],
+  examples: [loginResponse.examples[0], registrationRequiredResponse.examples[0]],
+};
+export function resultSchema(data: DocumentedSchema) {
+  const examples = data.examples as unknown[] | undefined;
+  return {
+    type: 'object',
+    description: '统一业务响应包装；业务状态码、处理说明和业务数据。',
+    required: ['code', 'message', 'data'],
+    ...(examples ? { examples: [{ code: 200, message: '操作成功', data: examples[0] }] } : {}),
+    properties: {
+      code: {
+        type: 'integer',
+        description:
+          '业务状态码：200=成功；400=参数错误，401=未认证，403=无权限，404=不存在，409=冲突，413=请求过大，4292=限流，500=内部错误，503=服务不可用。业务码与 HTTP 状态码不总相同，例如限流 HTTP 429 对应业务码 4292。',
+        examples: [200],
+      },
+      message: text(
+        '本次处理结果的中文说明；成功通常为“操作成功”，失败返回可展示的具体原因。',
+        '操作成功',
+      ),
+      data: {
+        description: '接口业务数据；结构见本接口响应，失败或没有业务数据时为 null。',
+        ...data,
+      },
+    },
+  };
+}
+const operationDescriptions: Record<string, string> = {
+  sendCode:
+    '按 scene 发送验证码。不同场景独立验证，手机号跨场景共用 60 秒发送冷却；验证码 5 分钟有效，错误尝试最多 5 次。当前开发/测试仅 mock，不实际发短信，验证码为字符串 095270。',
+  register:
+    '使用 scene=register 的验证码或短信登录返回的 registrationToken 注册个人或组织账号（两者必须且只能提交一个），固定 EXPERT；成功返回用户资料，不自动登录。ORGANIZATION 必须填写 organization.name；个人账号不创建组织。可选营业执照须先通过文件上传获取 BUSINESS_LICENSE 的 objectKey/uploadToken；认领、验证码消费和注册同事务，失败回滚。',
+  login:
+    '通过手机号、备用邮箱或 uid 与密码登录，固定 EXPERT。成功签发访问/刷新令牌并更新最近登录时间/IP；密码错误或无账号返回 401，禁用账号返回 403。',
+  loginBySms:
+    '使用 scene=login 的验证码验证手机号，固定 EXPERT。已注册账号签发登录令牌；未注册返回 HTTP 200、status=registration_required、registrationToken 和 expiresAt，客户端展示注册表单。凭证绑定手机号、10 分钟有效且一次性，再次验证同手机号后旧凭证失效；未提交注册不创建用户或会话。验证码成功使用后失效。',
+  refresh:
+    '提交 refreshToken 换取新令牌对；原访问令牌及刷新令牌失效，重复使用返回 401。客户端类型必须与原登录一致；刷新不会更新最近登录时间/IP。',
+  resetPassword:
+    '使用 scene=reset_password 的验证码修改密码。成功后撤销该账号全部客户端的访问与刷新令牌，须重新登录；成功 data 为 null。',
+  getCurrentUser:
+    '根据当前有效会话返回用户资料，selectedRole=EXPERT；没有有效会话返回 401。完整多组织、实名和项目管理能力尚待迁移，当前占位字段见响应说明。',
+  logout:
+    '撤销当前访问令牌对应的会话及其刷新令牌，Web 同时清除登录 Cookie；不影响其他客户端会话。没有会话也成功，data 为 null。',
+};
+const errorDescriptions: Record<number, string> = {
+  400: '请求字段/格式、验证码、密码确认或业务条件不正确。',
+  401: '账号密码错误、手机号未注册，或会话/刷新令牌无效、过期、已撤销。',
+  403: '账号已禁用、请求来源或客户端凭据组合不被允许。',
+  404: '需要操作的账号不存在。',
+  409: '手机号、邮箱、身份证或组织信息与已有数据冲突。',
+  413: '请求体超过服务端大小限制。',
+  429: '操作频率或验证码错误次数超限；业务码 4292，Retry-After 响应头表示建议等待秒数。',
+  500: '内部处理失败。',
+  503: '数据库或服务暂不可用。',
 };
 export function authSchema(
   operationId: string,
   summary: string,
-  response: Record<string, unknown>,
+  response: unknown,
   protectedRoute = false,
 ): FastifySchema {
+  const failure = resultSchema({ type: 'null', description: '失败时无业务数据，固定为 null。' });
   return {
     operationId,
     summary,
     tags: ['Auth'],
-    description:
-      'Web 请求默认使用 Cookie；POST 的 Origin 必须在 WEB_ORIGINS 内。桌面请求需 X-Tyde-Client: desktop 且不能带 Origin、Cookie 或 sec-fetch-* 头。429 响应包含 Retry-After（秒）。',
+    description: `${operationDescriptions[operationId] ?? summary}\n\n沿用旧字段与 code/message/data 包装。role/roles 可省略；即使传入其他已知角色仍固定 EXPERT。Web 使用 HttpOnly Cookie，写请求 Origin 须在 WEB_ORIGINS 内。桌面使用 X-Tyde-Client: desktop 和 Bearer，禁止 Origin、Cookie、sec-fetch-*。无浏览器头、Cookie 和客户端声明的 API 调试请求自动按 Bearer 客户端处理。不要混用 Cookie 与 Authorization。`,
     security: protectedRoute ? [{ webSession: [] }, { desktopSession: [] }] : [],
-    headers: {
-      type: 'object',
-      properties: {
-        'x-tyde-client': { type: 'string', enum: ['web', 'desktop'], default: 'web' },
-      },
-    },
     response: {
-      400: failure,
-      403: failure,
-      413: failure,
-      429: failure,
-      500: failure,
-      503: failure,
-      ...response,
+      200: response,
+      ...Object.fromEntries(
+        Object.entries(errorDescriptions).map(([status, description]) => [
+          status,
+          {
+            ...failure,
+            description,
+            examples: [
+              {
+                code: Number(status) === 429 ? 4292 : Number(status),
+                message: description,
+                data: null,
+              },
+            ],
+          },
+        ]),
+      ),
     },
   };
 }
-export const authFailure = failure;

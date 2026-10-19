@@ -15,6 +15,7 @@ playwright-report/
 !.env.example
 !.env.test.example
 apps/server/src/generated/
+apps/server/public/
 apps/electron/resources/runtime.json
 .DS_Store
 *.log
