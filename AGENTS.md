@@ -9,6 +9,7 @@
 - 禁止引入、复制、引用或依赖任何前雇主或第三方组织的内部包、SDK、组件、工具、脚本、私有仓库或内部服务，包括直接依赖、传递依赖、开发依赖及构建依赖。替换名称不能使内部实现或依赖合规；必须移除或改用公开可用且来源明确的实现。
 - 约束覆盖源码、注释、界面文案、文件与目录名、文档、测试与夹具、配置、环境变量示例、依赖清单、锁文件、生成文件、静态资源、交付产物，以及提交信息和 PR 标题、描述。迁移或复制外部内容前必须先清理相关标识与内部依赖。
 - 每次交付或提交前，必须检查本次变更及仓库当前文件的内容、路径、依赖清单和锁文件，并核查拟使用的提交信息与 PR 文案；文本需依据用户明确的限制进行不区分大小写的搜索，二进制资源与产物需检查可提取文本及元数据，依赖需确认来源并排查内部传递依赖。发现违规项必须先修复并复查；无法确认来源或无法消除时停止交付、提交和发布，并向用户说明阻塞原因，不得默默放行。
+- 本机规则词表存放于仓库根目录的 `commit-policy.json`，该文件必须保持 Git 忽略，仅供本机校验，不得暂存或提交。
 
 ## 项目概况
 
@@ -109,7 +110,7 @@ Vercel 项目 Root Directory 为 `apps/server`，`apps/server/vercel.json` 调�
 
 默认端口：Web 3001、Electron 开发页面 5174、API 3000、PostgreSQL 5432。开发客户端 F12 Network 可筛选 `tyde-debug` 查看本地代理请求；普通开发命令不开启主进程 inspector，需要上游 Node HTTP 调试时显式运行 `dev:electron:inspect` 或 `dev:electron:test:inspect`，额外启用 `--inspect=9229` 与 `--experimental-network-inspection`。集成测试会清表，只能连接 `.env.test` 指定且库名以 `_test` 结尾的专用测试库。
 Web 通过 `API_PROXY_TARGET`（shell 优先于 `apps/web/.env.local`）选择后端；默认使用本地 HTTP，HTTPS 后端自动启用自签名 HTTPS 并监听 `https://localhost:3001`，后端 `WEB_ORIGINS` 必须包含该来源。Electron 开发页面独立使用 `http://127.0.0.1:5174`，main 后端地址依次取 `TYDE_API_BASE_URL`、Web 的 `API_PROXY_TARGET` 配置、本地后端。
-Git 的 `pre-commit` 先通过 `scripts/check-commit-policy.mjs` 检查整个暂存索引的路径和文本，再用 lint-staged 只读检查暂存文件的 ESLint / Prettier；`commit-msg` 检查提交信息。规则必须来自仓库外的 `~/.config/tyde/commit-policy.json` 或 `TYDE_COMMIT_POLICY_FILE`，`terms` 为非空字符串数组；缺失、无效或指向仓库内均拒绝提交，不把具体规则写回仓库。自动守卫仅覆盖字面匹配和可解码文本；`pnpm-lock.yaml` 的 `packages` 下 `resolution.integrity` 仅对算法、长度与 Base64 格式均合法的摘要载荷避免随机字面误报，其余原文照常检查。二进制内容、编码变体及依赖来源仍须执行上面的完整交付核查。安装入口为 `scripts/install-hooks.mjs`，生产 / CI / 无 Git 的部署目录跳过；全量类型检查和业务测试不在提交钩子中执行。
+Git 的 `pre-commit` 先通过 `scripts/check-commit-policy.mjs` 检查整个暂存索引的路径和文本，再用 lint-staged 只读检查暂存文件的 ESLint / Prettier；`commit-msg` 检查提交信息。规则默认读取仓库根目录已被 Git 忽略的 `commit-policy.json`，也可通过 `TYDE_COMMIT_POLICY_FILE` 指定其他本机文件，`terms` 为非空字符串数组；默认文件缺失时跳过受限内容检查，不影响其他开发者提交及 ESLint / Prettier 校验，现存配置无效、规则为空或显式指定文件缺失时拒绝提交。词表仅用于本机，不随 Git 分发，不得暂存或提交。自动守卫仅覆盖字面匹配和可解码文本；`pnpm-lock.yaml` 的 `packages` 下 `resolution.integrity` 仅对算法、长度与 Base64 格式均合法的摘要载荷避免随机字面误报，其余原文照常检查。二进制内容、编码变体及依赖来源仍须执行上面的完整交付核查。安装入口为 `scripts/install-hooks.mjs`，生产 / CI / 无 Git 的部署目录跳过；全量类型检查和业务测试不在提交钩子中执行。
 修改后按影响范围验证；认证改动关注双端恢复/退出、过期、重放、限流与并发。测试位置：`tests/security.test.mjs`、`apps/server/tests/`、`tests/e2e/`。
 
 ## 按需补充上下文

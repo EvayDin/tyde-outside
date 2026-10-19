@@ -16,6 +16,7 @@ function fixture(t) {
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')),
   );
+  delete env.TYDE_COMMIT_POLICY_FILE;
   const git = (...args) =>
     execFileSync('git', ['-c', `core.hooksPath=${join(directory, 'hooks')}`, ...args], {
       cwd: repo,
@@ -31,10 +32,10 @@ function fixture(t) {
     writeFileSync(path, value);
     return path;
   };
-  const run = (args = ['staged'], policy = policyFile) =>
+  const run = (args = ['staged'], policy = policyFile, cwd = repo) =>
     spawnSync(process.execPath, [script, ...args], {
-      cwd: repo,
-      env: { ...env, TYDE_COMMIT_POLICY_FILE: policy },
+      cwd,
+      env: { ...env, ...(policy === null ? {} : { TYDE_COMMIT_POLICY_FILE: policy }) },
       encoding: 'utf8',
     });
   return { directory, repo, git, policyFile, write, run };
@@ -206,8 +207,35 @@ test('检查提交说明，拒绝命中且不泄露术语', (t) => {
   assert.equal(run(['commit-msg', message]).status, 0);
 });
 
-test('缺失、损坏和空规则配置均阻止检查', (t) => {
-  const { directory, policyFile, run } = fixture(t);
+test('默认本地规则缺失时跳过暂存内容和提交说明检查', (t) => {
+  const { directory, git, write, run } = fixture(t);
+  write('note.txt', 'Moonstone');
+  git('add', 'note.txt');
+  assert.equal(run(['staged'], null).status, 0);
+  const message = join(directory, 'message');
+  writeFileSync(message, 'chore: Moonstone');
+  assert.equal(run(['commit-msg', message], null).status, 0);
+});
+
+test('从子目录调用时使用仓库根目录的本地规则', (t) => {
+  const { directory, repo, git, write, run } = fixture(t);
+  write('commit-policy.json', JSON.stringify({ terms: ['Moonstone'] }));
+  write('nested/note.txt', 'public content');
+  git('add', 'nested/note.txt');
+  const cwd = join(repo, 'nested');
+  assert.equal(run(['staged'], null, cwd).status, 0);
+  write('nested/note.txt', 'Moonstone');
+  git('add', 'nested/note.txt');
+  rejected(run(['staged'], null, cwd));
+  const message = join(directory, 'message');
+  writeFileSync(message, 'chore: Moonstone');
+  rejected(run(['commit-msg', message], null, cwd));
+  writeFileSync(message, 'chore: public update');
+  assert.equal(run(['commit-msg', message], null, cwd).status, 0);
+});
+
+test('显式路径缺失、损坏和空规则配置均阻止检查', (t) => {
+  const { directory, policyFile, write, run } = fixture(t);
   rejected(run(['staged'], join(directory, 'missing.json')));
   for (const value of [
     '{"terms":["Moonstone"]',
@@ -217,13 +245,9 @@ test('缺失、损坏和空规则配置均阻止检查', (t) => {
   ]) {
     writeFileSync(policyFile, value);
     rejected(run());
+    write('commit-policy.json', value);
+    rejected(run(['staged'], null));
   }
-});
-
-test('拒绝放在仓库内部的策略配置', (t) => {
-  const { write, run } = fixture(t);
-  const policy = write('policy.json', JSON.stringify({ terms: ['Moonstone'] }));
-  rejected(run(['staged'], policy));
 });
 
 test('二进制正文仅提示人工检查，带 BOM 的文本仍检查内容', (t) => {

@@ -1,7 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { isAbsolute, join, relative, sep } from 'node:path';
+import { join } from 'node:path';
 
 function fail(message) {
   console.error(message);
@@ -74,14 +73,15 @@ try {
       maxBuffer: 64 * 1024 * 1024,
     });
   root = realpathSync(git('rev-parse', '--show-toplevel').toString().trimEnd());
-  const policyFile = realpathSync(
-    process.env.TYDE_COMMIT_POLICY_FILE ?? join(homedir(), '.config', 'tyde', 'commit-policy.json'),
-  );
-  const location = relative(root, policyFile);
-  if (!isAbsolute(location) && location !== '..' && !location.startsWith(`..${sep}`)) {
-    fail('提交策略配置必须位于仓库外部，已阻止提交。');
+  const configuredPolicyFile = process.env.TYDE_COMMIT_POLICY_FILE;
+  let policySource;
+  try {
+    policySource = readFileSync(configuredPolicyFile ?? join(root, 'commit-policy.json'), 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT' && configuredPolicyFile === undefined) process.exit(0);
+    throw error;
   }
-  const policy = JSON.parse(readFileSync(policyFile, 'utf8'));
+  const policy = JSON.parse(policySource);
   if (
     !policy ||
     typeof policy !== 'object' ||

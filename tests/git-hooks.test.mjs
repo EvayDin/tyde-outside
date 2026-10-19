@@ -13,7 +13,7 @@ async function fixture(t) {
   t.after(() => rm(temporary, { recursive: true, force: true }));
   const root = join(temporary, 'repository');
   await mkdir(root);
-  const policy = join(temporary, 'policy.json');
+  const policy = join(root, 'commit-policy.json');
   await writeFile(policy, JSON.stringify({ terms: ['fixture-block-token'] }));
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith('GIT_')),
@@ -21,12 +21,12 @@ async function fixture(t) {
   delete env.CI;
   delete env.NODE_ENV;
   delete env.HUSKY;
+  delete env.TYDE_COMMIT_POLICY_FILE;
   Object.assign(env, {
     PATH: dirname(process.execPath) + delimiter + (env.PATH ?? ''),
     XDG_CONFIG_HOME: join(temporary, 'config'),
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_CONFIG_GLOBAL: join(temporary, 'gitconfig'),
-    TYDE_COMMIT_POLICY_FILE: policy,
     PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: 'false',
     PNPM_CONFIG_PM_ON_FAIL: 'ignore',
   });
@@ -84,6 +84,8 @@ test('real Husky hooks check staged content without changing partial staging and
   await symlink(join(project, 'node_modules'), join(root, 'node_modules'), 'junction');
   pass(run('pnpm', ['run', 'prepare']));
   assert.equal(pass(git('config', '--local', '--get', 'core.hooksPath')), '.husky/_');
+  assert.equal(pass(git('check-ignore', '--', 'commit-policy.json')), 'commit-policy.json');
+  assert.equal(pass(git('ls-files', '--', 'commit-policy.json')), '');
 
   const code = 'sample file.js';
   const initial = 'export const count = 1;\n';
@@ -139,6 +141,15 @@ test('real Husky hooks check staged content without changing partial staging and
   assert.equal(await read(code), bad);
   pass(git('commit', '-m', 'test: formatted document with spaces'));
   assert.equal(git('show', 'HEAD:' + document).stdout, formatted);
+  assert.equal(staged(code), stagedGood);
+  assert.equal(await read(code), bad);
+
+  await rm(join(root, 'commit-policy.json'));
+  const withoutPolicy = '# Fixture\n\n- local rules are optional\n';
+  await write(document, withoutPolicy);
+  pass(git('add', '--', document));
+  pass(git('commit', '-m', 'test: FIXTURE-BLOCK-TOKEN without local policy'));
+  assert.equal(git('show', 'HEAD:' + document).stdout, withoutPolicy);
   assert.equal(staged(code), stagedGood);
   assert.equal(await read(code), bad);
 });
