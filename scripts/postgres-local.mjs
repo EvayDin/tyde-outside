@@ -4,13 +4,13 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { postgresTool } from './lib/postgres-tools.mjs';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const data = resolve(root, '.local/postgres');
 const command = process.argv[2];
 if (!['start', 'stop', 'status'].includes(command)) throw new Error('请输入 start / stop / status');
-const bin = process.env.PG_BIN ?? '/Applications/Postgres.app/Contents/Versions/latest/bin';
 function run(name, args, options = {}) {
-  const result = spawnSync(join(bin, name), args, { stdio: 'inherit', ...options });
+  const result = spawnSync(postgresTool(name), args, { stdio: 'inherit', ...options });
   if (result.error) throw new Error(`无法运行 ${name}，请安装 PostgreSQL 或设置 PG_BIN`);
   return result.status ?? 1;
 }

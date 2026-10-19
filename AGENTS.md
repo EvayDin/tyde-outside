@@ -23,7 +23,7 @@ Web 与 Electron 共用一份 React 前端，连接 Fastify 后端；后端是�
 | 路径                            | 职责与关键入口                                                                                                                                                                                                                                                                                                  |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `apps/web/src`                  | 唯一业务 UI。`app/App.tsx` 管理 TanStack Router Hash 路由、认证入口与个人资料页；`app/providers/index.tsx` 配置 React Query；`components/ui/` 为 shadcn 基础组件，`styles/global.css` 定义 Tailwind 主题；`modules/auth/` 放认证页面                                                                            |
-| `apps/web/src/services/api.ts`  | 页面调用入口，两种构建均导出 `platform.auth`；`hooks/useSession.ts` 用 React Query 的 `['session']` 管理当前用户，401 表示无会话，网络或服务错误保留重试入口                                                                                                                                                    |
+| `apps/web/src/services/api.ts`  | 页面调用入口，两种构建均导出 `platform.auth`；`hooks/useSession.ts` 用 React Query 的 `['session']` 管理当前用户；网络或 HTTP 5xx 错误每 3 秒自动重查（后台允许，可能被浏览器节流），成功或 401 后停止，其他 4xx 与响应格式异常保留手动重试，仅重查会话，不重放写请求                                           |
 | `packages/platform/src`         | 双端适配。`index.ts` 根据 `window.tydeDesktop` 选择 Web fetch（`web.ts`）或桌面 bridge（`electron.ts`），通过 `capabilities` 声明实际已实现的平台能力                                                                                                                                                           |
 | `packages/shared/src`           | 唯一后端认证 DTO/schema 在 `auth.ts`；API 常量、错误类型、页面 AuthApi 与不含登录令牌的 bridge 契约在 `index.ts`；IPC 通道在 `ipc.ts`                                                                                                                                                                           |
 | `apps/electron/src`             | `main/index.ts` 启动与静态资源协议；`main/windows.ts` 安全窗口；`preload/index.ts` 暴露受限 bridge；`main/ipc/index.ts` 校验并调用后端                                                                                                                                                                          |
@@ -78,19 +78,24 @@ React 页面 → services/api → packages/platform
 
 在仓库根目录执行，使用 Node.js 24 与 pnpm 11；本地数据库为原生 PostgreSQL。
 
-| 场景                  | 命令                                                                                              |
-| --------------------- | ------------------------------------------------------------------------------------------------- |
-| 首次准备              | `pnpm install` → `pnpm db:local:start` → `pnpm setup:local` → `pnpm db:deploy`                    |
-| 开发（分别启动）      | `pnpm dev:server`、`pnpm dev:web`、`pnpm dev:electron`                                            |
-| 静态检查              | `pnpm typecheck`、`pnpm lint`、`pnpm format:check`                                                |
-| 提交校验              | `pnpm prepare` 安装 Husky；`pnpm check:staged` 检查索引；`pnpm check:message <文件>` 检查提交信息 |
-| 核心 / 服务端单测     | `pnpm test:core`、`pnpm test`                                                                     |
-| 前端双端契约回归      | `pnpm test:frontend`，验证开发/生产真实请求契约与 Web/Electron 会话，使用隔离接口替身，无需数据库 |
-| 数据库集成 / 双端 E2E | `pnpm test:integration`、`pnpm test:e2e`，环境准备见 README                                       |
-| 构建                  | `pnpm build:web`、`pnpm build:server`、`pnpm build:electron`、`pnpm build:vercel`                 |
-| 打包                  | `pnpm package:web`、`pnpm package:server`、`pnpm package:mac`、`pnpm package:win`                 |
+| 场景                  | 命令                                                                                                     |
+| --------------------- | -------------------------------------------------------------------------------------------------------- |
+| 首次准备              | `pnpm install` → `pnpm db:local:start` → `pnpm setup:local` → `pnpm db:deploy`                           |
+| 本地一键开发          | `pnpm dev:local`：启动数据库、按需初始化、迁移，后端就绪后启动 Electron；Ctrl+C 清理本次进程，保留数据库 |
+| 开发（分别启动）      | `pnpm dev:server`、`pnpm dev:web`、`pnpm dev:electron`                                                   |
+| 静态检查              | `pnpm typecheck`、`pnpm lint`、`pnpm format:check`                                                       |
+| 提交校验              | `pnpm prepare` 安装 Husky；`pnpm check:staged` 检查索引；`pnpm check:message <文件>` 检查提交信息        |
+| 核心 / 服务端单测     | `pnpm test:core`、`pnpm test`                                                                            |
+| 前端双端契约回归      | `pnpm test:frontend`，验证开发/生产真实请求契约与 Web/Electron 会话，使用隔离接口替身，无需数据库        |
+| 数据库集成 / 双端 E2E | `pnpm test:integration`、`pnpm test:e2e`，环境准备见 README                                              |
+| 构建                  | `pnpm build:web`、`pnpm build:server`、`pnpm build:electron`、`pnpm build:vercel`                        |
+| 打包                  | `pnpm package:web`、`pnpm package:server`、`pnpm package:mac`、`pnpm package:win`                        |
 
 `pnpm build:server` 统一构建 Web 到 `apps/server/public` 并构建后端；`pnpm package:server` 将两者放进同一个后端包。独立入口 `main.ts` 与 Vercel 入口 `app.ts` 均通过 `web.ts` 托管页面；本地未构建 Web 时仅提供 API。HTTPS 部署可使用 `deploy/nginx-server.conf.example` 将全部路径转发至后端。
+
+`dev:local` 仅允许本机 5432 开发库，拒绝远程与 `_test` 库；线上数据库留在忽略的 `.env`，本地后端用 `dev:server` 单独启动。PostgreSQL 工具支持显式 `PG_BIN` / `PSQL_BIN`，否则查找 Postgres.app、Homebrew PostgreSQL 18 与 PATH。macOS 再次启动 Electron 会重开已关闭窗口或恢复隐藏、最小化窗口；并发启动只创建一个主窗口。
+
+Electron 的 `package:mac` / `package:win` 通过 `scripts/prepare-electron.mjs` 将可信 API 源写入安装包运行配置，默认 `https://aact.pw`，可用 `TYDE_API_BASE_URL` 覆盖。本地开发仍默认连接本机后端。
 
 Vercel 项目 Root Directory 为 `apps/server`，`apps/server/vercel.json` 调用根目录 `build:vercel`（复用 `build:server`）。`web.ts` 枚举 Web 目录以供 Vercel 文件追踪包含全部资源。`apps/server/public` 是忽略的构建产物；普通 Web / Electron 构建仍使用 `apps/web/dist`。控制台须开启根目录之外源码访问、关闭 Skip unaffected projects，并将页面源加入 `WEB_ORIGINS`。详细设置见 `docs/DEPLOY_TEST.md`。
 
