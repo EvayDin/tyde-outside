@@ -147,9 +147,28 @@ Windows PowerShell：先 `$env:TYDE_API_BASE_URL='https://真实测试域名'`�
 
 ### 文件存储与上传（01）
 
-上传、批量上传、鉴权代理、非敏感签名链接和本人未认领文件删除接口已接入。默认 `FILE_STORAGE_PROVIDER=disabled`，不会默认使用旧项目存储；启用时配置 `.env.example` 中的新项目专用 `OSS_ENDPOINT`（HTTPS 区域端点）、`OSS_BUCKET`、`OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET`。bucket应为私有，密钥仅放后端环境。当前使用OSS V1签名保留旧图片最大有效期行为，真实OSS上传/读取/签名尚未联调。协议参考 [OSS V1 URL 签名文档](https://www.alibabacloud.com/help/en/oss/developer-reference/ddd-signatures-to-urls)。接口及权限边界见 [API](API.md#文件上传凭证与访问)。
+上传、批量上传、鉴权代理、非敏感签名链接和本人未认领文件删除接口已接入。适配器使用 `ali-oss@6.23.0`，类型依赖 `@types/ali-oss@6.23.3`；保留 SDK V1 签名以兼容旧图片最大有效期。接口及权限边界见 [API](API.md#文件上传凭证与访问)。SDK 参考 [ali-oss 官方说明](https://github.com/ali-sdk/ali-oss#readme)。
 
-新增迁移 `20261016010000_uploaded_files` 包含 UploadedFile 台账和 Organization.businessLicenseKey。2026-10-16用户本机已在专用 `_test` 库应用，Agent复测29项数据库集成通过；开发库和部署环境迁移未执行。其他环境部署前须应用全部迁移。集成测试会清表，只能连接 `.env.test` 指定的专用库；确认 APP_ENV=test、库名以 `_test` 结尾、TEST_DATABASE_RESET=true。不要对开发库运行测试。
+2026-10-19 用户明确指定使用上海区域 bucket `lsh-oss-agi-tool-platform`。本地后端 `.env` 已配置，密钥仅留在被 Git 忽略的后端环境文件；其他部署环境须单独注入，示例仍默认 `FILE_STORAGE_PROVIDER=disabled`。本次授权使用指定 bucket 不代表旧台账与新库互通，也不修改 bucket 设置或既有对象。新上传对象显式 `private`，并设置禁止覆盖同名对象；RAM 凭据须允许相应对象上传、读取和删除。
+
+- `FILE_STORAGE_PROVIDER=oss`：启用存储。
+- `OSS_ENDPOINT=https://oss-cn-shanghai-internal.aliyuncs.com`：后端读写端点，适用于具备上海 OSS 内网连通性的阿里云环境；本机/Vercel 使用 `https://oss-cn-shanghai.aliyuncs.com`，不会自动降级或切换网络。
+- `OSS_PUBLIC_ENDPOINT=https://oss-cn-shanghai.aliyuncs.com`：非敏感文件签名链接端点。省略时从读写端点推导同区域外网端点，禁止内网或不同区域端点；不支持自定义 CNAME。两个端点均接受省略 `https://` 的主机名，但拒绝 HTTP、bucket 子域、路径、查询、用户信息。
+- 项目物理主目录固定为 `lsh-oss-agi-tool-platform/tyde/`；OSS适配器对上传、HEAD、流读取、签名和删除统一添加 `tyde/`。例如业务键 `common/2026/10/19/<UUID>.png` 对应OSS键 `tyde/common/2026/10/19/<UUID>.png`。API和台账保留相对业务键，客户端原样传入，不自行添加前缀；本次未搬迁既有根目录对象，也不回退访问根目录对象。
+- `OSS_BUCKET`、`OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET`：仅供后端使用，不配置到 Web/Electron。不要将实际密钥或签名链接写入文档和日志。
+
+从 `tyde/` 执行独立存储验证（不连接数据库）：
+
+```bash
+# 本机用外网端点；shell 环境变量优先于后端 .env。
+OSS_ENDPOINT=https://oss-cn-shanghai.aliyuncs.com pnpm --filter @tyde/server storage:verify
+# 阿里云同区域环境直接使用 .env 的内网配置。
+pnpm --filter @tyde/server storage:verify
+```
+
+脚本仅写入随机 `tyde/common/oss-verification/<UUID>.txt` 并在 finally 尝试删除，不枚举或删除既有对象。验证 PUT、HEAD、流式 GET 内容、普通/图片最大有效期外网签名 GET、DELETE、删除后 HEAD=null/GET=404 和重复 DELETE。若清理失败，按输出的对象键人工删除本次对象。SDK 同步异常和下载流中途异常对接口统一脱敏；404 的 NoSuchKey 与 bucket/权限错误区分，其他失败返回503。此脚本通过只代表基础对象操作通过，HTTP 上传/台账/认领及真实失败恢复仍需业务环境验收。2026-10-19 用户本机以外网端点执行此脚本，全部步骤通过且测试对象已删除（当时尚无tyde/前缀）；随后用户启动后端，Agent通过curl调用实际HTTP服务，tyde/前缀下五个文件入口的上传、批量、代理、签名下载、删除及权限拒绝已通过，保留3个测试对象、删除1个供用户查看，路径与证据统一见[01记录](../../backend-migration/01-files/todoTask.md#完成与交接记录)。内网端点连通性、真实营业执照认领链路与故障恢复仍未验证。
+
+新增迁移 `20261016010000_uploaded_files` 包含 UploadedFile 台账和 Organization.businessLicenseKey。2026-10-16用户本机已在专用 `_test` 库应用；2026-10-19 Agent启动本地库后复跑34项数据库集成通过（对象存储使用内存适配）。用户已于2026-10-19在开发库 `tyde_outside` 执行 `pnpm db:deploy` 应用文件迁移，解决实测上传P2021/500；部署环境迁移未执行。其他环境部署前须应用全部迁移。集成测试会清表，只能连接 `.env.test` 指定的专用库；确认 APP_ENV=test、库名以 `_test` 结尾、TEST_DATABASE_RESET=true。不要对开发库运行测试。
 
 默认单文件50MiB、总请求100MiB（按原始流统计，含multipart开销）、批量10个；反向代理也须允许相应请求大小。整个请求文件内容在内存中有界缓冲后校验，部署需按并发和内存预算收紧 `.env.example` 的大小/数量配置；Vercel/网关的平台限制独立于应用上限，未做大文件远程验收。当前配置参数统一为字节整数（不接受旧100MB字符串）。
 

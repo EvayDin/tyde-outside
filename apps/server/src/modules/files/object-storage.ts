@@ -1,8 +1,10 @@
-import { createHmac } from 'node:crypto';
-import { Readable } from 'node:stream';
-import type { fetch as nodeFetch, Response } from 'undici-types';
+import { PassThrough, type Readable } from 'node:stream';
+import OSS from 'ali-oss';
 import { AuthError } from '../auth/auth.error.js';
 import type { FileConfig } from './file.config.js';
+
+// API/台账使用相对业务键；只有 OSS 适配器负责添加项目物理目录。
+export const OSS_OBJECT_PREFIX = 'tyde';
 
 export interface ObjectStorage {
   put(key: string, content: Buffer, contentType: string): Promise<void>;
@@ -24,98 +26,109 @@ export function validObjectKey(key: string): string {
 }
 const unavailable = () => new AuthError(503, 'STORAGE_UNAVAILABLE', '文件存储未配置或暂不可用');
 
-/** OSS V1 签名保留旧服务图片最大有效期行为；不读取旧 Apollo 凭证或 bucket。 */
+/** SDK V1 签名兼容旧图片有效期；服务端读写与客户端签名分别使用内/外网端点。 */
+type OssClient = Pick<OSS, 'put' | 'head' | 'getStream' | 'delete' | 'signatureUrl'>;
+type ClientFactory = (options: OSS.Options) => OssClient;
+
+function missingObject(error: unknown) {
+  if (!error || typeof error !== 'object') return false;
+  const { code, status } = error as { code?: string; status?: number };
+  return code === 'NoSuchKey' || (status === 404 && !code);
+}
+function objectSize(headers: object): number {
+  const value = (headers as Record<string, unknown>)['content-length'];
+  const size = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : NaN;
+  if (!Number.isSafeInteger(size) || size < 0) throw unavailable();
+  return size;
+}
+
 export class OssObjectStorage implements ObjectStorage {
-  constructor(
-    private readonly config: FileConfig,
-    // Node 原生 fetch 基于 Undici；显式类型避免 Vercel 编译时全局 Response 丢失成员。
-    private readonly request: typeof nodeFetch = fetch as typeof nodeFetch,
-  ) {}
-  private url(key: string) {
-    validObjectKey(key);
-    const url = new URL(this.config.endpoint);
-    url.hostname = `${this.config.bucket}.${url.hostname}`;
-    url.pathname = '/' + key.split('/').map(encodeURIComponent).join('/');
-    return url;
+  private readonly client: OssClient;
+  private readonly signer: OssClient;
+  constructor(config: FileConfig, factory: ClientFactory = (options) => new OSS(options)) {
+    const options: OSS.Options = {
+      bucket: config.bucket,
+      accessKeyId: config.accessKeyId,
+      accessKeySecret: config.accessKeySecret,
+      secure: true,
+      timeout: 30_000,
+      authorizationV4: false,
+    };
+    this.client = factory({ ...options, endpoint: config.endpoint });
+    this.signer = factory({ ...options, endpoint: config.publicEndpoint });
   }
-  private sign(method: string, key: string, date: string, contentType = '') {
-    return createHmac('sha1', this.config.accessKeySecret)
-      .update(`${method}\n\n${contentType}\n${date}\n/${this.config.bucket}/${key}`)
-      .digest('base64');
-  }
-  private async send(method: string, key: string, content?: Buffer, contentType = '') {
-    key = validObjectKey(key);
-    const date = new Date().toUTCString();
-    let result: Response;
+  async put(key: string, content: Buffer, contentType: string) {
+    key = `${OSS_OBJECT_PREFIX}/${validObjectKey(key)}`;
     try {
-      result = await this.request(this.url(key), {
-        method,
-        redirect: 'error',
-        signal: AbortSignal.timeout(30_000),
-        headers: {
-          Date: date,
-          Authorization: `OSS ${this.config.accessKeyId}:${this.sign(method, key, date, contentType)}`,
-          ...(contentType ? { 'Content-Type': contentType } : {}),
-        },
-        ...(content ? { body: new Uint8Array(content) } : {}),
+      await this.client.put(key, content, {
+        mime: contentType,
+        headers: { 'x-oss-object-acl': 'private', 'x-oss-forbid-overwrite': 'true' },
       });
     } catch {
       throw unavailable();
     }
-    if (result.status === 404 && (method === 'GET' || method === 'HEAD')) {
-      await result.body?.cancel();
-      if (method === 'HEAD') return null;
-      throw new AuthError(404, 'NOT_FOUND', '文件不存在');
-    }
-    if (!result.ok) {
-      await result.body?.cancel();
-      throw unavailable();
-    }
-    return result;
-  }
-  async put(key: string, content: Buffer, contentType: string) {
-    const response = await this.send('PUT', key, content, contentType);
-    await response?.body?.cancel();
   }
   async head(key: string) {
-    const response = await this.send('HEAD', key);
-    if (!response) return null;
-    const length = response.headers.get('content-length');
-    const size = length === null ? NaN : Number(length);
-    if (!Number.isSafeInteger(size) || size < 0) throw unavailable();
-    return { size };
-  }
-  async open(key: string) {
-    const response = await this.send('GET', key);
-    if (!response?.body) throw unavailable();
-    const length = response.headers.get('content-length');
-    const size = length === null ? NaN : Number(length);
-    if (!Number.isSafeInteger(size) || size < 0) {
-      await response.body.cancel();
+    key = `${OSS_OBJECT_PREFIX}/${validObjectKey(key)}`;
+    let result;
+    try {
+      result = await this.client.head(key);
+    } catch (error) {
+      if (missingObject(error)) return null;
       throw unavailable();
     }
+    return { size: objectSize(result.res.headers) };
+  }
+  async open(key: string) {
+    key = `${OSS_OBJECT_PREFIX}/${validObjectKey(key)}`;
+    let result;
+    try {
+      result = await this.client.getStream(key);
+    } catch (error) {
+      if (missingObject(error)) throw new AuthError(404, 'NOT_FOUND', '文件不存在');
+      throw unavailable();
+    }
+    const source = result.stream;
+    if (!source) throw unavailable();
+    let size: number;
+    try {
+      size = objectSize(result.res.headers);
+    } catch {
+      source.destroy();
+      throw unavailable();
+    }
+    // 下载开始后的 SDK 错误也不能将上游请求/签名等细节传播到 HTTP 响应或日志。
+    const stream = new PassThrough();
+    source.on('error', () => stream.destroy(unavailable()));
+    source.on('close', () => {
+      if (!source.readableEnded) stream.destroy(unavailable());
+    });
+    stream.on('close', () => source.destroy());
+    source.pipe(stream);
+    const contentType = (result.res.headers as Record<string, unknown>)['content-type'];
     return {
-      stream: Readable.fromWeb(response.body),
+      stream,
       size,
-      contentType: response.headers.get('content-type') ?? 'application/octet-stream',
+      contentType: typeof contentType === 'string' ? contentType : 'application/octet-stream',
     };
   }
   async delete(key: string) {
-    const response = await this.send('DELETE', key);
-    await response?.body?.cancel();
+    key = `${OSS_OBJECT_PREFIX}/${validObjectKey(key)}`;
+    try {
+      await this.client.delete(key);
+    } catch (error) {
+      if (!missingObject(error)) throw unavailable();
+    }
   }
   accessUrl(key: string, seconds: number) {
-    key = validObjectKey(key);
+    key = `${OSS_OBJECT_PREFIX}/${validObjectKey(key)}`;
     if (!Number.isInteger(seconds) || seconds < 1 || seconds > 2147483647)
       throw new AuthError(400, 'BAD_REQUEST', '访问链接有效期不正确');
-    const expires = String(Math.floor(Date.now() / 1000) + seconds);
-    const url = this.url(key);
-    url.search = new URLSearchParams({
-      OSSAccessKeyId: this.config.accessKeyId,
-      Expires: expires,
-      Signature: this.sign('GET', key, expires),
-    }).toString();
-    return url.href;
+    try {
+      return this.signer.signatureUrl(key, { expires: seconds, method: 'GET' });
+    } catch {
+      throw unavailable();
+    }
   }
 }
 

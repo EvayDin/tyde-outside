@@ -22,7 +22,7 @@ Web 与 Electron 共用一份 React 前端，连接 Fastify 后端；后端是�
 | `apps/electron/src/main`        | `transport.ts` 发 HTTP 请求；`session.ts` 加密持久化令牌；`config.ts` 校验可信后端地址                                                                                                                                                                       |
 | `apps/server/src`               | `main.ts` 本地/独立服务启动；`app.ts` 为 Vercel 默认导出 HTTP server；`application.ts` 装配 Fastify、Prisma、路由、统一错误与健康检查；`config/index.ts` 校验环境变量；`docs.ts` 注册 Swagger                                                                |
 | `apps/server/src/modules/auth`  | `auth.routes.ts` 处理 HTTP、Cookie、客户端类型；`auth.service.ts` 处理认证、事务、限流；`security.ts` 放安全规则；`sms.ts` 放短信 provider                                                                                                                   |
-| `apps/server/src/modules/files` | `object-storage.ts` 为显式启用的 OSS 适配；`file-registry.service.ts` 为上传台账、一次性认领、释放/清理基础。`file.routes.ts` 注册上传、鉴权代理、签名链接及删除五个旧接口；`file-validation.ts` 校验类型/内容/大小。已认领项目/考试附件读取待业务权限回补。 |
+| `apps/server/src/modules/files` | `object-storage.ts` 使用 ali-oss，对OSS操作统一添加固定 `tyde/` 物理目录（API/台账保留相对业务键），服务端读写/外网签名端点分离，新对象私有且禁止覆盖；`file-registry.service.ts` 为上传台账、一次性认领、释放/清理基础。`file.routes.ts` 注册上传、鉴权代理、签名链接及删除五个旧接口；`file-validation.ts` 校验类型/内容/大小。已认领项目/考试附件读取待业务权限回补。 |
 | `apps/server/prisma`            | `schema.prisma` 定义数据模型，`migrations/` 管理数据库变更                                                                                                                                                                                                   |
 | `packages/config`               | 共用 TypeScript / ESLint 配置                                                                                                                                                                                                                                |
 | `scripts/`、`deploy/`           | 本地数据库、验证、打包脚本及 Nginx / systemd 部署模板                                                                                                                                                                                                        |
@@ -41,7 +41,7 @@ React 页面 → services/api → packages/platform
 - Web 使用 HttpOnly、SameSite=Lax Cookie 与来源校验；远程环境要求 HTTPS + Secure Cookie。桌面 main 使用 Bearer。无浏览器头和 Cookie 的普通 API 客户端无需额外客户端头。
 - 原前端仍使用 `/auth/code`、`/auth/verify`、`/auth/me` 与注册凭证流程；这部分未迁移，与新后端不兼容，需要后续前端任务对接。
 - 数据表：`User`、`Organization`、`VerificationChallenge`、`Session`、`AuthRateLimit`、`UploadedFile`；`RegistrationGrant` 复用于一次性注册凭证并保留历史数据，新凭证摘要带用途隔离。验证码消费、注册、刷新与重置依赖事务和数据库锁。
-- 组织注册营业执照已接入台账一次性认领，与验证码消费/组织/用户创建同事务；`businessLicenseUrl` 返回 objectKey，未提交为 null。文件上传/鉴权代理已接入；存储默认关闭，须显式配置新项目 OSS。已认领项目/考试附件读取仍待业务权限回补。迁移与验证限制见 `docs/AUTH_BACKEND.md`。
+- 组织注册营业执照已接入台账一次性认领，与验证码消费/组织/用户创建同事务；`businessLicenseUrl` 返回 objectKey，未提交为 null。文件上传/鉴权代理已接入；配置默认关闭，用户指定的上海 OSS 已在本地后端启用。内网部署使用 OSS_ENDPOINT，客户端下载使用 OSS_PUBLIC_ENDPOINT；独立验证为 `pnpm --filter @tyde/server storage:verify`，本机须临时用外网读写端点，详见部署说明。已认领项目/考试附件读取仍待业务权限回补。迁移与验证限制见 `docs/AUTH_BACKEND.md`。
 
 ## 开发新需求时
 

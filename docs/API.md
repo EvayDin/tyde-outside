@@ -66,6 +66,8 @@ const body = Type.Object(
 
 ## 文件上传、凭证与访问
 
+OSS物理主目录为 `lsh-oss-agi-tool-platform/tyde/`。API与台账的 `objectKey` 使用该目录内的相对业务键，例如 `business-license/...`；客户端原样传入，不自行添加 `tyde/` 或bucket名。签名URL会包含物理前缀。
+
 以下路径均加 `/api/v1`，沿用 `{code,message,data}`，失败 data=null；`GET /files/view` 成功时直接返回文件字节，不用 JSON 包装。
 
 | 方法与路径                 | 字段                                                  | 身份与结果                                                                                                    |
@@ -82,4 +84,4 @@ const body = Type.Object(
 
 组织注册的 `organization.businessLicense` 接受 BUSINESS_LICENSE 的 `objectKey/uploadToken`，默认24小时内一次认领（可配置），原文凭证不落库。无记录/类型错误/存储对象缺失或大小不符400，错误凭证403，过期/重复409，存储关闭/不可达503。认领、验证码消费、组织与用户创建同事务，失败回滚；`organization.businessLicenseUrl` 保留旧字段名，返回objectKey或null，不是公开URL。
 
-Swagger 已提供 multipart 输入、全部请求/响应/查询字段中文说明和完整schema示例，文件代理200按真实媒体类型记录二进制响应。测试使用真实专用PostgreSQL及内存对象存储，29项集成通过；真实OSS尚未联调，默认 FILE_STORAGE_PROVIDER=disabled，须先配置新项目专用存储。
+Swagger 已提供 multipart 输入、全部请求/响应/查询字段中文说明和完整schema示例，文件代理200按真实媒体类型记录二进制响应。测试使用真实专用PostgreSQL及内存对象存储，2026-10-19复跑34项集成通过；2026-10-19 已用 ali-oss 接入用户指定 bucket，服务端内网读写与外网签名端点分离，新对象显式私有且禁止覆盖；接口方法、字段和权限不变。示例默认 FILE_STORAGE_PROVIDER=disabled，本地后端已配置启用；用户本机已通过真实OSS独立验证（上传/HEAD/流读取/两种有效期签名GET/删除与幂等），五个文件入口已通过运行中后端+开发库+真实OSS的HTTP联调（含上传/批量/代理/签名下载/删除及权限拒绝），真实营业执照认领及后续业务附件关系仍待验收，步骤见[部署说明](DEPLOY_TEST.md#文件存储与上传01)。

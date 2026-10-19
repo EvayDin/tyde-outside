@@ -1,6 +1,7 @@
 export interface FileConfig {
   provider: 'disabled' | 'oss';
   endpoint: string;
+  publicEndpoint: string;
   bucket: string;
   accessKeyId: string;
   accessKeySecret: string;
@@ -23,14 +24,16 @@ export function readFileConfig(source: NodeJS.ProcessEnv): FileConfig {
       throw new Error(`${name} 配置无效`);
     return value;
   }
-  const endpoint = source.OSS_ENDPOINT ?? '';
-  const bucket = source.OSS_BUCKET ?? '';
-  const accessKeyId = source.OSS_ACCESS_KEY_ID ?? '';
-  const accessKeySecret = source.OSS_ACCESS_KEY_SECRET ?? '';
-  if (provider === 'oss') {
-    const url = new URL(endpoint);
+  function endpointUrl(value: string, name: string) {
+    let url: URL;
+    try {
+      url = new URL(value.includes('://') ? value : `https://${value}`);
+    } catch {
+      throw new Error(`${name} 必须是无路径的 HTTPS 区域端点`);
+    }
     if (
       url.protocol !== 'https:' ||
+      !/^oss-[a-z0-9-]+\.aliyuncs\.com$/.test(url.hostname) ||
       url.pathname !== '/' ||
       url.search ||
       url.hash ||
@@ -38,13 +41,31 @@ export function readFileConfig(source: NodeJS.ProcessEnv): FileConfig {
       url.password ||
       url.port
     )
-      throw new Error('OSS_ENDPOINT 必须是无路径的 HTTPS 区域端点');
+      throw new Error(`${name} 必须是无路径的 HTTPS OSS 区域端点`);
+    return url.origin;
+  }
+  let endpoint = source.OSS_ENDPOINT?.trim() ?? '';
+  let publicEndpoint = source.OSS_PUBLIC_ENDPOINT?.trim() ?? '';
+  const bucket = source.OSS_BUCKET ?? '';
+  const accessKeyId = source.OSS_ACCESS_KEY_ID ?? '';
+  const accessKeySecret = source.OSS_ACCESS_KEY_SECRET ?? '';
+  if (provider === 'oss') {
+    endpoint = endpointUrl(endpoint, 'OSS_ENDPOINT');
+    publicEndpoint = endpointUrl(
+      publicEndpoint || endpoint.replace('-internal.', '.'),
+      'OSS_PUBLIC_ENDPOINT',
+    );
+    if (new URL(publicEndpoint).hostname.includes('-internal.'))
+      throw new Error('OSS_PUBLIC_ENDPOINT 必须使用外网区域端点');
+    if (publicEndpoint !== endpoint.replace('-internal.', '.'))
+      throw new Error('OSS_PUBLIC_ENDPOINT 必须与 OSS_ENDPOINT 属于同一区域');
     if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(bucket) || !accessKeyId || !accessKeySecret)
-      throw new Error('请配置新项目专用 OSS bucket 和访问密钥');
+      throw new Error('请配置 OSS bucket 和访问密钥');
   }
   return {
     provider,
     endpoint,
+    publicEndpoint,
     bucket,
     accessKeyId,
     accessKeySecret,

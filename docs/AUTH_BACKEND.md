@@ -27,7 +27,7 @@
 可选字段：`roles`、`nickname`、`idCardNo`、`orgPosition`、`email`、`organization`。
 
 `accountType` 为 `INDIVIDUAL` / `ORGANIZATION`。昵称默认真实姓名。个人账号忽略组织信息；组织账号要求 `organization.name`，组织内身份默认 `OWNER`，可沿用 `ADMIN` / `MEMBER`。
-组织信息保留字段 `name`、`unifiedCreditCode`、`businessLicense`（`objectKey` / `uploadToken`）、`description`、`logoUrl`、`expertiseTags`。**营业执照已接入文件上传台账认领：先调用 POST /files/upload 且 bizType=BUSINESS_LICENSE，再提交 objectKey/uploadToken。默认24小时有效（可配置）；注册组织、创建用户、消费验证码和认领同事务，失败回滚。businessLicenseUrl 保留旧字段名，返回objectKey或null，不返回公开链接；已认领营业执照仅本组织OWNER/ADMIN通过鉴权代理读取。默认文件存储关闭，启用须配置新项目OSS；真实OSS未联调。**
+组织信息保留字段 `name`、`unifiedCreditCode`、`businessLicense`（`objectKey` / `uploadToken`）、`description`、`logoUrl`、`expertiseTags`。**营业执照已接入文件上传台账认领：先调用 POST /files/upload 且 bizType=BUSINESS_LICENSE，再提交 objectKey/uploadToken。默认24小时有效（可配置）；注册组织、创建用户、消费验证码和认领同事务，失败回滚。businessLicenseUrl 保留旧字段名，返回objectKey或null，不返回公开链接；已认领营业执照仅本组织OWNER/ADMIN通过鉴权代理读取。配置模板默认关闭文件存储；本地后端已启用用户指定OSS，2026-10-19五个文件HTTP入口与真实OSS联调已通过。营业执照注册认领完整链路仍只在PostgreSQL+内存存储验证，尚无真实OSS闭环结果。**
 
 LoginResponse 字段严格使用 `accessToken`、`refreshToken`、`tokenType`（`Bearer`）、`expiresIn`（秒）。注册仅创建账号并返回资料，不自动登录；未注册手机号短信登录返回 HTTP 200 和 `{ status: "registration_required", registrationToken, expiresAt }`，不创建账号或登录会话、不设置登录 Cookie；客户端据此进入资料填写页。注册凭证绑定手机号、10 分钟有效、一次性使用，再次验证同手机号会使旧凭证失效；放弃填写后，下次重新获取登录验证码并验证仍返回注册指引。
 
@@ -186,5 +186,7 @@ ALTER ROLE tyde_outside_dev LOGIN CREATEDB;
 ## 核心基线交接
 
 2026-10-16 用户授权遗留项备注后交接 01，当前任务指针已切换为文件存储与上传凭证。00 核心测试通过，完整业务验收未完成，兼容差异未自动获得接受。短信暂用 mock 095270，真实短信为上线依赖；营业执照在 01 回补，资料/组织/主管/presence 分别依赖 02/03/07/14。其余兼容决定、公共能力及联调待办见 [00 遗留项与回补条件](../../backend-migration/00-auth/todoTask.md#遗留项与回补条件)。本次仅交接，不启动 01 实现。
+
+01最新环境补充（2026-10-19）：用户已在开发库tyde_outside应用uploaded_files迁移，解决文件上传P2021；文件HTTP入口真实OSS联调通过，详情见[01记录](../../backend-migration/01-files/todoTask.md#完成与交接记录)。以下为历史测试记录。
 
 01 回补进展（2026-10-16）：用户本机已应用第三个迁移 `20261016010000_uploaded_files`（专用测试库，非开发库），并安装 multipart 依赖。修复大小不符测试中两个字符串同为10字节的夹具错误，改用台账大小+1；Agent先复测21项全部通过，再接入文件HTTP接口并扩展为29项集成全部通过（真实PostgreSQL+内存对象存储）。API-002营业执照上传/注册/认领/代理链路已验证；原API-002仍为部分迁移，多组织/昵称等其他回补不变。文件业务权限及真实OSS联调限制见 [01 记录](../../backend-migration/01-files/todoTask.md)。
