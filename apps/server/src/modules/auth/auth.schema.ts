@@ -13,7 +13,7 @@ const organizationResponse = {
   nullable: true,
   additionalProperties: true,
   description:
-    '当前关联组织资料；没有组织时为 null。当前注册和资料查询仅返回新项目已保存的组织信息，完整多组织关系待迁移。',
+    '当前关联组织资料；没有组织时为 null。从可参与的多组织关系中选取：OWNER优先，其次最早入组，未记录入组时间排后；已删除组织不展示。',
   properties: {
     id: text('组织主键 ID，新项目为 UUID 字符串。', '00000000-0000-4000-8000-000000000002'),
     name: text('组织名称。', '示例标注团队'),
@@ -32,10 +32,10 @@ const organizationResponse = {
       examples: [['图像标注']],
     },
     verifyStatus: text(
-      '组织审核状态；当前实现固定返回 PENDING（待审核），审核流程尚未迁移。',
+      '组织审核状态，读取数据库：PENDING=待审核、APPROVED=通过、REJECTED=拒绝；审核写操作尚未迁移。',
       'PENDING',
     ),
-    status: text('组织状态；当前实现固定返回 ACTIVE（正常）。', 'ACTIVE'),
+    status: text('组织状态，读取数据库：ACTIVE=正常、FROZEN=冻结、DISSOLVED=解散。', 'ACTIVE'),
     position: {
       ...text(
         '当前用户在组织内的身份：OWNER=组织主管，ADMIN=管理员，MEMBER=成员；无身份记录时为 null。',
@@ -45,7 +45,7 @@ const organizationResponse = {
       enum: ['OWNER', 'ADMIN', 'MEMBER', null],
     },
     joinStatus: text(
-      '当前用户的组织加入状态；当前实现固定返回 ACTIVE（已加入），完整加入/退出流程尚未迁移。',
+      '当前所选组织关系状态：ACTIVE=在组、EXIT_APPROVING=退出审批中、PENDING_LEAVE=待离职；其他状态不展示。',
       'ACTIVE',
     ),
     createdAt: text('组织创建时间，ISO 8601 UTC 时间字符串。', '2026-10-16T08:00:00.000Z'),
@@ -126,7 +126,7 @@ export const userResponse = {
     hasExpertManagementRole: {
       type: 'boolean',
       description:
-        '当前会话是否具备执行专家管理职责；当前简化为查询本人资料且组织身份为 OWNER/ADMIN，完整项目负责人规则待迁移。注册及资料更新响应为 false；不作为业务权限凭据。',
+        '当前会话是否具备执行专家管理职责；查询本人资料时按有效多组织关系判断，OWNER为true；旧SQL还包括组织项目负责人，该分支待07迁移，ADMIN本身不代表执行专家管理职责。注册及资料更新响应为 false；不作为业务权限凭据。',
       examples: [false],
     },
     status: text(
@@ -267,21 +267,21 @@ const operationDescriptions: Record<string, string> = {
   checkNickname:
     '可匿名调用，无请求体，必填查询参数nickname；trim后检查唯一性，按数字后缀给出建议。不预留昵称，注册冲突仍返回409。新库按大小写敏感精确匹配，旧MySQL排序规则兼容性待验收。',
   updateCurrentUser:
-    '仅更新当前有效会话本人，无目标用户参数；未传/null保持，头像/简介/未认证身份证空白可清空。姓名、邮箱及昵称不在旧更新字段中。已认证证件更改403、重复证件409。密码必须成对一致，更新与全部会话撤销同事务；成功清除Web Cookie并须重新登录。roles沿用固定EXPERT兼容策略，忽略已知角色选择。响应selectedRole=null、hasExpertManagementRole=false，与旧更新服务返回资料语义一致。未接入在线状态/实时通知，多组织及完整管理能力待后续回补。',
+    '仅更新当前有效会话本人，无目标用户参数；未传/null保持，头像/简介/未认证身份证空白可清空。姓名、邮箱及昵称不在旧更新字段中。已认证证件更改403、重复证件409。密码必须成对一致，更新与全部会话撤销同事务；成功清除Web Cookie并须重新登录。roles沿用固定EXPERT兼容策略，忽略已知角色选择。响应selectedRole=null、hasExpertManagementRole=false，与旧更新服务返回资料语义一致。多组织资料已按有效关系选取；在线状态/实时通知及完整项目管理能力待后续回补。',
   sendCode:
     '按 scene 发送验证码。不同场景独立验证，手机号跨场景共用 60 秒发送冷却；验证码 5 分钟有效，错误尝试最多 5 次。当前开发/测试仅 mock，不实际发短信，验证码为字符串 095270。',
   register:
     '使用 scene=register 的验证码或短信登录返回的 registrationToken 注册个人或组织账号（两者必须且只能提交一个），固定 EXPERT；成功返回用户资料，不自动登录。ORGANIZATION 必须填写 organization.name；个人账号不创建组织。可选营业执照须先通过文件上传获取 BUSINESS_LICENSE 的 objectKey/uploadToken；认领、验证码消费和注册同事务，失败回滚。',
   login:
-    '通过手机号、备用邮箱或 uid 与密码登录，固定 EXPERT。成功签发访问/刷新令牌并更新最近登录时间/IP；密码错误或无账号返回 401，禁用账号返回 403。',
+    '通过手机号、备用邮箱或 uid 与密码登录，固定 EXPERT。成功签发前在同一事务激活所有PENDING_ACTIVATION（待激活）组织关系并递增版本；激活失败整体回滚，不签发令牌。随后签发访问/刷新令牌并更新最近登录时间/IP；密码错误或无账号返回 401，禁用账号返回 403。',
   loginBySms:
-    '使用 scene=login 的验证码验证手机号，固定 EXPERT。已注册账号签发登录令牌；未注册返回 HTTP 200、status=registration_required、registrationToken 和 expiresAt，客户端展示注册表单。凭证绑定手机号、10 分钟有效且一次性，再次验证同手机号后旧凭证失效；未提交注册不创建用户或会话。验证码成功使用后失效。',
+    '使用 scene=login 的验证码验证手机号，固定 EXPERT。已注册账号先在同一事务激活待激活组织关系（版本递增），激活失败回滚验证码消费且不签发令牌；随后签发登录令牌。未注册返回 HTTP 200、status=registration_required、registrationToken 和 expiresAt，客户端展示注册表单。凭证绑定手机号、10 分钟有效且一次性，再次验证同手机号后旧凭证失效；未提交注册不创建用户或会话。验证码成功使用后失效。',
   refresh:
     '提交 refreshToken 换取新令牌对；原访问令牌及刷新令牌失效，重复使用返回 401。客户端类型必须与原登录一致；刷新不会更新最近登录时间/IP。',
   resetPassword:
     '使用 scene=reset_password 的验证码修改密码。成功后撤销该账号全部客户端的访问与刷新令牌，须重新登录；成功 data 为 null。',
   getCurrentUser:
-    '根据当前有效会话返回用户资料，selectedRole=EXPERT；没有有效会话返回 401。完整多组织、实名和项目管理能力尚待迁移，当前占位字段见响应说明。',
+    '根据当前有效会话返回用户资料，selectedRole=EXPERT；没有有效会话返回 401。组织资料按真实多组织关系选择；实名和项目管理能力尚待迁移，当前占位字段见响应说明。',
   logout:
     '撤销当前访问令牌对应的会话及其刷新令牌，Web 同时清除登录 Cookie；不影响其他客户端会话。没有会话也成功，data 为 null。',
 };

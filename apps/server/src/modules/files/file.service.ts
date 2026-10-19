@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { participatingStatuses } from '../organizations/organization.service.js';
 import { AuthError } from '../auth/auth.error.js';
 import type { AuthPrincipal } from '../auth/auth.service.js';
 import { FileRegistryService } from './file-registry.service.js';
@@ -101,11 +102,18 @@ export class FileService {
       let permitted = record.ownerUid === principal.uid;
       if (record.claimedBizType === 'ORGANIZATION_BUSINESS_LICENSE' && record.claimedBizId) {
         // 已认领营业执照只给本组织主管/管理员；不使用 hasExpertManagementRole 展示字段。
-        const user = await this.registry.db.user.findUnique({ where: { id: principal.userId } });
-        permitted =
-          !!user &&
-          user.organizationId === record.claimedBizId &&
-          ['OWNER', 'ADMIN'].includes(user.orgPosition ?? '');
+        permitted = Boolean(
+          await this.registry.db.userOrgRel.findFirst({
+            where: {
+              userId: principal.userId,
+              orgId: record.claimedBizId,
+              position: { in: ['OWNER', 'ADMIN'] },
+              joinStatus: { in: participatingStatuses },
+              organization: { deleted: false },
+            },
+            select: { id: true },
+          }),
+        );
       }
       if (!permitted) throw new AuthError(403, 'FORBIDDEN', '无权访问该文件');
     }

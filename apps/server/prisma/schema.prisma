@@ -33,6 +33,7 @@ model User {
   organizationId String?       @db.Uuid
   orgPosition    String?       @db.VarChar(16)
   organization   Organization? @relation(fields: [organizationId], references: [id])
+  memberships    UserOrgRel[]
 }
 
 model VerificationChallenge {
@@ -87,15 +88,21 @@ model AuthRateLimit {
 }
 
 model Organization {
-  id                 String   @id @default(uuid()) @db.Uuid
-  name               String   @unique @db.VarChar(128)
-  unifiedCreditCode  String?  @unique @db.VarChar(32)
-  description        String?  @db.VarChar(1024)
-  logoUrl            String?  @db.VarChar(512)
-  businessLicenseKey String?  @db.VarChar(512)
+  id                 String       @id @default(uuid()) @db.Uuid
+  name               String       @unique @db.VarChar(128)
+  unifiedCreditCode  String?      @unique @db.VarChar(32)
+  description        String?      @db.VarChar(1024)
+  logoUrl            String?      @db.VarChar(512)
+  businessLicenseKey String?      @db.VarChar(512)
   expertiseTags      String[]
-  createdAt          DateTime @default(now()) @db.Timestamptz(3)
+  createdAt          DateTime     @default(now()) @db.Timestamptz(3)
   users              User[]
+  memberships        UserOrgRel[]
+  verifyStatus       String       @default("PENDING") @db.VarChar(16)
+  status             String       @default("ACTIVE") @db.VarChar(16)
+  deleted            Boolean      @default(false)
+  updatedBy          String?      @db.VarChar(36)
+  updatedAt          DateTime     @default(now()) @updatedAt @db.Timestamptz(3)
 }
 
 model UploadedFile {
@@ -123,4 +130,185 @@ model UploadedFile {
   @@index([status, expiresAt])
   @@index([ownerUid])
   @@index([claimedBizType, claimedBizId])
+}
+
+// 多组织成员关系是组织权限来源；User.organizationId/orgPosition 暂留资料兼容。
+model UserOrgRel {
+  id               String       @id @default(uuid()) @db.Uuid
+  userId           String       @db.Uuid
+  uid              String       @db.VarChar(36)
+  orgId            String       @db.Uuid
+  position         String       @default("MEMBER") @db.VarChar(16)
+  employmentType   String?      @db.VarChar(16)
+  joinStatus       String       @default("ACTIVE") @db.VarChar(24)
+  joinedAt         DateTime?    @default(now()) @db.Timestamptz(3)
+  plannedLeaveDate DateTime?    @db.Date
+  leftAt           DateTime?    @db.Timestamptz(3)
+  versionNo        Int          @default(0)
+  createdBy        String?      @db.VarChar(36)
+  updatedBy        String?      @db.VarChar(36)
+  createdAt        DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime     @updatedAt @db.Timestamptz(3)
+  user             User         @relation(fields: [userId], references: [id])
+  organization     Organization @relation(fields: [orgId], references: [id])
+
+  @@unique([userId, orgId])
+  @@index([orgId, joinStatus])
+  @@index([uid])
+}
+
+model ApprovalProcess {
+  id            String           @id @default(uuid()) @db.Uuid
+  processCode   String           @db.VarChar(64)
+  processName   String           @db.VarChar(100)
+  businessType  String           @db.VarChar(64)
+  version       Int              @default(1)
+  status        String           @default("DRAFT") @db.VarChar(16)
+  allowWithdraw Boolean          @default(true)
+  description   String?          @db.VarChar(500)
+  createdBy     String?          @db.VarChar(36)
+  updatedBy     String?          @db.VarChar(36)
+  deleted       Boolean          @default(false)
+  createdAt     DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime         @updatedAt @db.Timestamptz(3)
+  configs       ApprovalConfig[]
+
+  @@unique([processCode, version])
+  @@index([businessType, status, deleted])
+}
+
+model ApprovalConfig {
+  id               String          @id @default(uuid()) @db.Uuid
+  processId        String          @db.Uuid
+  nodeSeq          Int
+  nodeCode         String          @db.VarChar(64)
+  nodeName         String          @db.VarChar(100)
+  approverType     String          @db.VarChar(32)
+  approverConfig   Json?
+  approveMode      String          @default("ANY") @db.VarChar(16)
+  conditionJson    Json?
+  noApproverAction String          @default("AUTO_PASS") @db.VarChar(16)
+  timeoutHours     Int?
+  createdBy        String?         @db.VarChar(36)
+  updatedBy        String?         @db.VarChar(36)
+  deleted          Boolean         @default(false)
+  createdAt        DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime        @updatedAt @db.Timestamptz(3)
+  process          ApprovalProcess @relation(fields: [processId], references: [id])
+
+  @@unique([processId, nodeSeq])
+  @@unique([processId, nodeCode])
+  @@index([processId, deleted])
+}
+
+model ApprovalFlow {
+  id               String              @id @default(uuid()) @db.Uuid
+  flowNo           String              @unique @db.VarChar(64)
+  // 旧内置流程processId=0，新UUID模型以null表示内置、不依赖可编辑定义。
+  processId        String?             @db.Uuid
+  processCode      String              @db.VarChar(64)
+  processVersion   Int                 @default(1)
+  businessType     String              @db.VarChar(64)
+  businessId       String              @db.VarChar(64)
+  businessNo       String?             @db.VarChar(64)
+  title            String              @db.VarChar(200)
+  applicantId      String              @db.Uuid
+  applicantName    String              @db.VarChar(200)
+  applicantOrgId   String?             @db.Uuid
+  applicantOrgName String?             @db.VarChar(128)
+  formData         Json?
+  beforeData       Json?
+  afterData        Json?
+  applyReason      String?             @db.VarChar(1000)
+  status           String              @default("PENDING") @db.VarChar(16)
+  currentNode      Int?
+  currentNodeCode  String?             @db.VarChar(64)
+  totalNodes       Int                 @default(0)
+  versionNo        Int                 @default(0)
+  appliedAt        DateTime            @default(now()) @db.Timestamptz(3)
+  finishedAt       DateTime?           @db.Timestamptz(3)
+  remark           String?             @db.VarChar(1000)
+  createdBy        String?             @db.VarChar(36)
+  updatedBy        String?             @db.VarChar(36)
+  createdAt        DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime            @updatedAt @db.Timestamptz(3)
+  nodes            ApprovalNode[]
+  actions          ApprovalActionLog[]
+
+  @@index([businessType, businessId, status])
+  @@index([applicantOrgId, status])
+}
+
+model ApprovalNode {
+  id             String              @id @default(uuid()) @db.Uuid
+  flowId         String              @db.Uuid
+  flowNo         String              @db.VarChar(64)
+  configId       String?             @db.Uuid
+  nodeSeq        Int
+  nodeCode       String              @db.VarChar(64)
+  nodeName       String              @db.VarChar(100)
+  approverId     String              @db.Uuid
+  approverUid    String              @db.VarChar(36)
+  approverName   String              @db.VarChar(200)
+  approverType   String              @db.VarChar(32)
+  approverSource Json?
+  nodeStatus     String              @default("WAITING") @db.VarChar(16)
+  approveComment String?             @db.VarChar(1000)
+  approvedAt     DateTime?           @db.Timestamptz(3)
+  dueAt          DateTime?           @db.Timestamptz(3)
+  versionNo      Int                 @default(0)
+  createdBy      String?             @db.VarChar(36)
+  updatedBy      String?             @db.VarChar(36)
+  createdAt      DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime            @updatedAt @db.Timestamptz(3)
+  flow           ApprovalFlow        @relation(fields: [flowId], references: [id])
+  actions        ApprovalActionLog[]
+
+  @@index([approverId, nodeStatus, createdAt])
+  @@index([flowId, nodeSeq])
+}
+
+model ApprovalActionLog {
+  // 自增序号保留旧MAX(id)取最后一条动作的顺序语义，仅内部使用不返回HTTP。
+  id            BigInt        @id @default(autoincrement())
+  flowId        String        @db.Uuid
+  nodeId        String?       @db.Uuid
+  actionType    String        @db.VarChar(16)
+  operatorId    String?       @db.Uuid
+  operatorName  String        @db.VarChar(200)
+  fromStatus    String?       @db.VarChar(24)
+  toStatus      String?       @db.VarChar(24)
+  actionComment String?       @db.VarChar(1000)
+  actionData    Json?
+  createdAt     DateTime      @default(now()) @db.Timestamptz(3)
+  flow          ApprovalFlow  @relation(fields: [flowId], references: [id])
+  node          ApprovalNode? @relation(fields: [nodeId], references: [id])
+
+  @@index([flowId, createdAt])
+  @@index([nodeId, id])
+}
+
+// 项目清退依赖04/07/12；组织离组时可靠留痕，未接入处理器前始终PENDING，不伪报已清退项目。
+model OrganizationDeparture {
+  id            String   @id @default(uuid()) @db.Uuid
+  memberId      String   @db.Uuid
+  memberVersion Int
+  orgId         String   @db.Uuid
+  userId        String   @db.Uuid
+  effectiveAt   DateTime @db.Timestamptz(3)
+  status        String   @default("PENDING") @db.VarChar(16)
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([memberId, memberVersion])
+  @@index([status, createdAt])
+}
+
+model MemberImportReceipt {
+  key         String @id @db.VarChar(64)
+  requestHash String @db.VarChar(64)
+  response    Json
+  expiresAt   DateTime @db.Timestamptz(3)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  @@index([expiresAt])
 }

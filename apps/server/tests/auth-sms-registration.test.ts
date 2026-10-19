@@ -28,6 +28,7 @@ function fixture() {
     },
     user: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn(), update: vi.fn() },
     session: { create: vi.fn() },
+    userOrgRel: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn() },
     registrationGrant: { create: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
   };
   const db = {
@@ -145,4 +146,18 @@ test('valid registration grant creates the submitted profile without a second SM
   expect(tx.user.create).toHaveBeenCalledOnce();
   expect(tx.verificationChallenge.findFirst).not.toHaveBeenCalled();
   expect(tx.session.create).not.toHaveBeenCalled();
+});
+
+test('pending membership activation failure prevents session issuance', async () => {
+  const { tx, service } = fixture();
+  tx.user.findUnique.mockResolvedValue({ id: 'user', uid: 'uid', status: 'ACTIVE' });
+  tx.userOrgRel.findMany.mockResolvedValue([
+    { orgId: '00000000-0000-4000-8000-000000000002' },
+  ] as never);
+  tx.userOrgRel.updateMany.mockRejectedValue(new Error('activation failed'));
+  await expect(
+    service.loginBySms({ phone: '13812345678', code: '095270' }, '127.0.0.1', 'desktop'),
+  ).rejects.toThrow('activation failed');
+  expect(tx.session.create).not.toHaveBeenCalled();
+  expect(tx.user.update).not.toHaveBeenCalled();
 });

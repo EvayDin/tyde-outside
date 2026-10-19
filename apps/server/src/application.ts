@@ -1,3 +1,5 @@
+import { organizationRoutes } from './modules/organizations/organization.routes.js';
+import { OrganizationService } from './modules/organizations/organization.service.js';
 import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyError, type FastifyServerOptions } from 'fastify';
 import cookie from '@fastify/cookie';
@@ -57,7 +59,8 @@ export async function createApp(
     const legacy =
       req.url.startsWith(`${API_PREFIX}/auth/`) ||
       req.url.startsWith(`${API_PREFIX}/files`) ||
-      req.url.startsWith(`${API_PREFIX}/users/`);
+      req.url.startsWith(`${API_PREFIX}/users/`) ||
+      req.url.startsWith(`${API_PREFIX}/organizations`);
     const failure = (status: number, code: string, message: string) =>
       legacy
         ? { code: status === 429 ? 4292 : status, message, data: null }
@@ -95,6 +98,7 @@ export async function createApp(
   const auth = new AuthService(db, config, undefined, files);
   await authRoutes(app, auth, config);
   await fileRoutes(app, new FileService(files), auth, config);
+  await organizationRoutes(app, new OrganizationService(db), auth, config);
   app.get(
     `${API_PREFIX}/health/live`,
     {

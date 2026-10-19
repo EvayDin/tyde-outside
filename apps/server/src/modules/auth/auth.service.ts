@@ -1,5 +1,11 @@
 import { randomInt, randomUUID } from 'node:crypto';
-import { Prisma, PrismaClient, type User, type Organization } from '@prisma/client';
+import {
+  Prisma,
+  PrismaClient,
+  type User,
+  type Organization,
+  type UserOrgRel,
+} from '@prisma/client';
 import type {
   AuthUser,
   UserProfileUpdateInput,
@@ -26,9 +32,16 @@ import {
 import { hashPassword, verifyPassword } from './password.js';
 import { MockSmsProvider, type SmsProvider } from './sms.js';
 import { FileRegistryService } from '../files/file-registry.service.js';
+import { lockOrganization, participatingStatuses } from '../organizations/organization.service.js';
 import { createObjectStorage } from '../files/object-storage.js';
 type Tx = Prisma.TransactionClient;
-type Profile = User & { organization?: Organization | null };
+type Profile = User & { memberships?: (UserOrgRel & { organization: Organization })[] };
+const profileInclude = {
+  memberships: {
+    where: { joinStatus: { in: participatingStatuses }, organization: { deleted: false } },
+    include: { organization: true },
+  },
+};
 // 服务端业务身份；角色只表示登录身份，业务权限和数据范围仍由各模块检查。
 export interface AuthPrincipal {
   userId: string;
@@ -46,7 +59,18 @@ async function lock(tx: Tx, key: string) {
   await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))::text`;
 }
 function publicUser(user: Profile, current = false): AuthUser {
-  const org = user.organization;
+  const memberships = (user.memberships ?? []).filter(
+    (rel) => participatingStatuses.includes(rel.joinStatus) && !rel.organization.deleted,
+  );
+  const chosen = [...memberships].sort((a, b) => {
+    const owner = Number(b.position === 'OWNER') - Number(a.position === 'OWNER');
+    return (
+      owner ||
+      (a.joinedAt?.getTime() ?? Infinity) - (b.joinedAt?.getTime() ?? Infinity) ||
+      a.id.localeCompare(b.id)
+    );
+  })[0];
+  const org = chosen?.organization;
   return {
     id: user.id,
     uid: user.uid,
@@ -64,7 +88,7 @@ function publicUser(user: Profile, current = false): AuthUser {
     roles: ['EXPERT'],
     selectedRole: current ? 'EXPERT' : null,
     hasExpertManagementRole: Boolean(
-      current && org && ['OWNER', 'ADMIN'].includes(user.orgPosition ?? ''),
+      current && memberships.some((rel) => rel.position === 'OWNER'),
     ),
     status: user.status,
     creditScore: 100,
@@ -81,10 +105,10 @@ function publicUser(user: Profile, current = false): AuthUser {
           businessLicenseUrl: org.businessLicenseKey ?? null,
           logoUrl: org.logoUrl,
           expertiseTags: org.expertiseTags,
-          verifyStatus: 'PENDING',
-          status: 'ACTIVE',
-          position: user.orgPosition,
-          joinStatus: 'ACTIVE',
+          verifyStatus: org.verifyStatus,
+          status: org.status,
+          position: chosen!.position,
+          joinStatus: chosen!.joinStatus,
           createdAt: org.createdAt.toISOString(),
         }
       : null,
@@ -196,6 +220,24 @@ export class AuthService {
   private async issue(tx: Tx, user: User, client: ClientType, ip?: string): Promise<LoginResponse> {
     if (user.status !== 'ACTIVE')
       throw new AuthError(403, 'FORBIDDEN', '账户已被禁用，请联系平台运营');
+    if (ip !== undefined) {
+      const pending = await tx.userOrgRel.findMany({
+        where: { userId: user.id, joinStatus: 'PENDING_ACTIVATION' },
+        select: { orgId: true },
+        orderBy: { orgId: 'asc' },
+      });
+      for (const rel of pending) await lockOrganization(tx, rel.orgId);
+      if (pending.length)
+        await tx.userOrgRel.updateMany({
+          where: { userId: user.id, joinStatus: 'PENDING_ACTIVATION' },
+          data: {
+            joinStatus: 'ACTIVE',
+            versionNo: { increment: 1 },
+            updatedBy: user.uid,
+            updatedAt: new Date(),
+          },
+        });
+    }
     if (ip !== undefined)
       await tx.user.update({
         where: { id: user.id },
@@ -293,8 +335,22 @@ export class AuthService {
             organizationId: organization?.id,
             orgPosition: organization ? (input.orgPosition ?? 'OWNER') : null,
           },
-          include: { organization: true },
+          include: profileInclude,
         });
+        if (organization) {
+          const membership = await tx.userOrgRel.create({
+            data: {
+              userId: user.id,
+              uid: user.uid,
+              orgId: organization.id,
+              position: user.orgPosition ?? 'OWNER',
+              joinStatus: 'ACTIVE',
+              createdBy: user.uid,
+              updatedBy: user.uid,
+            },
+          });
+          return publicUser({ ...user, memberships: [{ ...membership, organization }] });
+        }
         return publicUser(user);
       });
       if (result instanceof AuthError) throw result;
@@ -414,7 +470,7 @@ export class AuthService {
     if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) throw unauthorized();
     const session = await this.db.session.findUnique({
       where: { tokenDigest: digest(token) },
-      include: { user: { include: { organization: true } } },
+      include: { user: { include: profileInclude } },
     });
     if (
       !session ||
@@ -511,7 +567,7 @@ export class AuthService {
         const user = await tx.user.update({
           where: { id: session.userId },
           data,
-          include: { organization: true },
+          include: profileInclude,
         });
         if (passwordHash !== undefined)
           await tx.session.updateMany({

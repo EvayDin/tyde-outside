@@ -1,6 +1,11 @@
+import * as XLSX from 'xlsx';
+import { AuthService } from '../src/modules/auth/auth.service.js';
+import { MemberImportService } from '../src/modules/organizations/member-import.service.js';
+import { ApprovalService } from '../src/modules/approval/approval.service.js';
+import { DepartureService, shanghaiDay } from '../src/modules/organizations/departure.service.js';
 import { readFileSync } from 'node:fs';
 import { parseEnv } from 'node:util';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, type Prisma } from '@prisma/client';
 import { afterAll, beforeEach, expect, test } from 'vitest';
 import { FileRegistryService } from '../src/modules/files/file-registry.service.js';
 import { Readable } from 'node:stream';
@@ -45,7 +50,7 @@ const desktop = { 'x-tyde-client': 'desktop' };
 beforeEach(async () => {
   objects.clear();
   await db.$executeRawUnsafe(
-    'TRUNCATE "UploadedFile", "AuthRateLimit", "Session", "RegistrationGrant", "VerificationChallenge", "User", "Organization" CASCADE',
+    'TRUNCATE "MemberImportReceipt", "ApprovalActionLog", "ApprovalNode", "ApprovalFlow", "OrganizationDeparture", "UploadedFile", "AuthRateLimit", "Session", "RegistrationGrant", "VerificationChallenge", "User", "Organization" CASCADE',
   );
 });
 afterAll(async () => app.close());
@@ -1083,4 +1088,1362 @@ test('concurrent profile password changes cannot both succeed with a revoked ses
   );
   expect(results.map((r) => r.statusCode).sort()).toEqual([200, 401]);
   expect(await db.session.count({ where: { revokedAt: null } })).toBe(0);
+});
+
+test('organization registration creates authoritative membership atomically with default owner role', async () => {
+  const result = await register({
+    accountType: 'ORGANIZATION',
+    organization: { name: '主管组织', expertiseTags: ['图像标注'] },
+  });
+  const user = result.json().data;
+  expect(
+    await db.userOrgRel.findUniqueOrThrow({
+      where: { userId_orgId: { userId: user.id, orgId: user.organization.id } },
+    }),
+  ).toMatchObject({
+    uid: user.uid,
+    position: 'OWNER',
+    joinStatus: 'ACTIVE',
+    versionNo: 0,
+    createdBy: user.uid,
+  });
+  const headers = bearer((await login(desktop)).json().data.accessToken);
+  const response = await app.inject({
+    url: `/api/v1/organizations?orgId=${user.organization.id}`,
+    headers,
+  });
+  expect(response.statusCode).toBe(200);
+  expect(response.json().data).toMatchObject({
+    id: user.organization.id,
+    position: 'OWNER',
+    verifyStatus: 'PENDING',
+    status: 'ACTIVE',
+    expertiseTags: ['图像标注'],
+  });
+});
+
+test('organization permissions use independent memberships across organizations rather than legacy profile pointers', async () => {
+  const user = (await register()).json().data;
+  const org = await db.organization.create({ data: { name: '组织A', expertiseTags: [] } });
+  const other = await db.organization.create({ data: { name: '组织B', expertiseTags: [] } });
+  const rel = await db.userOrgRel.create({
+    data: { userId: user.id, uid: user.uid, orgId: org.id, position: 'ADMIN' },
+  });
+  await db.userOrgRel.create({
+    data: { userId: user.id, uid: user.uid, orgId: other.id, position: 'MEMBER' },
+  });
+  // 兼容字段中的主管身份不能授予组织B权限。
+  await db.user.update({
+    where: { id: user.id },
+    data: { organizationId: other.id, orgPosition: 'OWNER' },
+  });
+  const headers = bearer((await login(desktop)).json().data.accessToken);
+  expect(
+    (await app.inject({ url: `/api/v1/organizations?orgId=${org.id}`, headers })).statusCode,
+  ).toBe(200);
+  expect(
+    (await app.inject({ url: `/api/v1/organizations?orgId=${other.id}`, headers })).statusCode,
+  ).toBe(403);
+  expect(
+    (await post('/organizations/update', { orgId: org.id, description: 'denied' }, headers))
+      .statusCode,
+  ).toBe(403);
+  for (const joinStatus of [
+    'EXIT_APPROVING',
+    'PENDING_LEAVE',
+    'LEFT',
+    'REMOVED',
+    'PENDING',
+    'PENDING_ACTIVATION',
+  ]) {
+    await db.userOrgRel.update({ where: { id: rel.id }, data: { joinStatus } });
+    expect(
+      (await app.inject({ url: `/api/v1/organizations?orgId=${org.id}`, headers })).statusCode,
+    ).toBe(['EXIT_APPROVING', 'PENDING_LEAVE'].includes(joinStatus) ? 200 : 403);
+  }
+});
+
+test('organization partial updates serialize concurrent writers and preserve null, clearing, audit and deleted scope', async () => {
+  const user = (
+    await register({
+      accountType: 'ORGANIZATION',
+      organization: { name: '并发资料组织', description: '初始', logoUrl: 'initial.png' },
+    })
+  ).json().data;
+  const orgId = user.organization.id;
+  const headers = bearer((await login(desktop)).json().data.accessToken);
+  const responses = await Promise.all([
+    post('/organizations/update', { orgId, description: ' 新简介 ' }, headers),
+    post('/organizations/update', { orgId, logoUrl: ' new.png ' }, headers),
+  ]);
+  expect(responses.map((r) => r.statusCode)).toEqual([200, 200]);
+  expect(await db.organization.findUniqueOrThrow({ where: { id: orgId } })).toMatchObject({
+    description: '新简介',
+    logoUrl: 'new.png',
+    updatedBy: user.uid,
+  });
+  const cleared = await post(
+    '/organizations/update',
+    { orgId, description: null, logoUrl: '  ' },
+    headers,
+  );
+  expect(cleared.json().data).toMatchObject({ id: orgId, description: '新简介', logoUrl: '' });
+  expect(cleared.json().data.updatedAt).toMatch(/Z$/);
+  await db.organization.update({ where: { id: orgId }, data: { deleted: true } });
+  expect(
+    (await app.inject({ url: `/api/v1/organizations?orgId=${orgId}`, headers })).statusCode,
+  ).toBe(404);
+  expect((await post('/organizations/update', { orgId }, headers)).statusCode).toBe(404);
+});
+
+test('organization migration backfill retains existing roles without granting missing roles manager access', async () => {
+  await register();
+  const user = await db.user.findFirstOrThrow();
+  const org = await db.organization.create({ data: { name: '回填组织', expertiseTags: [] } });
+  await db.user.update({
+    where: { id: user.id },
+    data: { organizationId: org.id, orgPosition: 'ADMIN' },
+  });
+  const sql = readFileSync(
+    new URL(
+      '../prisma/migrations/20261019020000_organization_memberships/migration.sql',
+      import.meta.url,
+    ),
+    'utf8',
+  );
+  const backfill = sql.slice(sql.indexOf('INSERT INTO "UserOrgRel"'));
+  await db.$executeRawUnsafe(backfill);
+  expect(await db.userOrgRel.findFirstOrThrow()).toMatchObject({
+    userId: user.id,
+    uid: user.uid,
+    orgId: org.id,
+    position: 'ADMIN',
+    joinStatus: 'ACTIVE',
+    versionNo: 0,
+    joinedAt: user.createdAt,
+  });
+  await db.userOrgRel.deleteMany();
+  await db.user.update({ where: { id: user.id }, data: { orgPosition: null } });
+  await db.$executeRawUnsafe(backfill);
+  expect((await db.userOrgRel.findFirstOrThrow()).position).toBe('MEMBER');
+  await expect(
+    db.userOrgRel.create({ data: { userId: user.id, uid: user.uid, orgId: org.id } }),
+  ).rejects.toMatchObject({ code: 'P2002' });
+  await expect(db.userOrgRel.updateMany({ data: { joinStatus: 'UNKNOWN' } })).rejects.toThrow();
+  await expect(db.userOrgRel.updateMany({ data: { versionNo: -1 } })).rejects.toThrow();
+});
+
+// 本批成员集成沿用同一串行文件及专用库守卫，避免多个测试文件并发TRUNCATE。
+async function memberFixture() {
+  const owner = (
+    await register({ accountType: 'ORGANIZATION', organization: { name: '成员集成组织' } })
+  ).json().data;
+  const orgId: string = owner.organization.id;
+  const headers = bearer((await login(desktop)).json().data.accessToken);
+  const ownerRel = await db.userOrgRel.findUniqueOrThrow({
+    where: { userId_orgId: { userId: owner.id, orgId } },
+  });
+  let sequence = 0;
+  async function add(position = 'MEMBER', joinStatus = 'ACTIVE') {
+    sequence++;
+    const user = await db.user.create({
+      data: {
+        phoneE164: `+861390000${String(sequence).padStart(4, '0')}`,
+        phoneRegion: 'CN',
+        username: `member${sequence}`,
+        displayName: `昵称${sequence}`,
+        realName: `真实姓名${sequence}`,
+      },
+    });
+    const rel = await db.userOrgRel.create({
+      data: { userId: user.id, uid: user.uid, orgId, position, joinStatus },
+    });
+    const accessToken = `m${String(sequence).padStart(42, '0')}`;
+    await db.session.create({
+      data: {
+        userId: user.id,
+        tokenDigest: digest(accessToken),
+        clientType: 'desktop',
+        expiresAt: new Date(Date.now() + 600_000),
+      },
+    });
+    return { user, rel, headers: bearer(accessToken) };
+  }
+  return { owner, ownerRel, orgId, headers, add };
+}
+test('member pagination, full-phone search, enum filters and Shanghai date boundaries never expose full phone', async () => {
+  const f = await memberFixture();
+  const first = await f.add();
+  const last = await f.add('MEMBER', 'LEFT');
+  await db.userOrgRel.update({
+    where: { id: first.rel.id },
+    data: { joinedAt: new Date('2026-09-30T16:00:00Z'), employmentType: 'FULL_TIME' },
+  });
+  await db.userOrgRel.update({
+    where: { id: last.rel.id },
+    data: {
+      joinedAt: new Date('2026-10-01T15:59:59Z'),
+      leftAt: new Date('2026-10-02T00:00:00Z'),
+      employmentType: 'PART_TIME',
+    },
+  });
+  const list = await post(
+    '/organizations/members',
+    { orgId: f.orgId, joinedStartDate: '2026-10-01', joinedEndDate: '2026-10-01', size: 1 },
+    f.headers,
+  );
+  expect(list.statusCode, list.body).toBe(200);
+  expect(list.json().data).toMatchObject({ total: 2, pages: 2, current: 1, size: 1 });
+  expect(list.json().data.records[0]).toMatchObject({
+    memberId: last.rel.id,
+    joinStatus: 'LEFT',
+    activeProjectCount: null,
+    phoneMasked: '139****0002',
+    versionNo: 0,
+  });
+  expect(list.payload).not.toContain('13900000002');
+  const second = await post(
+    '/organizations/members',
+    {
+      orgId: f.orgId,
+      joinedStartDate: '2026-10-01',
+      joinedEndDate: '2026-10-01',
+      current: 2,
+      size: 1,
+    },
+    f.headers,
+  );
+  expect(second.json().data.records[0].memberId).toBe(first.rel.id);
+  for (const keyword of ['真实姓名1', first.user.uid, first.user.phoneE164.slice(3)]) {
+    const result = await post('/organizations/members', { orgId: f.orgId, keyword }, f.headers);
+    expect(result.json().data.records.map((x: { memberId: string }) => x.memberId)).toEqual([
+      first.rel.id,
+    ]);
+  }
+  const partialPhone = await post(
+    '/organizations/members',
+    { orgId: f.orgId, keyword: '1390000' },
+    f.headers,
+  );
+  expect(partialPhone.json().data.total).toBe(0);
+  expect(
+    (
+      await post(
+        '/organizations/members',
+        {
+          orgId: f.orgId,
+          employmentType: 'PART_TIME',
+          position: 'MEMBER',
+          joinStatus: 'LEFT',
+          leftStartDate: '2026-10-02',
+          leftEndDate: '2026-10-02',
+        },
+        f.headers,
+      )
+    ).json().data.total,
+  ).toBe(1);
+  expect(
+    (await post('/organizations/members', { orgId: f.orgId, projectId: f.orgId }, f.headers))
+      .statusCode,
+  ).toBe(503);
+  expect(
+    (
+      await post(
+        '/organizations/members',
+        { orgId: f.orgId, joinedStartDate: '2026-02-30' },
+        f.headers,
+      )
+    ).statusCode,
+  ).toBe(400);
+  expect(
+    (await post('/organizations/members', { orgId: f.orgId, current: 1000 }, f.headers)).json().data
+      .records,
+  ).toEqual([]);
+});
+test('member edit uses conditional versions, concurrent writes have one winner, and scope never crosses organization', async () => {
+  const f = await memberFixture();
+  const member = await f.add();
+  const body = {
+    orgId: f.orgId,
+    memberId: member.rel.id,
+    versionNo: 0,
+    employmentType: 'FULL_TIME',
+  };
+  const results = await Promise.all([
+    post('/organizations/members/update', body, f.headers),
+    post('/organizations/members/update', { ...body, employmentType: 'PART_TIME' }, f.headers),
+  ]);
+  expect(results.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+  const latest = await db.userOrgRel.findUniqueOrThrow({ where: { id: member.rel.id } });
+  expect(latest).toMatchObject({ versionNo: 1, updatedBy: f.owner.uid });
+  const changed = await post(
+    '/organizations/members/update',
+    { ...body, versionNo: 1, employmentType: null, joinedAt: '2026-10-01 09:00:00' },
+    f.headers,
+  );
+  expect(changed.json().data).toMatchObject({
+    versionNo: 2,
+    employmentType: latest.employmentType,
+    joinedAt: '2026-10-01T01:00:00.000Z',
+  });
+  const org = await db.organization.create({ data: { name: '另一组织', expertiseTags: [] } });
+  const foreign = await db.userOrgRel.create({
+    data: { userId: member.user.id, uid: member.user.uid, orgId: org.id },
+  });
+  expect(
+    (await post('/organizations/members/update', { ...body, memberId: foreign.id }, f.headers))
+      .statusCode,
+  ).toBe(404);
+  expect(
+    (
+      await post(
+        '/organizations/members/update',
+        { ...body, versionNo: 2, employmentType: null },
+        f.headers,
+      )
+    ).statusCode,
+  ).toBe(400);
+  expect((await post('/organizations/members/update', body, member.headers)).statusCode).toBe(403);
+});
+test('admin can edit and promote normal members or demote self, while other managers are protected', async () => {
+  const f = await memberFixture();
+  const admin = await f.add('ADMIN');
+  const peer = await f.add('ADMIN');
+  const member = await f.add();
+  const edit = (memberId: string) =>
+    post(
+      '/organizations/members/update',
+      { orgId: f.orgId, memberId, versionNo: 0, employmentType: 'PART_TIME' },
+      admin.headers,
+    );
+  expect((await edit(member.rel.id)).statusCode).toBe(200);
+  expect((await edit(admin.rel.id)).statusCode).toBe(200);
+  expect((await edit(peer.rel.id)).statusCode).toBe(403);
+  expect((await edit(f.ownerRel.id)).statusCode).toBe(403);
+  expect(
+    (
+      await post(
+        '/organizations/members/position',
+        { orgId: f.orgId, memberId: member.rel.id, position: 'OWNER' },
+        admin.headers,
+      )
+    ).statusCode,
+  ).toBe(403);
+  expect(
+    (
+      await post(
+        '/organizations/members/position',
+        { orgId: f.orgId, memberId: member.rel.id, position: 'ADMIN' },
+        admin.headers,
+      )
+    ).statusCode,
+  ).toBe(200);
+  expect(
+    (
+      await post(
+        '/organizations/members/position',
+        { orgId: f.orgId, memberId: admin.rel.id, position: 'MEMBER' },
+        admin.headers,
+      )
+    ).statusCode,
+  ).toBe(200);
+  expect((await post('/organizations/members', { orgId: f.orgId }, admin.headers)).statusCode).toBe(
+    403,
+  );
+});
+test('concurrent admin promotions serialize the five-admin cap including pending memberships', async () => {
+  const f = await memberFixture();
+  for (const status of ['ACTIVE', 'PENDING', 'PENDING_ACTIVATION', 'PENDING_LEAVE'])
+    await f.add('ADMIN', status);
+  const left = await f.add();
+  const right = await f.add();
+  const results = await Promise.all(
+    [left, right].map((member) =>
+      post(
+        '/organizations/members/position',
+        { orgId: f.orgId, memberId: member.rel.id, position: 'ADMIN' },
+        f.headers,
+      ),
+    ),
+  );
+  expect(results.map((r) => r.statusCode).sort()).toEqual([200, 400]);
+  expect(await db.userOrgRel.count({ where: { orgId: f.orgId, position: 'ADMIN' } })).toBe(5);
+  const promoted = await db.userOrgRel.findFirstOrThrow({
+    where: { id: { in: [left.rel.id, right.rel.id] }, position: 'ADMIN' },
+  });
+  const version = promoted.versionNo;
+  const noop = await post(
+    '/organizations/members/position',
+    { orgId: f.orgId, memberId: promoted.id, position: 'ADMIN' },
+    f.headers,
+  );
+  expect(noop.statusCode).toBe(200);
+  expect((await db.userOrgRel.findUniqueOrThrow({ where: { id: promoted.id } })).versionNo).toBe(
+    version,
+  );
+  const remaining = promoted.id === left.rel.id ? right : left;
+  expect(
+    (
+      await post(
+        '/organizations/members/position',
+        { orgId: f.orgId, memberId: remaining.rel.id, position: 'OWNER' },
+        f.headers,
+      )
+    ).statusCode,
+  ).toBe(400);
+  expect(
+    (
+      await post(
+        '/organizations/members/position',
+        { orgId: f.orgId, memberId: promoted.id, position: 'OWNER' },
+        f.headers,
+      )
+    ).statusCode,
+  ).toBe(200);
+  expect(await db.userOrgRel.count({ where: { orgId: f.orgId, position: 'OWNER' } })).toBe(1);
+  expect(await db.userOrgRel.count({ where: { orgId: f.orgId, position: 'ADMIN' } })).toBe(5);
+});
+test('concurrent owner transfers preserve a single owner, and stale owner cannot perform another transfer', async () => {
+  const f = await memberFixture();
+  const first = await f.add();
+  const second = await f.add();
+  const results = await Promise.all(
+    [first, second].map((member) =>
+      post(
+        '/organizations/members/position',
+        { orgId: f.orgId, memberId: member.rel.id, position: 'OWNER' },
+        f.headers,
+      ),
+    ),
+  );
+  expect(results.map((r) => r.statusCode).sort()).toEqual([200, 403]);
+  const owner = await db.userOrgRel.findFirstOrThrow({
+    where: { orgId: f.orgId, position: 'OWNER' },
+  });
+  expect(await db.userOrgRel.count({ where: { orgId: f.orgId, position: 'OWNER' } })).toBe(1);
+  expect((await db.userOrgRel.findUniqueOrThrow({ where: { id: f.ownerRel.id } })).position).toBe(
+    'ADMIN',
+  );
+  const profile = await app.inject({ url: '/api/v1/users/me', headers: f.headers });
+  expect(profile.json().data).toMatchObject({
+    hasExpertManagementRole: false,
+    organization: { id: f.orgId, position: 'ADMIN' },
+  });
+  const target = owner.id === first.rel.id ? first : second;
+  expect(
+    (await app.inject({ url: '/api/v1/users/me', headers: target.headers })).json().data,
+  ).toMatchObject({
+    hasExpertManagementRole: true,
+    organization: { id: f.orgId, position: 'OWNER' },
+  });
+  // User.orgPosition保留旧OWNER，不能继续授权更新组织资料。
+  expect(
+    (await post('/organizations/update', { orgId: f.orgId, description: 'stale' }, f.headers))
+      .statusCode,
+  ).toBe(403);
+});
+test('profile selects owner then earliest participating membership and ignores legacy pointer and deleted organizations', async () => {
+  const f = await memberFixture();
+  const other = await db.organization.create({
+    data: { name: '第二组织', expertiseTags: [], verifyStatus: 'APPROVED', status: 'FROZEN' },
+  });
+  await db.userOrgRel.update({
+    where: { id: f.ownerRel.id },
+    data: { position: 'ADMIN', joinedAt: new Date('2026-01-02T00:00:00Z') },
+  });
+  const relation = await db.userOrgRel.create({
+    data: {
+      orgId: other.id,
+      userId: f.owner.id,
+      uid: f.owner.uid,
+      position: 'MEMBER',
+      joinStatus: 'EXIT_APPROVING',
+      joinedAt: new Date('2026-01-01T00:00:00Z'),
+    },
+  });
+  const me = async () =>
+    (await app.inject({ url: '/api/v1/users/me', headers: f.headers })).json().data;
+  expect((await me()).organization).toMatchObject({
+    id: other.id,
+    position: 'MEMBER',
+    joinStatus: 'EXIT_APPROVING',
+    verifyStatus: 'APPROVED',
+    status: 'FROZEN',
+  });
+  await db.userOrgRel.update({ where: { id: f.ownerRel.id }, data: { position: 'OWNER' } });
+  expect((await me()).organization.id).toBe(f.orgId);
+  await db.userOrgRel.update({ where: { id: f.ownerRel.id }, data: { joinStatus: 'LEFT' } });
+  expect((await me()).organization.id).toBe(other.id);
+  await db.organization.update({ where: { id: other.id }, data: { deleted: true } });
+  expect(await me()).toMatchObject({ organization: null, hasExpertManagementRole: false });
+  // 更新资料响应也必须使用实际关系，不能重新读兼容指针。
+  expect(
+    (await post('/users/me/update', { bio: 'new bio' }, f.headers)).json().data.organization,
+  ).toBeNull();
+  expect(relation.position).toBe('MEMBER');
+});
+test('license access follows membership across organizations, demotion and departure instead of legacy pointer', async () => {
+  const f = await memberFixture();
+  const reader = await f.add('ADMIN');
+  const { record, uploadToken } = await uploaded();
+  await db.$transaction((tx) =>
+    registry.claimForOrganizationRegistration(tx, record.objectKey, uploadToken, f.orgId),
+  );
+  const read = () =>
+    app.inject({
+      url: `/api/v1/files/view?objectKey=${record.objectKey}`,
+      headers: reader.headers,
+    });
+  expect(reader.user.organizationId).toBeNull();
+  expect((await read()).statusCode).toBe(200);
+  await db.userOrgRel.update({
+    where: { id: reader.rel.id },
+    data: { joinStatus: 'EXIT_APPROVING' },
+  });
+  expect((await read()).statusCode).toBe(200);
+  await db.userOrgRel.update({
+    where: { id: reader.rel.id },
+    data: { joinStatus: 'PENDING_LEAVE' },
+  });
+  expect((await read()).statusCode).toBe(200);
+  await db.user.update({
+    where: { id: reader.user.id },
+    data: { organizationId: f.orgId, orgPosition: 'OWNER' },
+  });
+  await db.userOrgRel.update({ where: { id: reader.rel.id }, data: { joinStatus: 'LEFT' } });
+  expect((await read()).statusCode).toBe(403);
+  await db.userOrgRel.update({
+    where: { id: reader.rel.id },
+    data: { joinStatus: 'ACTIVE', position: 'MEMBER' },
+  });
+  expect((await read()).statusCode).toBe(403);
+  await db.userOrgRel.update({ where: { id: reader.rel.id }, data: { position: 'ADMIN' } });
+  await db.organization.update({ where: { id: f.orgId }, data: { deleted: true } });
+  expect((await read()).statusCode).toBe(403);
+});
+
+async function requestSelfExit(
+  f: Awaited<ReturnType<typeof memberFixture>>,
+  member: Awaited<ReturnType<Awaited<ReturnType<typeof memberFixture>>['add']>>,
+  key = 'self-exit',
+  day = '2099-01-01',
+) {
+  return post(
+    '/organizations/members/exit-requests',
+    { orgId: f.orgId, reason: '个人安排', plannedLeaveDate: day },
+    { ...member.headers, 'idempotency-key': key },
+  );
+}
+async function pendingExit(f: Awaited<ReturnType<typeof memberFixture>>) {
+  const response = await post('/organizations/approvals/pending', { orgId: f.orgId }, f.headers);
+  expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data.total).toBe(1);
+  return response.json().data.records[0];
+}
+function processing(
+  orgId: string,
+  node: { flowNo: string; nodeId: string; nodeVersionNo: number; flowVersionNo: number },
+  action = 'APPROVE',
+) {
+  return {
+    orgId,
+    flowNo: node.flowNo,
+    nodeId: node.nodeId,
+    nodeVersionNo: node.nodeVersionNo,
+    flowVersionNo: node.flowVersionNo,
+    action,
+    actionComment: action === 'REJECT' ? '  补充说明  ' : null,
+  };
+}
+test('exit request writes one flow, owner node, action and member transition; concurrent replays and payload changes reuse it', async () => {
+  const f = await memberFixture(),
+    member = await f.add();
+  const results = await Promise.all([requestSelfExit(f, member), requestSelfExit(f, member)]);
+  expect(results.map((r) => r.statusCode)).toEqual([200, 200]);
+  expect(results[0]!.json()).toEqual(results[1]!.json());
+  const data = results[0]!.json().data;
+  expect(data).toMatchObject({
+    flowStatus: 'PENDING',
+    memberId: member.rel.id,
+    joinStatus: 'EXIT_APPROVING',
+  });
+  expect(data.flowNo).toMatch(/^OMX[A-F0-9]{40}$/);
+  expect(await db.approvalFlow.count()).toBe(1);
+  expect(await db.approvalNode.count()).toBe(1);
+  expect(await db.approvalActionLog.count()).toBe(1);
+  expect(await db.userOrgRel.findUniqueOrThrow({ where: { id: member.rel.id } })).toMatchObject({
+    joinStatus: 'EXIT_APPROVING',
+    versionNo: 1,
+    plannedLeaveDate: null,
+  });
+  const replay = await post(
+    '/organizations/members/exit-requests',
+    {
+      orgId: f.orgId,
+      memberId: f.ownerRel.id,
+      reason: '不同payload',
+      plannedLeaveDate: '2099-02-01',
+    },
+    { ...member.headers, 'idempotency-key': 'self-exit' },
+  );
+  expect(replay.json().data).toEqual(data);
+  expect((await requestSelfExit(f, member, 'another-key')).statusCode).toBe(409);
+  const admin = await f.add('ADMIN');
+  const pending = await post('/organizations/approvals/pending', { orgId: f.orgId }, admin.headers);
+  expect(pending.json().data.total).toBe(0);
+  expect(
+    (await post('/organizations/approvals/pending', { orgId: f.orgId }, member.headers)).statusCode,
+  ).toBe(403);
+});
+test('missing active owner rolls back flow/node/action/member writes and preserves original state', async () => {
+  const f = await memberFixture(),
+    member = await f.add();
+  await db.userOrgRel.update({ where: { id: f.ownerRel.id }, data: { position: 'ADMIN' } });
+  expect((await requestSelfExit(f, member)).statusCode).toBe(500);
+  expect(await db.approvalFlow.count()).toBe(0);
+  expect(await db.approvalActionLog.count()).toBe(0);
+  expect((await db.userOrgRel.findUniqueOrThrow({ where: { id: member.rel.id } })).joinStatus).toBe(
+    'ACTIVE',
+  );
+});
+test('direct exits enforce organization roles, today records durable cleanup, and pending departure remains participating', async () => {
+  const f = await memberFixture(),
+    admin = await f.add('ADMIN'),
+    peer = await f.add('ADMIN'),
+    member = await f.add(),
+    future = await f.add();
+  const exit = (
+    targetId: string,
+    headers = admin.headers,
+    key = 'direct',
+    plannedLeaveDate = shanghaiDay(new Date()),
+  ) =>
+    post(
+      '/organizations/members/exit-requests',
+      { orgId: f.orgId, memberId: targetId, reason: '人员调整', plannedLeaveDate },
+      { ...headers, 'idempotency-key': key },
+    );
+  expect((await exit(f.ownerRel.id)).statusCode).toBe(400);
+  expect((await exit(peer.rel.id)).statusCode).toBe(403);
+  expect((await exit(member.rel.id, member.headers, 'not-used', '2000-01-01')).statusCode).toBe(
+    400,
+  );
+  const immediate = await exit(member.rel.id);
+  expect(immediate.statusCode, immediate.body).toBe(200);
+  expect(immediate.json().data).toMatchObject({ flowStatus: 'APPROVED', joinStatus: 'LEFT' });
+  expect(await db.approvalNode.count()).toBe(0);
+  expect(
+    await db.organizationDeparture.findUniqueOrThrow({
+      where: { memberId_memberVersion: { memberId: member.rel.id, memberVersion: 1 } },
+    }),
+  ).toMatchObject({ status: 'PENDING', orgId: f.orgId, userId: member.user.id });
+  expect((await exit(member.rel.id)).json()).toEqual(immediate.json());
+  expect(
+    (await exit(future.rel.id, f.headers, 'future', '2099-01-01')).json().data.joinStatus,
+  ).toBe('PENDING_LEAVE');
+  expect(
+    (await app.inject({ url: '/api/v1/users/me', headers: future.headers })).json().data
+      .organization.joinStatus,
+  ).toBe('PENDING_LEAVE');
+  expect(
+    (await post('/organizations/approvals/records', { orgId: f.orgId }, f.headers)).json().data
+      .total,
+  ).toBe(0);
+});
+test('approval validates both versions and rejection comment; concurrent decisions have one winner and rollback the loser', async () => {
+  const f = await memberFixture(),
+    member = await f.add();
+  expect((await requestSelfExit(f, member)).statusCode).toBe(200);
+  const node = await pendingExit(f),
+    input = processing(f.orgId, node);
+  for (const change of [{ flowVersionNo: 99 }, { nodeVersionNo: 99 }])
+    expect(
+      (await post('/organizations/approvals/process', { ...input, ...change }, f.headers))
+        .statusCode,
+    ).toBe(409);
+  expect(
+    (
+      await post(
+        '/organizations/approvals/process',
+        { ...input, action: 'REJECT', actionComment: ' ' },
+        f.headers,
+      )
+    ).statusCode,
+  ).toBe(400);
+  const decisions = await Promise.all([
+    post('/organizations/approvals/process', input, f.headers),
+    post('/organizations/approvals/process', input, f.headers),
+  ]);
+  expect(decisions.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+  expect(decisions.find((r) => r.statusCode === 200)!.json().data).toMatchObject({
+    nodeStatus: 'APPROVED',
+    flowStatus: 'APPROVED',
+    currentNode: null,
+    joinStatus: 'PENDING_LEAVE',
+    plannedLeaveDate: '2099-01-01',
+  });
+  expect(await db.approvalActionLog.count()).toBe(2);
+  expect(await db.approvalFlow.findUniqueOrThrow({ where: { flowNo: node.flowNo } })).toMatchObject(
+    { status: 'APPROVED', versionNo: 1, currentNode: null },
+  );
+  expect((await db.approvalNode.findUniqueOrThrow({ where: { id: node.nodeId } })).versionNo).toBe(
+    1,
+  );
+  expect((await db.userOrgRel.findUniqueOrThrow({ where: { id: member.rel.id } })).versionNo).toBe(
+    2,
+  );
+  expect(
+    (await post('/organizations/approvals/pending', { orgId: f.orgId }, f.headers)).json().data
+      .total,
+  ).toBe(0);
+});
+test('rejection restores member and permits a fresh exit; missing or mismatched node/organization cannot advance flow', async () => {
+  const f = await memberFixture(),
+    member = await f.add(),
+    other = await f.add();
+  await requestSelfExit(f, member);
+  const node = await pendingExit(f);
+  await requestSelfExit(f, other, 'other');
+  const otherFlow = await db.approvalFlow.findFirstOrThrow({ where: { businessId: other.rel.id } });
+  const wrongNode = await db.approvalNode.findFirstOrThrow({ where: { flowId: otherFlow.id } });
+  const input = processing(f.orgId, node, 'REJECT');
+  expect(
+    (await post('/organizations/approvals/process', { ...input, nodeId: wrongNode.id }, f.headers))
+      .statusCode,
+  ).toBe(400);
+  const wrongOrg = await db.organization.create({ data: { name: '隔离组织', expertiseTags: [] } });
+  await db.userOrgRel.create({
+    data: { orgId: wrongOrg.id, userId: f.owner.id, uid: f.owner.uid, position: 'OWNER' },
+  });
+  expect(
+    (await post('/organizations/approvals/process', { ...input, orgId: wrongOrg.id }, f.headers))
+      .statusCode,
+  ).toBe(403);
+  expect(
+    (await post('/organizations/approvals/pending', { orgId: wrongOrg.id }, f.headers)).json().data
+      .total,
+  ).toBe(0);
+  const rejected = await post('/organizations/approvals/process', input, f.headers);
+  expect(rejected.json().data).toMatchObject({
+    flowStatus: 'REJECTED',
+    nodeStatus: 'REJECTED',
+    joinStatus: 'ACTIVE',
+    plannedLeaveDate: null,
+  });
+  expect(await db.userOrgRel.findUniqueOrThrow({ where: { id: member.rel.id } })).toMatchObject({
+    joinStatus: 'ACTIVE',
+    plannedLeaveDate: null,
+  });
+  expect((await requestSelfExit(f, member, 'fresh')).statusCode).toBe(200);
+});
+test('malformed approval snapshots and conflicting member state roll back all attempted decision writes', async () => {
+  const f = await memberFixture(),
+    member = await f.add();
+  await requestSelfExit(f, member);
+  const node = await pendingExit(f),
+    input = processing(f.orgId, node);
+  const flow = await db.approvalFlow.findUniqueOrThrow({ where: { flowNo: node.flowNo } });
+  await db.approvalFlow.update({
+    where: { id: flow.id },
+    data: { formData: { targetMemberId: member.rel.id, plannedLeaveDate: 'bad-date' } },
+  });
+  expect((await post('/organizations/approvals/process', input, f.headers)).statusCode).toBe(500);
+  await db.approvalFlow.update({ where: { id: flow.id }, data: { formData: flow.formData! } });
+  await db.userOrgRel.update({ where: { id: member.rel.id }, data: { joinStatus: 'ACTIVE' } });
+  expect((await post('/organizations/approvals/process', input, f.headers)).statusCode).toBe(409);
+  expect(await db.approvalFlow.findUniqueOrThrow({ where: { id: flow.id } })).toMatchObject({
+    status: 'PENDING',
+    versionNo: 0,
+  });
+  expect(await db.approvalNode.findUniqueOrThrow({ where: { id: node.nodeId } })).toMatchObject({
+    nodeStatus: 'PENDING',
+    versionNo: 0,
+    approvedAt: null,
+  });
+  expect(await db.approvalActionLog.count()).toBe(1);
+});
+test('approval after planned day finalizes organization departure and records pending project compensation exactly once', async () => {
+  const f = await memberFixture(),
+    member = await f.add();
+  const today = shanghaiDay(new Date());
+  await requestSelfExit(f, member, 'today', today);
+  const node = await pendingExit(f);
+  const result = await post(
+    '/organizations/approvals/process',
+    processing(f.orgId, node),
+    f.headers,
+  );
+  expect(result.json().data.joinStatus).toBe('LEFT');
+  expect(await db.organizationDeparture.count()).toBe(1);
+  expect(
+    (await app.inject({ url: '/api/v1/users/me', headers: member.headers })).json().data
+      .organization,
+  ).toBeNull();
+  const replay = await requestSelfExit(f, member, 'today', today);
+  expect(replay.statusCode).toBe(200);
+  // 沿旧Service：流程为当前APPROVED，joinStatus仍为创建时EXIT_APPROVING快照。
+  expect(replay.json().data).toMatchObject({
+    flowStatus: 'APPROVED',
+    joinStatus: 'EXIT_APPROVING',
+  });
+  expect(await db.organizationDeparture.count()).toBe(1);
+});
+test('owner transfer does not silently reassign historical approval and requires both current role and node assignee', async () => {
+  const f = await memberFixture(),
+    member = await f.add(),
+    successor = await f.add();
+  await requestSelfExit(f, member);
+  const node = await pendingExit(f);
+  expect(
+    (
+      await post(
+        '/organizations/members/position',
+        { orgId: f.orgId, memberId: successor.rel.id, position: 'OWNER' },
+        f.headers,
+      )
+    ).statusCode,
+  ).toBe(200);
+  expect(
+    (await post('/organizations/approvals/process', processing(f.orgId, node), f.headers))
+      .statusCode,
+  ).toBe(403);
+  expect(
+    (await post('/organizations/approvals/process', processing(f.orgId, node), successor.headers))
+      .statusCode,
+  ).toBe(403);
+  expect((await db.approvalNode.findUniqueOrThrow({ where: { id: node.nodeId } })).approverId).toBe(
+    f.owner.id,
+  );
+});
+test('approval history pages by nodes, uses live names and last node action, and filters inclusive Shanghai times', async () => {
+  const f = await memberFixture(),
+    member = await f.add();
+  await requestSelfExit(f, member);
+  const pending = await pendingExit(f);
+  await post('/organizations/approvals/process', processing(f.orgId, pending), f.headers);
+  const original = await db.approvalNode.findUniqueOrThrow({ where: { id: pending.nodeId } });
+  const second = await db.approvalNode.create({
+    data: {
+      flowId: original.flowId,
+      flowNo: original.flowNo,
+      nodeSeq: 2,
+      nodeCode: 'EXTRA',
+      nodeName: '历史第二节点',
+      approverId: f.owner.id,
+      approverUid: f.owner.uid,
+      approverName: '旧快照',
+      approverType: 'USER',
+      nodeStatus: 'APPROVED',
+      approvedAt: new Date('2026-10-19T01:00:00Z'),
+    },
+  });
+  await db.approvalActionLog.create({
+    data: {
+      flowId: original.flowId,
+      nodeId: second.id,
+      actionType: 'APPROVE',
+      operatorId: f.owner.id,
+      operatorName: '旧快照',
+      actionComment: 'first',
+    },
+  });
+  await db.approvalActionLog.create({
+    data: {
+      flowId: original.flowId,
+      nodeId: second.id,
+      actionType: 'AUTO_PASS',
+      operatorId: null,
+      operatorName: 'SYSTEM',
+      actionComment: 'latest',
+    },
+  });
+  await db.user.update({
+    where: { id: member.user.id },
+    data: { displayName: '新昵称', realName: '新姓名' },
+  });
+  const all = await post(
+    '/organizations/approvals/records',
+    { orgId: f.orgId, size: 1 },
+    f.headers,
+  );
+  expect(all.json().data).toMatchObject({ total: 2, pages: 2, size: 1 });
+  const byTime = await post(
+    '/organizations/approvals/records',
+    {
+      orgId: f.orgId,
+      startAt: '2026-10-19 09:00:00',
+      endAt: '2026-10-19 09:00:00',
+      status: 'APPROVED',
+      businessType: ' ORG_MEMBER_EXIT ',
+    },
+    f.headers,
+  );
+  expect(byTime.json().data).toMatchObject({
+    total: 1,
+    records: [
+      {
+        nodeId: second.id,
+        actionType: 'AUTO_PASS',
+        operatorName: 'SYSTEM',
+        actionComment: 'latest',
+        applicantName: '新昵称(新姓名)',
+        targetMemberName: '新昵称(新姓名)',
+      },
+    ],
+  });
+  expect(
+    (
+      await post(
+        '/organizations/approvals/records',
+        { orgId: f.orgId, startAt: '2026-10-20 00:00:00', endAt: '2026-10-19 00:00:00' },
+        f.headers,
+      )
+    ).statusCode,
+  ).toBe(400);
+});
+test('due departure worker handles Shanghai midnight per member and retries idempotently', async () => {
+  const f = await memberFixture(),
+    due = await f.add('MEMBER', 'PENDING_LEAVE'),
+    later = await f.add('MEMBER', 'PENDING_LEAVE');
+  await db.userOrgRel.update({
+    where: { id: due.rel.id },
+    data: { plannedLeaveDate: new Date('2099-01-01T00:00:00Z') },
+  });
+  await db.userOrgRel.update({
+    where: { id: later.rel.id },
+    data: { plannedLeaveDate: new Date('2099-01-02T00:00:00Z') },
+  });
+  const service = new DepartureService(db);
+  expect(await service.processDue(new Date('2098-12-31T15:59:59Z'), 1)).toMatchObject({
+    processed: 0,
+    failed: 0,
+  });
+  const result = await service.processDue(new Date('2098-12-31T16:00:00Z'), 1);
+  expect(result).toEqual({ processed: 1, failed: 0, pendingProjectCleanup: 1 });
+  expect(await db.userOrgRel.findUniqueOrThrow({ where: { id: due.rel.id } })).toMatchObject({
+    joinStatus: 'LEFT',
+    versionNo: 1,
+    leftAt: new Date('2098-12-31T16:00:00Z'),
+  });
+  expect((await db.userOrgRel.findUniqueOrThrow({ where: { id: later.rel.id } })).joinStatus).toBe(
+    'PENDING_LEAVE',
+  );
+  expect(await service.processDue(new Date('2098-12-31T16:00:00Z'), 1)).toEqual({
+    processed: 0,
+    failed: 0,
+    pendingProjectCleanup: 1,
+  });
+});
+test('approval kernel discovers legacy seed configuration and queries flows, nodes and ordered actions', async () => {
+  const kernel = new ApprovalService(db);
+  const process = await kernel.enabledProcess(' ORG_MEMBER_EXIT ');
+  expect(process).toMatchObject({ status: 'ENABLED', version: 1 });
+  expect(await kernel.configs(process!.id)).toMatchObject([
+    {
+      nodeCode: 'EXIT_APPROVAL',
+      approverType: 'ROLE',
+      approverConfig: { roleCodes: ['OWNER', 'ADMIN'] },
+    },
+  ]);
+  const f = await memberFixture(),
+    member = await f.add();
+  const result = await requestSelfExit(f, member);
+  const flow = await kernel.flow(result.json().data.flowNo);
+  expect(await kernel.activeBusiness('ORG_MEMBER_EXIT', member.rel.id)).toMatchObject({
+    id: flow!.id,
+  });
+  expect(await kernel.pendingNodes(f.owner.id)).toHaveLength(1);
+  expect(await kernel.nodes(flow!.id, 1)).toMatchObject([
+    { approverType: 'ORG_LEADER', approverId: f.owner.id, configId: null },
+  ]);
+  expect(await kernel.actions(flow!.id)).toMatchObject([{ actionType: 'SUBMIT' }]);
+});
+
+async function importHttp(
+  orgId: string,
+  headers: Record<string, string>,
+  text: string,
+  key = 'import-key',
+) {
+  const boundary = 'member-integration-import';
+  const payload = Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="orgId"\r\n\r\n${orgId}\r\n--${boundary}\r\nContent-Disposition: form-data; name="memberText"\r\n\r\n${text}\r\n--${boundary}--\r\n`,
+  );
+  return app.inject({
+    method: 'POST',
+    url: '/api/v1/organizations/member-imports/generate',
+    headers: {
+      ...headers,
+      'idempotency-key': key,
+      'content-type': `multipart/form-data; boundary=${boundary}`,
+    },
+    payload,
+  });
+}
+test('member import creates passwordless EXPERT users and pending memberships atomically, then SMS activates before issuing a session', async () => {
+  const f = await memberFixture();
+  const imported = await importHttp(f.orgId, f.headers, '张三,13712345678,全职,管理员,2026-10-01');
+  expect(imported.statusCode, imported.body).toBe(200);
+  expect(imported.json().data).toMatchObject({
+    createdCount: 1,
+    sourceType: 'TEXT',
+    members: [{ joinStatus: 'PENDING_ACTIVATION', position: 'ADMIN', phoneMasked: '137****5678' }],
+  });
+  const user = await db.user.findUniqueOrThrow({ where: { phoneE164: '+8613712345678' } });
+  expect(user).toMatchObject({
+    passwordHash: null,
+    role: 'EXPERT',
+    accountType: 'INDIVIDUAL',
+    organizationId: null,
+  });
+  expect(
+    (await post('/auth/login', { account: '13712345678', password: '095270' }, desktop)).statusCode,
+  ).toBe(401);
+  const before = await db.userOrgRel.findUniqueOrThrow({
+    where: { userId_orgId: { userId: user.id, orgId: f.orgId } },
+  });
+  expect(before.joinedAt).toEqual(new Date('2026-09-30T16:00:00Z'));
+  await send('login', '13712345678');
+  const logged = await post('/auth/sms/login', { phone: '13712345678', code: '095270' }, desktop);
+  expect(logged.statusCode, logged.body).toBe(200);
+  expect(await db.userOrgRel.findUniqueOrThrow({ where: { id: before.id } })).toMatchObject({
+    joinStatus: 'ACTIVE',
+    versionNo: 1,
+    updatedBy: user.uid,
+  });
+  expect(
+    (
+      await app.inject({ url: '/api/v1/users/me', headers: bearer(logged.json().data.accessToken) })
+    ).json().data.organization,
+  ).toMatchObject({ id: f.orgId, position: 'ADMIN', joinStatus: 'ACTIVE' });
+  await send('login', '13712345678');
+  expect(
+    (await post('/auth/sms/login', { phone: '13712345678', code: '095270' }, desktop)).statusCode,
+  ).toBe(200);
+  expect((await db.userOrgRel.findUniqueOrThrow({ where: { id: before.id } })).versionNo).toBe(1);
+});
+test('invalid import reports every bad row without creating users or memberships and caches the validation result', async () => {
+  const f = await memberFixture();
+  const body =
+    '张三,13712345678,全职\n李四,13712345678,兼职,主管,2026-02-30\n坏姓名1,wrong,错误属性';
+  const result = await importHttp(f.orgId, f.headers, body);
+  expect(result.statusCode, result.body).toBe(400);
+  expect(result.json().data).toMatchObject({
+    totalCount: 3,
+    validCount: 0,
+    invalidCount: 3,
+    createdCount: 0,
+    members: [],
+    createdAt: null,
+  });
+  expect(result.json().data.rowErrors.length).toBeGreaterThan(4);
+  expect(result.body).not.toContain('13712345678');
+  expect(await db.user.count()).toBe(1);
+  expect(await db.userOrgRel.count()).toBe(1);
+  expect(await db.memberImportReceipt.count()).toBe(1);
+  expect((await importHttp(f.orgId, f.headers, body)).json()).toEqual(result.json());
+  expect((await importHttp(f.orgId, f.headers, '张三,13712345678,全职')).statusCode).toBe(409);
+});
+test('import reuses an unbound existing account and historical membership without overwriting profile, password or version', async () => {
+  const f = await memberFixture(),
+    existing = await f.add();
+  await db.user.update({
+    where: { id: existing.user.id },
+    data: { bio: 'keep', passwordHash: 'keep-password', accountType: 'ORGANIZATION' },
+  });
+  await db.userOrgRel.update({
+    where: { id: existing.rel.id },
+    data: {
+      joinStatus: 'LEFT',
+      leftAt: new Date(),
+      plannedLeaveDate: new Date('2026-10-01T00:00:00Z'),
+      versionNo: 7,
+    },
+  });
+  const original = await db.user.findUniqueOrThrow({ where: { id: existing.user.id } });
+  const result = await importHttp(
+    f.orgId,
+    f.headers,
+    `另名,${original.phoneE164.slice(3)},兼职,管理员`,
+  );
+  expect(result.statusCode, result.body).toBe(200);
+  expect(result.json().data.members[0]).toMatchObject({
+    memberId: existing.rel.id,
+    userId: original.id,
+    accountType: 'ORGANIZATION',
+    joinStatus: 'ACTIVE',
+    position: 'ADMIN',
+  });
+  expect(await db.user.findUniqueOrThrow({ where: { id: original.id } })).toEqual(original);
+  expect(await db.userOrgRel.findUniqueOrThrow({ where: { id: existing.rel.id } })).toMatchObject({
+    versionNo: 8,
+    leftAt: null,
+    plannedLeaveDate: null,
+    employmentType: 'PART_TIME',
+  });
+});
+test('import rejects effective memberships in either organization, while unbound registered accounts join directly', async () => {
+  const f = await memberFixture(),
+    joined = await f.add();
+  const other = await db.organization.create({ data: { name: '其他组织', expertiseTags: [] } });
+  const foreign = await f.add();
+  await db.userOrgRel.update({
+    where: { id: foreign.rel.id },
+    data: { orgId: other.id, joinStatus: 'PENDING_ACTIVATION' },
+  });
+  const unbound = await f.add();
+  await db.userOrgRel.delete({ where: { id: unbound.rel.id } });
+  const invalid = await importHttp(
+    f.orgId,
+    f.headers,
+    `张三,${joined.user.phoneE164.slice(3)},全职\n李四,${foreign.user.phoneE164.slice(3)},兼职\n王五,${unbound.user.phoneE164.slice(3)},全职`,
+  );
+  expect(invalid.statusCode).toBe(400);
+  expect(invalid.json().data).toMatchObject({ validCount: 1, invalidCount: 2, createdCount: 0 });
+  expect(invalid.json().data.rowErrors.map((e: { errorCode: string }) => e.errorCode)).toEqual([
+    'ACCOUNT_REGISTERED',
+    'ALREADY_JOINED_OTHER_ORGANIZATION',
+  ]);
+  expect(await db.userOrgRel.count({ where: { userId: unbound.user.id } })).toBe(0);
+  const valid = await importHttp(
+    f.orgId,
+    f.headers,
+    `王五,${unbound.user.phoneE164.slice(3)},全职`,
+    'unbound',
+  );
+  expect(valid.json().data.members[0]).toMatchObject({
+    userId: unbound.user.id,
+    joinStatus: 'ACTIVE',
+  });
+});
+test('import scopes idempotency by operator and org, rejects concurrent replay or changed payload, expires after 24 hours', async () => {
+  const f = await memberFixture();
+  const body = '张三,13712345678,全职';
+  const results = await Promise.all([
+    importHttp(f.orgId, f.headers, body),
+    importHttp(f.orgId, f.headers, body),
+  ]);
+  expect(results.some((r) => r.statusCode === 200)).toBe(true);
+  expect(results.every((r) => [200, 409].includes(r.statusCode))).toBe(true);
+  expect(await db.user.count()).toBe(2);
+  expect(await db.memberImportReceipt.count()).toBe(1);
+  const first = results.find((r) => r.statusCode === 200)!;
+  expect((await importHttp(f.orgId.toUpperCase(), f.headers, body)).json()).toEqual(first.json());
+  expect((await importHttp(f.orgId, f.headers, body)).json()).toEqual(first.json());
+  expect((await importHttp(f.orgId, f.headers, '李四,13712345679,兼职')).statusCode).toBe(409);
+  const receipt = await db.memberImportReceipt.findFirstOrThrow();
+  expect(receipt.expiresAt.getTime() - receipt.createdAt.getTime()).toBeGreaterThanOrEqual(
+    86_399_000,
+  );
+  await db.memberImportReceipt.updateMany({ data: { expiresAt: new Date(0) } });
+  const afterExpiry = await importHttp(f.orgId, f.headers, body);
+  expect(afterExpiry.statusCode).toBe(400);
+  expect(afterExpiry.json().data.rowErrors[0].errorCode).toBe('ACCOUNT_REGISTERED');
+});
+test('cross-organization concurrent import of one phone has exactly one membership winner', async () => {
+  const f = await memberFixture();
+  const other = await db.organization.create({ data: { name: '并发导入组织', expertiseTags: [] } });
+  await db.userOrgRel.create({
+    data: { orgId: other.id, userId: f.owner.id, uid: f.owner.uid, position: 'OWNER' },
+  });
+  const results = await Promise.all([
+    importHttp(f.orgId, f.headers, '张三,13712345678,全职', 'shared'),
+    importHttp(other.id, f.headers, '张三,13712345678,全职', 'shared'),
+  ]);
+  expect(results.map((r) => r.statusCode).sort()).toEqual([200, 400]);
+  const user = await db.user.findUniqueOrThrow({ where: { phoneE164: '+8613712345678' } });
+  expect(await db.userOrgRel.count({ where: { userId: user.id } })).toBe(1);
+  expect(results.find((r) => r.statusCode === 400)!.json().data.rowErrors[0].errorCode).toBe(
+    'ALREADY_JOINED_OTHER_ORGANIZATION',
+  );
+});
+test('concurrent imports and role promotions share administrator capacity and count pending activation slots', async () => {
+  const f = await memberFixture();
+  for (let i = 0; i < 4; i++) await f.add('ADMIN');
+  const target = await f.add();
+  const results = await Promise.all([
+    importHttp(f.orgId, f.headers, '张三,13712345678,全职,管理员'),
+    post(
+      '/organizations/members/position',
+      { orgId: f.orgId, memberId: target.rel.id, position: 'ADMIN' },
+      f.headers,
+    ),
+  ]);
+  expect(results.map((r) => r.statusCode).sort()).toEqual([200, 400]);
+  expect(await db.userOrgRel.count({ where: { orgId: f.orgId, position: 'ADMIN' } })).toBe(5);
+  if (results[0]!.statusCode === 400)
+    expect(await db.user.findUnique({ where: { phoneE164: '+8613712345678' } })).toBeNull();
+});
+test('XLS/XLSX template files and CSV upload prioritize nonempty file and retain full validation results', async () => {
+  const f = await memberFixture();
+  for (const [index, bookType] of (['xls', 'xlsx'] as const).entries()) {
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet([
+        ['姓名', '手机号', '人员属性', '组织内角色', '入组时间'],
+        ['张三', `1371234567${index}`, '全职', '成员', '2026-10-01'],
+      ]),
+      'members',
+    );
+    const boundary = 'excel-import-' + bookType;
+    const bytes = Buffer.from(XLSX.write(workbook, { type: 'buffer', bookType }));
+    const payload = Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="csvFile"; filename="members.${bookType}"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+      ),
+      bytes,
+      Buffer.from(
+        `\r\n--${boundary}\r\nContent-Disposition: form-data; name="memberText"\r\n\r\ninvalid ignored text\r\n--${boundary}--\r\n`,
+      ),
+    ]);
+    const result = await app.inject({
+      method: 'POST',
+      url: `/api/v1/organizations/member-imports/generate?orgId=${f.orgId}`,
+      headers: {
+        ...f.headers,
+        'idempotency-key': bookType,
+        'content-type': `multipart/form-data; boundary=${boundary}`,
+      },
+      payload,
+    });
+    expect(result.statusCode, result.body).toBe(200);
+    expect(result.json().data).toMatchObject({
+      sourceType: 'EXCEL',
+      textIgnored: true,
+      createdCount: 1,
+    });
+  }
+  const member = await f.add();
+  expect((await importHttp(f.orgId, member.headers, '张三,13712345678,全职')).statusCode).toBe(403);
+});
+test('password login activates pending memberships in the token transaction after reset, refresh does not increment again', async () => {
+  const f = await memberFixture();
+  await importHttp(f.orgId, f.headers, '张三,13712345678,全职');
+  await send('reset_password', '13712345678');
+  expect(
+    (
+      await post(
+        '/auth/password/reset',
+        {
+          phone: '13712345678',
+          code: '095270',
+          newPassword: 'Changed123!',
+        },
+        desktop,
+      )
+    ).statusCode,
+  ).toBe(200);
+  const user = await db.user.findUniqueOrThrow({ where: { phoneE164: '+8613712345678' } });
+  expect((await db.userOrgRel.findFirstOrThrow({ where: { userId: user.id } })).joinStatus).toBe(
+    'PENDING_ACTIVATION',
+  );
+  const logged = await post(
+    '/auth/login',
+    { account: '13712345678', password: 'Changed123!' },
+    desktop,
+  );
+  expect(logged.statusCode, logged.body).toBe(200);
+  expect((await db.userOrgRel.findFirstOrThrow({ where: { userId: user.id } })).versionNo).toBe(1);
+  expect(
+    (await post('/auth/refresh', { refreshToken: logged.json().data.refreshToken }, desktop))
+      .statusCode,
+  ).toBe(200);
+  expect((await db.userOrgRel.findFirstOrThrow({ where: { userId: user.id } })).versionNo).toBe(1);
+});
+test('injected activation failure rolls back code consumption and relation update and creates no session', async () => {
+  const f = await memberFixture();
+  await importHttp(f.orgId, f.headers, '张三,13712345678,全职');
+  await send('login', '13712345678');
+  const before = await db.session.count();
+  const failing = new Proxy(db, {
+    get(target, key) {
+      if (key === '$transaction')
+        return (callback: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+          db.$transaction((tx) =>
+            callback(
+              new Proxy(tx, {
+                get(transaction, property) {
+                  if (property === 'userOrgRel')
+                    return {
+                      ...transaction.userOrgRel,
+                      updateMany: async (args: Prisma.UserOrgRelUpdateManyArgs) => {
+                        await transaction.userOrgRel.updateMany(args);
+                        throw new Error('injected activation failure');
+                      },
+                    };
+                  return Reflect.get(transaction, property);
+                },
+              }),
+            ),
+          );
+      const value = Reflect.get(target, key);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  await expect(
+    new AuthService(failing, config).loginBySms(
+      { phone: '13712345678', code: '095270' },
+      '127.0.0.1',
+      'desktop',
+    ),
+  ).rejects.toThrow('injected activation failure');
+  expect(await db.session.count()).toBe(before);
+  const user = await db.user.findUniqueOrThrow({ where: { phoneE164: '+8613712345678' } });
+  expect(await db.userOrgRel.findFirstOrThrow({ where: { userId: user.id } })).toMatchObject({
+    joinStatus: 'PENDING_ACTIVATION',
+    versionNo: 0,
+  });
+  expect(
+    (
+      await db.verificationChallenge.findFirstOrThrow({
+        where: { phoneE164: '+8613712345678', purpose: 'login' },
+      })
+    ).consumedAt,
+  ).toBeNull();
+});
+test('failure after first account creation rolls back the whole batch and its idempotency receipt', async () => {
+  const f = await memberFixture();
+  let creates = 0;
+  const failing = new Proxy(db, {
+    get(target, key) {
+      if (key === '$transaction')
+        return (callback: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+          db.$transaction((tx) =>
+            callback(
+              new Proxy(tx, {
+                get(transaction, property) {
+                  if (property === 'user')
+                    return {
+                      ...transaction.user,
+                      create: async (args: Prisma.UserCreateArgs) => {
+                        creates++;
+                        if (creates === 2) throw new Error('injected batch failure');
+                        return transaction.user.create(args);
+                      },
+                    };
+                  return Reflect.get(transaction, property);
+                },
+              }),
+            ),
+          );
+      const value = Reflect.get(target, key);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const principal = {
+    userId: f.owner.id,
+    uid: f.owner.uid,
+    role: 'EXPERT' as const,
+    sessionId: 'test',
+    clientType: 'desktop' as const,
+  };
+  const body = '张三,13712345678,全职\n李四,13712345679,兼职';
+  await expect(
+    new MemberImportService(failing).generate('rollback', f.orgId, principal, undefined, body),
+  ).rejects.toThrow('injected batch failure');
+  expect(await db.user.count()).toBe(1);
+  expect(await db.userOrgRel.count()).toBe(1);
+  expect(await db.memberImportReceipt.count()).toBe(0);
+  expect((await importHttp(f.orgId, f.headers, body, 'rollback')).statusCode).toBe(200);
 });
