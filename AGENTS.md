@@ -74,18 +74,20 @@ React 页面 → services/api → packages/platform
 
 在仓库根目录执行，使用 Node.js 24 与 pnpm 11；本地数据库为原生 PostgreSQL。
 
-| 场景                  | 命令                                                                                     |
-| --------------------- | ---------------------------------------------------------------------------------------- |
-| 首次准备              | `pnpm install` → `pnpm db:local:start` → `pnpm setup:local` → `pnpm db:deploy`           |
-| 开发（分别启动）      | `pnpm dev:server`、`pnpm dev:web`、`pnpm dev:electron`                                   |
-| 静态检查              | `pnpm typecheck`、`pnpm lint`、`pnpm format:check`                                       |
-| 核心 / 服务端单测     | `pnpm test:core`、`pnpm test`                                                            |
-| 前端双端契约回归      | `pnpm test:frontend`，验证开发本地 mock 与生产双端请求契约，使用隔离接口替身，无需数据库 |
-| 数据库集成 / 双端 E2E | `pnpm test:integration`、`pnpm test:e2e`，环境准备见 README                              |
-| 构建                  | `pnpm build:web`、`pnpm build:server`、`pnpm build:electron`                             |
-| 打包                  | `pnpm package:web`、`pnpm package:server`、`pnpm package:mac`、`pnpm package:win`        |
+| 场景                  | 命令                                                                                              |
+| --------------------- | ------------------------------------------------------------------------------------------------- |
+| 首次准备              | `pnpm install` → `pnpm db:local:start` → `pnpm setup:local` → `pnpm db:deploy`                    |
+| 开发（分别启动）      | `pnpm dev:server`、`pnpm dev:web`、`pnpm dev:electron`                                            |
+| 静态检查              | `pnpm typecheck`、`pnpm lint`、`pnpm format:check`                                                |
+| 提交校验              | `pnpm prepare` 安装 Husky；`pnpm check:staged` 检查索引；`pnpm check:message <文件>` 检查提交信息 |
+| 核心 / 服务端单测     | `pnpm test:core`、`pnpm test`                                                                     |
+| 前端双端契约回归      | `pnpm test:frontend`，验证开发本地 mock 与生产双端请求契约，使用隔离接口替身，无需数据库          |
+| 数据库集成 / 双端 E2E | `pnpm test:integration`、`pnpm test:e2e`，环境准备见 README                                       |
+| 构建                  | `pnpm build:web`、`pnpm build:server`、`pnpm build:electron`                                      |
+| 打包                  | `pnpm package:web`、`pnpm package:server`、`pnpm package:mac`、`pnpm package:win`                 |
 
 默认端口：Web 3001、API 3000、PostgreSQL 5432。集成测试会清表，只能连接 `.env.test` 指定且库名以 `_test` 结尾的专用测试库。
+Git 的 `pre-commit` 先通过 `scripts/check-commit-policy.mjs` 检查整个暂存索引的路径和文本，再用 lint-staged 只读检查暂存文件的 ESLint / Prettier；`commit-msg` 检查提交信息。规则必须来自仓库外的 `~/.config/tyde/commit-policy.json` 或 `TYDE_COMMIT_POLICY_FILE`，`terms` 为非空字符串数组；缺失、无效或指向仓库内均拒绝提交，不把具体规则写回仓库。自动守卫仅覆盖字面匹配和可解码文本，二进制内容、编码变体及依赖来源仍须执行上面的完整交付核查。安装入口为 `scripts/install-hooks.mjs`，生产 / CI / 无 Git 的部署目录跳过；全量类型检查和业务测试不在提交钩子中执行。
 修改后按影响范围验证；认证改动关注双端恢复/退出、过期、重放、限流与并发。测试位置：`tests/security.test.mjs`、`apps/server/tests/`、`tests/e2e/`。
 
 ## 按需补充上下文

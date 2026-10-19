@@ -73,6 +73,20 @@ pnpm format:check
 
 本机一键验证：首次运行 `pnpm exec playwright install chromium` 安装浏览器，然后 `pnpm verify:local`。该命令依次执行全部检查、迁移和 Web / Electron 操作，保存 JSON 结果与截图。某一步失败并修正后可用 `pnpm verify:local --resume` 从失败步骤继续；此前通过项会沿用原记录。
 
+### 提交校验
+
+开发依赖安装后，`prepare` 会配置 Husky；已有依赖、重复安装未触发脚本时，运行 `pnpm prepare` 重新启用。提交前执行：
+
+- `pre-commit`：受限内容守卫检查整个暂存索引的路径与文本，再由 lint-staged 对暂存文件执行 ESLint 和 Prettier 检查。保留未暂存修改，不自动修复或格式化文件。
+- `commit-msg`：检查提交信息中的受限内容，不额外要求提交信息格式。
+- 全量类型检查、核心测试和双端回归仍按上面的命令按需执行；提交钩子不启动数据库或 Electron。
+
+受限词规则只保存在仓库外的 `~/.config/tyde/commit-policy.json`，JSON 对象中的 `terms` 必须是非空字符串数组；也可用 `TYDE_COMMIT_POLICY_FILE` 指向另一个仓库外文件。不要把具体名称、标识或其编码写进仓库。配置缺失、无效、为空或位于仓库内时，钩子会阻止提交。本机已配置的词表不随 Git 分发，其他开发者须在自己的机器上配置。
+
+自动守卫按字面、大小写无关匹配路径、UTF-8 和带 BOM 的 UTF-16 文本；二进制只检查路径并提示人工核查。二进制文字与元数据、编码变体、内部依赖及来源仍须遵守 `AGENTS.md` 的完整交付检查，不能仅凭钩子通过判定合规。
+
+可手动运行 `pnpm check:staged`，或用 `pnpm check:message <提交信息文件>` 检查消息。Git 客户端需能找到 Node.js 24 与 pnpm 11；使用版本管理器时，可在仓库外的 Husky 启动文件中初始化环境，见 [Husky 官方说明](https://typicode.github.io/husky/how-to.html#node-version-managers-and-guis)。生产安装、CI、设置 `HUSKY=0` 或没有 `.git` 的部署目录不安装钩子。
+
 集成测试会清空专用测试库中的项目表，必须使用 `.env.test` 且库名以 `_test` 结尾。先迁移测试库，再执行：
 
 ```sh

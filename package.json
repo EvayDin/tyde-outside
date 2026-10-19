@@ -9,6 +9,9 @@
     "pnpm": ">=11 <12"
   },
   "scripts": {
+    "prepare": "node scripts/install-hooks.mjs",
+    "check:staged": "node scripts/check-commit-policy.mjs staged && lint-staged --hide-unstaged",
+    "check:message": "node scripts/check-commit-policy.mjs commit-msg",
     "setup:local": "node scripts/setup-local.mjs",
     "verify:local": "node scripts/verify-local.mjs",
     "test:e2e": "playwright test",
@@ -41,12 +44,18 @@
     "db:deploy": "pnpm --filter @tyde/server db:deploy",
     "db:cleanup": "pnpm --filter @tyde/server db:cleanup"
   },
+  "lint-staged": {
+    "*.{js,cjs,mjs,jsx,ts,tsx}": "eslint --max-warnings 0 --no-warn-ignored",
+    "*": "prettier --check --ignore-unknown"
+  },
   "devDependencies": {
-    "@playwright/test": "1.62.1",
     "@eslint/js": "10.0.1",
+    "@playwright/test": "1.62.1",
     "@types/node": "24.13.6",
     "eslint": "10.9.1",
     "globals": "17.12.0",
+    "husky": "9.1.7",
+    "lint-staged": "17.6.0",
     "prettier": "3.9.8",
     "typescript": "5.9.3",
     "typescript-eslint": "8.70.1"

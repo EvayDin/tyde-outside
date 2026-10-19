@@ -31,6 +31,7 @@ if (kind === 'web') {
     'pnpm-workspace.yaml',
     '.npmrc',
     '.nvmrc',
+    'scripts/install-hooks.mjs',
     'apps/server/package.json',
     'apps/server/dist',
     'apps/server/prisma',
