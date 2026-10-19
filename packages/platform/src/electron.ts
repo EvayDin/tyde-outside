@@ -8,6 +8,7 @@ export function electronAuth(bridge: DesktopBridge): AuthApi {
   return {
     health: () => unwrap(bridge.health()),
     sendCode: (input) => unwrap(bridge.sendCode(input)),
+    login: (input) => unwrap(bridge.login(input)),
     verifyCode: (input) => unwrap(bridge.verifyCode(input)),
     completeRegistration: (input) => unwrap(bridge.completeRegistration(input)),
     getCurrentUser: () => unwrap(bridge.getCurrentUser()),

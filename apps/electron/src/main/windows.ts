@@ -2,6 +2,10 @@ import { BrowserWindow, app } from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
+export const iconPath = join(
+  app.isPackaged ? process.resourcesPath : join(here, '../../resources'),
+  process.platform === 'win32' ? 'icon.ico' : 'icon.png',
+);
 export function trustedPage(raw: string): boolean {
   try {
     const url = new URL(raw);
@@ -12,7 +16,7 @@ export function trustedPage(raw: string): boolean {
         url.pathname === '/index.html' &&
         !url.search
       );
-    const expected = new URL(process.env.TYDE_WEB_URL ?? 'http://127.0.0.1:5173');
+    const expected = new URL(process.env.TYDE_WEB_URL ?? 'http://127.0.0.1:3001');
     return (
       expected.hostname === '127.0.0.1' &&
       expected.protocol === 'http:' &&
@@ -31,6 +35,7 @@ export async function createWindow(): Promise<BrowserWindow> {
     minWidth: 420,
     minHeight: 640,
     title: 'tyde',
+    icon: iconPath,
     backgroundColor: '#f6f7fb',
     show: false,
     webPreferences: {
@@ -43,6 +48,14 @@ export async function createWindow(): Promise<BrowserWindow> {
     },
   });
   window.setMenuBarVisibility(false);
+  if (!app.isPackaged) {
+    window.webContents.on('before-input-event', (event, input) => {
+      if (input.key === 'F12') {
+        event.preventDefault();
+        if (input.type === 'keyDown' && !input.isAutoRepeat) window.webContents.toggleDevTools();
+      }
+    });
+  }
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => {
     if (!trustedPage(url)) event.preventDefault();
@@ -51,7 +64,7 @@ export async function createWindow(): Promise<BrowserWindow> {
   window.once('ready-to-show', () => window.show());
   const url = app.isPackaged
     ? 'tyde-app://app/index.html'
-    : (process.env.TYDE_WEB_URL ?? 'http://127.0.0.1:5173/');
+    : (process.env.TYDE_WEB_URL ?? 'http://127.0.0.1:3001/');
   if (!trustedPage(url)) throw new Error('拒绝加载不可信前端地址');
   await window.loadURL(url);
   return window;

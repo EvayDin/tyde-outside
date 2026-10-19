@@ -18,7 +18,7 @@ const url = 'http://127.0.0.1:5174/';
 const children = new Set();
 let stopping = false;
 function start(args, env = {}) {
-  const child = spawn('pnpm', args, {
+  const child = spawn('npm', args, {
     stdio: 'inherit',
     shell: process.platform === 'win32',
     detached: process.platform !== 'win32',
@@ -66,7 +66,7 @@ async function probe() {
 }
 try {
   if (!(await probe()))
-    start(['dev:web', '--port', '5174', '--host', '127.0.0.1'], {
+    start(['--prefix', 'apps/web', 'run', 'dev', '--', '--port', '5174', '--host', '127.0.0.1'], {
       API_PROXY_TARGET: 'http://127.0.0.1:3000',
     });
   const deadline = Date.now() + 90_000;
@@ -74,7 +74,9 @@ try {
     if (Date.now() > deadline) throw new Error('等待 Web 开发服务超时');
     await new Promise((resolve) => setTimeout(resolve, 400));
   }
-  if (!stopping) start(['--filter', '@tyde/electron', 'dev'], { TYDE_API_BASE_URL: apiBaseUrl });
+  const devScript = process.argv.includes('--inspect') ? 'dev:inspect' : 'dev';
+  if (!stopping)
+    start(['--prefix', 'apps/electron', 'run', devScript], { TYDE_API_BASE_URL: apiBaseUrl });
 } catch (error) {
   console.error(error.message);
   stop(1);

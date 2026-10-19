@@ -11,11 +11,17 @@ extraResources:
     to: web
   - from: resources/runtime.json
     to: runtime.json
+  - from: resources
+    to: .
+    filter:
+      - icon.png
+      - icon.ico
 asar: true
 npmRebuild: false
 artifactName: '${productName}-${version}-${os}-${arch}.${ext}'
 mac:
   target: dmg
+  icon: resources/icon.icns
   category: public.app-category.productivity
   identity: '-'
   hardenedRuntime: false
@@ -23,7 +29,8 @@ mac:
   minimumSystemVersion: '12.0'
 win:
   target: nsis
-  signAndEditExecutable: false
+  icon: resources/icon.ico
+  signExecutable: false
 nsis:
   oneClick: false
   perMachine: false

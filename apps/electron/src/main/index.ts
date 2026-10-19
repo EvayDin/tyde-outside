@@ -3,10 +3,19 @@ import { resolve, relative, isAbsolute, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadRuntime } from './config.js';
 import { registerIpc } from './ipc/index.js';
-import { createWindow } from './windows.js';
+import { createWindow, iconPath } from './windows.js';
+import { DESKTOP_NETWORK_SCHEME } from '@tyde/shared/ipc';
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'tyde-app', privileges: { standard: true, secure: true, supportFetchAPI: true } },
+  ...(!app.isPackaged
+    ? [
+        {
+          scheme: DESKTOP_NETWORK_SCHEME,
+          privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
+        },
+      ]
+    : []),
 ]);
 // 保留改名前的用户数据目录，升级后继续读取已有会话和浏览器数据。
 if (app.isPackaged) app.setPath('userData', resolve(app.getPath('appData'), 'tyde-outside'));
@@ -25,6 +34,7 @@ else {
     .whenReady()
     .then(async () => {
       app.setAppUserModelId('app.tydeoutside.desktop');
+      if (!app.isPackaged) app.dock?.setIcon(iconPath);
       protocol.handle('tyde-app', async (request) => {
         try {
           const url = new URL(request.url);

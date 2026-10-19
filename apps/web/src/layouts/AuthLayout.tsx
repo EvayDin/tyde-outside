@@ -1,52 +1,65 @@
 import type { PropsWithChildren } from 'react';
-import { Tag } from 'antd';
-import { useQuery } from '@tanstack/react-query';
-import { api, isDesktop } from '../services/api';
-export function AuthLayout({ children }: PropsWithChildren) {
-  const health = useQuery({
-    queryKey: ['health'],
-    queryFn: () => api.health(),
-    refetchInterval: 60_000,
-  });
+import { TideIcon } from '@/components/icons';
+
+/** 双端共用满页品牌背景与白色悬浮认证卡片。 */
+export function AuthLayout({
+  children,
+  registration = false,
+}: PropsWithChildren<{ registration?: boolean }>) {
   return (
-    <main className="shell">
-      <header className="topbar">
-        <a className="wordmark" href="#/">
-          <span className="brand-mark">t</span>tyde
-        </a>
-        <Tag variant="filled">{isDesktop ? '桌面端' : 'Web 端'}</Tag>
+    <div className="auth-page flex min-h-svh flex-col bg-[#eaf5f7] px-[40px] py-[24px] text-left text-foreground [background-image:radial-gradient(ellipse_at_12%_28%,rgba(94,194,207,0.18),transparent_48%),radial-gradient(ellipse_at_90%_85%,rgba(144,210,219,0.22),transparent_50%)] [&_*]:box-border max-[580px]:px-[16px] max-[580px]:py-[20px]">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-50 focus:rounded-md focus:bg-white focus:px-4 focus:py-2"
+        onClick={(event) => {
+          event.preventDefault();
+          document.getElementById('main-content')?.focus();
+        }}
+      >
+        跳转到主要内容
+      </a>
+      <header className="mx-auto flex w-full max-w-[1120px] items-center gap-[12px]">
+        <span className="grid h-[42px] w-[42px] place-items-center rounded-[11px] bg-[#2fa9be] text-white shadow-[0_7px_14px_rgba(29,132,153,0.22)]">
+          <TideIcon className="h-[27px] w-[27px] fill-none stroke-current [stroke-linecap:round] [stroke-width:2]" />
+        </span>
+        <div>
+          <div className="text-[21px] leading-[1.1] font-[650] text-[#0c3542]">
+            Tyde{' '}
+            <span className="ml-[5px] inline-block translate-y-[-3px] rounded-[8px] bg-[#db9cab] px-[6px] py-[3px] text-[12px] text-white">
+              潮汐
+            </span>
+          </div>
+          <div className="mt-[6px] font-mono text-[10px] leading-[1.2] tracking-[1px] text-[#3ca2b8]">
+            MARITIME RESOURCE COORDINATION
+          </div>
+        </div>
       </header>
-      <div className="content">
-        <aside className="intro">
-          <span className="eyebrow">YOUR NEXT CHAPTER</span>
-          <h1>
-            从这里，
+
+      <div
+        className={`mx-auto grid w-full max-w-[1120px] flex-1 items-center gap-[80px] py-[12px] max-[1100px]:gap-[40px] max-[900px]:block max-[900px]:pt-[24px] ${registration ? 'grid-cols-[minmax(0,1fr)_minmax(0,600px)]' : 'grid-cols-[minmax(0,1fr)_minmax(0,460px)]'}`}
+      >
+        <aside className="min-w-0 text-left max-[900px]:hidden">
+          <p className="text-[11px] tracking-[2.5px] text-primary">YOUR NEXT CHAPTER</p>
+          <p className="mt-[20px] text-[clamp(34px,4.3vw,52px)] leading-[1.45] font-[650] tracking-[-1px] text-foreground">
+            从潮汐，
             <br />
             开启新的可能。
-          </h1>
-          <p>
-            一个账号，连接每一端。
-            <br />
-            欢迎来到 tyde。
           </p>
-          <div className="intro-note">
-            <span className="note-line" />
-            简单开始，自在连接
-          </div>
+          <p className="mt-[24px] text-[16px] leading-[1.9] text-muted-foreground">
+            让每一次协作，都顺势而为
+            <br />
+            欢迎来到 tyde
+          </p>
         </aside>
-        <section className="panel">{children}</section>
+
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className={`w-full min-w-0 rounded-[24px] border border-white/80 bg-card shadow-[0_24px_70px_-20px_rgba(28,87,101,0.25),0_4px_16px_rgba(28,87,101,0.04)] max-[900px]:mx-auto max-[900px]:max-w-[600px] max-[580px]:rounded-[20px] max-[580px]:py-[24px] ${registration ? 'px-[28px] py-[24px] max-[580px]:px-[16px]' : 'p-[36px] max-[580px]:px-[24px]'}`}
+        >
+          {children}
+        </main>
       </div>
-      <footer>
-        <span>tyde · 内部试用版</span>
-        <span className="service">
-          <i
-            className={
-              health.isSuccess ? 'dot connected' : health.isPending ? 'dot' : 'dot disconnected'
-            }
-          />
-          {health.isSuccess ? '服务已连接' : health.isPending ? '正在连接服务' : '服务暂不可用'}
-        </span>
-      </footer>
-    </main>
+    </div>
   );
 }

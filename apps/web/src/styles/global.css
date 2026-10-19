@@ -1,189 +1,232 @@
+/* 定义应用级设计变量、基础元素规则和 Tailwind 样式层顺序。 */
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-holiday: var(--holiday);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+  --text-xs: 11px;
+  --text-xs--line-height: 1.5;
+  --text-sm: 12px;
+  --text-sm--line-height: 1.5;
+}
+
 :root {
-  font-family:
-    Inter,
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    sans-serif;
-  color: #20243b;
-  background: #f6f7fb;
+  --radius: 0.625rem;
+  --background: #ffffff;
+  --foreground: #263f4e;
+  --card: #ffffff;
+  --card-foreground: #263f4e;
+  --popover: #ffffff;
+  --popover-foreground: #263f4e;
+  --primary: #1d9db1;
+  --primary-foreground: #ffffff;
+  --secondary: #f8fafc;
+  --secondary-foreground: #263f4e;
+  --muted: #f8fafc;
+  --muted-foreground: #7890a3;
+  --accent: #eaf8fa;
+  --accent-foreground: #263f4e;
+  --destructive: #e5484d;
+  --destructive-foreground: #ffffff;
+  --holiday: #b42318;
+  --border: #d9e2ec;
+  --input: #d9e2ec;
+  --ring: #1d9db1;
+  --chart-1: #1d9db1;
+  --chart-2: #3f7f8d;
+  --chart-3: #7890a3;
+  --chart-4: #d7a68e;
+  --chart-5: #e5484d;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #263f4e;
+  --sidebar-primary: #1d9db1;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #eaf8fa;
+  --sidebar-accent-foreground: #263f4e;
+  --sidebar-border: #d9e2ec;
+  --sidebar-ring: #1d9db1;
+
+  --code-bg: #f4f3ec;
+  --color-primary: var(--primary);
+  --color-primary-hover: #138ea3;
+  --color-primary-dark: #063b46;
+  --color-primary-dark-hover: #0a4b58;
+  --color-primary-soft: var(--accent);
+  --color-primary-border: #9ecfd8;
+  --color-primary-strong: #11778a;
+  /* 任务模式卡片的待处理状态保留粉紫品牌强调色，避免与危险红色混淆。 */
+  --color-pending-accent: #d49aaf;
+  --color-success: #13954c;
+  --color-success-hover: #0f7f40;
+  --color-success-soft: #e9f7ef;
+  --color-success-border: #acd9bb;
+  --color-warning: #bd780d;
+  --color-warning-hover: #a56508;
+  --color-warning-soft: #fff7e6;
+  --color-warning-border: #efd08f;
+  --color-danger: var(--destructive);
+  --color-danger-hover: #cf3d42;
+  --color-danger-soft: #fff1f3;
+  --color-danger-border: #f4b8bd;
+  --color-danger-strong: #b4232c;
+  --color-text: var(--foreground);
+  --color-text-secondary: var(--muted-foreground);
+  --color-neutral-strong: #526b78;
+  --color-border: var(--border);
+  --color-divider: #edf1f4;
+  --color-surface: var(--background);
+  --color-surface-muted: var(--muted);
+  --color-surface-muted-hover: #eef3f7;
+  --font-size-sm: 12px;
+  --font-size-md: 13px;
+  --font-size-lg: 14px;
+  --font-size-title: 16px;
+  --shadow: rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+
+  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
+
+  font: 12px/145% var(--sans);
+  letter-spacing: 0.18px;
+  color-scheme: light;
+  color: var(--foreground);
+  background: var(--background);
   font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
-* {
-  box-sizing: border-box;
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  /** 兼容开发态未展平的 Tailwind placeholder 变体，确保输入组件占位色不回退为 currentColor。 */
+  [data-slot='input']::placeholder,
+  [data-slot='textarea']::placeholder,
+  [data-slot='searchable-select-input']::placeholder {
+    color: var(--muted-foreground);
+    opacity: 1;
+  }
+
+  #root {
+    width: 100%;
+    max-width: 100%;
+    margin: 0 auto;
+    text-align: left;
+    min-height: 100svh;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 0;
+    @apply bg-background text-foreground;
+  }
+
+  h1,
+  h2 {
+    font-family: var(--heading);
+    font-weight: 500;
+    color: var(--foreground);
+  }
+
+  h1 {
+    font-size: 56px;
+    letter-spacing: -1.68px;
+    margin: 32px 0;
+    @media (max-width: 1024px) {
+      font-size: 36px;
+      margin: 20px 0;
+    }
+  }
+  h2 {
+    font-size: 24px;
+    line-height: 118%;
+    letter-spacing: -0.24px;
+    margin: 0 0 8px;
+    @media (max-width: 1024px) {
+      font-size: 20px;
+    }
+  }
+  p {
+    margin: 0;
+  }
+
+  code,
+  .counter {
+    font-family: var(--mono);
+    display: inline-flex;
+    border-radius: 4px;
+    color: var(--foreground);
+  }
+
+  code {
+    font-size: 15px;
+    line-height: 135%;
+    padding: 4px 8px;
+    background: var(--code-bg);
+  }
 }
+
+/* 桌面与浏览器共用基础可访问性规则，不覆盖原 Web 的主题和页面样式。 */
 body {
-  margin: 0;
-  min-width: 340px;
+  min-width: 320px;
 }
-.shell {
-  min-height: 100vh;
-  padding: 30px 6vw 22px;
-  display: flex;
-  flex-direction: column;
-  background: radial-gradient(ellipse at 15% 55%, #eaeffc 0, transparent 48%);
+button:not(:disabled),
+a {
+  cursor: pointer;
 }
-.topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.wordmark {
-  display: inline-flex;
-  align-items: center;
-  gap: 12px;
-  color: #252b49;
-  font-size: 19px;
-  font-weight: 650;
-  letter-spacing: -0.6px;
-  text-decoration: none;
-}
-.brand-mark {
-  display: grid;
-  place-items: center;
-  height: 34px;
-  width: 34px;
-  border-radius: 10px;
-  color: white;
-  background: #5264d9;
-  font-size: 26px;
-  font-weight: 500;
-}
-.content {
-  width: min(1040px, 100%);
-  margin: auto;
-  padding: 72px 0;
-  display: grid;
-  grid-template-columns: 1fr 440px;
-  gap: 80px;
-  align-items: center;
-}
-.eyebrow {
-  color: #6e7db7;
-  letter-spacing: 2.5px;
-  font-size: 11px;
-  font-weight: 600;
-}
-.intro h1 {
-  font-size: clamp(34px, 4.3vw, 52px);
-  line-height: 1.45;
-  margin: 23px 0;
-  letter-spacing: -1.8px;
-  font-weight: 650;
-}
-.intro p {
-  color: #80869b;
-  font-size: 16px;
-  line-height: 1.9;
-}
-.intro-note {
-  margin-top: 66px;
-  color: #9aa1b7;
-  font-size: 12px;
-  display: flex;
-  gap: 12px;
-  align-items: center;
-}
-.note-line {
-  height: 1px;
-  width: 30px;
-  background: #bac3e2;
-}
-.panel {
-  padding: 38px 36px 32px;
-  background: #fff;
-  border: 1px solid #e9ecf5;
-  border-radius: 22px;
-  box-shadow: 0 14px 60px #253d7c08;
-}
-.step-label {
-  color: #8c92a8;
-  font-size: 12px;
-  display: block;
-  margin-bottom: 8px;
-}
-.panel h2.ant-typography {
-  margin: 0 0 12px;
-  color: #242a45;
-  font-size: 27px;
-}
-.subtitle {
-  color: #9398aa;
-  font-size: 13px;
-  margin: 0 0 30px;
-  line-height: 1.8;
-}
-.submit {
-  margin-top: 20px;
-}
-.fine-print {
-  color: #a1a6b7;
-  font-size: 11px;
-  line-height: 1.8;
-  text-align: center;
-  margin: 18px 0 0;
-}
-.notice {
-  margin-bottom: 16px;
-  font-size: 12px;
-}
-.back {
-  margin-top: 12px;
-}
-.welcome-icon {
-  width: 46px;
-  height: 46px;
-  margin-bottom: 20px;
-  border-radius: 14px;
-  background: #edf7f1;
-  color: #40936b;
-  font-size: 25px;
-  display: grid;
-  place-items: center;
-}
-footer {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  color: #a0a6b7;
-  font-size: 11px;
-}
-.service {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-}
-.dot {
-  width: 6px;
-  height: 6px;
-  background: #b5bbca;
-  border-radius: 50%;
-}
-.connected {
-  background: #7bb496;
-}
-.disconnected {
-  background: #d49a93;
-}
-.loading {
-  padding: 65px 0;
-  text-align: center;
-  color: #9298ac;
-}
-@media (max-width: 850px) {
-  .content {
-    grid-template-columns: 1fr;
-    max-width: 440px;
-    gap: 32px;
-    padding: 44px 0;
-  }
-  .intro {
-    display: none;
-  }
-  .shell {
-    padding: 24px 20px;
-  }
-  .panel {
-    padding: 30px 24px;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0s !important;
+    animation-duration: 0s !important;
   }
 }

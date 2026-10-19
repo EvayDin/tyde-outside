@@ -40,7 +40,7 @@ test('profile normalizes username, accepts multilingual names, rejects dangerous
   assert.equal([...normalizeProfile('alex', '😀'.repeat(80)).displayName].length, 80);
 });
 test('browser cannot claim desktop transport to extract tokens', () => {
-  const origins = ['http://127.0.0.1:5173'];
+  const origins = ['http://127.0.0.1:3001'];
   assert.equal(
     validateTransport({ origin: origins[0], 'x-tyde-client': 'web' }, 'POST', origins),
     'web',
@@ -71,7 +71,7 @@ test('config blocks mock production and unsafe remote cookies', () => {
     DATABASE_URL: 'postgresql://test:pwd@127.0.0.1/tyde',
     CODE_HMAC_SECRET: 'a'.repeat(32),
     SMS_PROVIDER: 'mock',
-    WEB_ORIGINS: 'http://127.0.0.1:5173',
+    WEB_ORIGINS: 'http://127.0.0.1:3001',
     COOKIE_SECURE: 'false',
   };
   assert.equal(readConfig(config).port, 3000);

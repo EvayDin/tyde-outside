@@ -2,7 +2,13 @@
 
 运行 `pnpm dev:server` 后访问 `http://127.0.0.1:3000/api/v1/docs/`。OpenAPI JSON/YAML 分别位于 `/api/v1/docs/json` 和 `/api/v1/docs/yaml`；文档读取不依赖数据库。
 
-认证后端已按 `tyde-core` 的接口路径与字段迁移，注册和登录固定为执行专家 `EXPERT`，不要求选择身份。完整字段、联调示例、迁移说明和已知依赖见 [认证后端上下文](AUTH_BACKEND.md)。本次仅改后端，Web/Electron 仍为旧流程，尚需独立适配。
+认证后端已迁移到下表的接口路径与字段，注册和登录固定为执行专家 `EXPERT`，不要求选择身份。完整字段、联调示例、迁移说明和已知依赖见 [认证后端上下文](AUTH_BACKEND.md)。
+
+当前 Web/Electron 使用 Tailwind CSS、shadcn/ui 与 TanStack Router，开发和生产均通过平台适配调用下列真实认证接口。发码成功后保留后端 data 提示字符串，并展示与服务端 mock 共用的 `@tyde/shared` 常量 `MOCK_SMS_CODE`（当前为 `095270`）；页面不另行定义测试码，提示已含该验证码时不重复追加，失败或限流时不显示测试码，验证码有效期和校验仍由后端决定。后端发码成功只返回“验证码已发送，请注意查收”，响应不另设验证码或重发间隔字段，限流倒计时来自 HTTP 429 的 `Retry-After`。后端短信目前仍为开发/测试 mock，接入真实短信时须同步移除固定测试码提示。
+
+短信登录按后端返回区分已有账号和注册指引；注册凭证仅存内存，个人资料提交后返回密码登录。Web 使用 HttpOnly Cookie，刷新令牌只留在平台适配器内存；Electron main 加密保管访问/刷新令牌对并处理轮换，IPC 不向页面返回登录令牌。注册返回用户资料，不自动创建会话；退出 HTTP 200 后清除客户端会话状态。
+
+执行 `pnpm dev:web` 后可通过 `http://127.0.0.1:3001/api/v1/docs/` 访问同源文档；`API_PROXY_TARGET` 指向 HTTPS 后端时使用 `https://localhost:3001/api/v1/docs/`。部署包及 Vercel 由同一个 Fastify 服务托管 Web 与 API，数据库状态以 `/api/v1/health/ready` 为准。
 
 | 方法与路径（前缀 `/api/v1`） | 用途                              |
 | ---------------------------- | --------------------------------- |
@@ -68,7 +74,7 @@ const body = Type.Object(
 
 ## 文件上传、凭证与访问
 
-OSS物理主目录为 `lsh-oss-agi-tool-platform/tyde/`。API与台账的 `objectKey` 使用该目录内的相对业务键，例如 `business-license/...`；客户端原样传入，不自行添加 `tyde/` 或bucket名。签名URL会包含物理前缀。
+OSS 物理主目录为配置的 `OSS_BUCKET` 下的 `tyde/`。API 与台账的 `objectKey` 使用该目录内的相对业务键，例如 `business-license/...`；客户端原样传入，不自行添加 `tyde/` 或 bucket 名。签名 URL 会包含物理前缀。
 
 以下路径均加 `/api/v1`，沿用 `{code,message,data}`，失败 data=null；`GET /files/view` 成功时直接返回文件字节，不用 JSON 包装。
 
@@ -86,7 +92,9 @@ OSS物理主目录为 `lsh-oss-agi-tool-platform/tyde/`。API与台账的 `objec
 
 组织注册的 `organization.businessLicense` 接受 BUSINESS_LICENSE 的 `objectKey/uploadToken`，默认24小时内一次认领（可配置），原文凭证不落库。无记录/类型错误/存储对象缺失或大小不符400，错误凭证403，过期/重复409，存储关闭/不可达503。认领、验证码消费、组织与用户创建同事务，失败回滚；`organization.businessLicenseUrl` 保留旧字段名，返回objectKey或null，不是公开URL。
 
-Swagger 已提供 multipart 输入、全部请求/响应/查询字段中文说明和完整schema示例，文件代理200按真实媒体类型记录二进制响应。测试使用真实专用PostgreSQL及内存对象存储，2026-10-19复跑34项集成通过；2026-10-19 已用 ali-oss 接入用户指定 bucket，服务端内网读写与外网签名端点分离，新对象显式私有且禁止覆盖；接口方法、字段和权限不变。示例默认 FILE_STORAGE_PROVIDER=disabled，本地后端已配置启用；用户本机已通过真实OSS独立验证（上传/HEAD/流读取/两种有效期签名GET/删除与幂等），五个文件入口已通过运行中后端+开发库+真实OSS的HTTP联调（含上传/批量/代理/签名下载/删除及权限拒绝），真实营业执照认领及后续业务附件关系仍待验收，步骤见[部署说明](DEPLOY_TEST.md#文件存储与上传01)。
+Swagger 提供 multipart 输入、请求/响应/查询字段中文说明和完整 schema 示例，文件代理 200 按实际媒体类型记录二进制响应。文件与注册测试使用专用 PostgreSQL 和内存对象存储；真实 OSS 可通过 `pnpm --filter @tyde/server storage:verify` 独立验证，不能把测试替身结果视为真实存储验收。
+
+示例配置默认 `FILE_STORAGE_PROVIDER=disabled`。启用时仅在后端配置 OSS bucket 与密钥；服务端读写使用 `OSS_ENDPOINT`，客户端下载签名使用 `OSS_PUBLIC_ENDPOINT`，两者按网络环境选择内网或外网端点。新对象显式私有且禁止覆盖。真实存储、营业执照认领及后续业务附件关系需按实际环境验收，步骤见[部署说明](DEPLOY_TEST.md#文件存储与上传01)。
 
 ## 用户资料与昵称（02）
 

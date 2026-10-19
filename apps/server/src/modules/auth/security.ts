@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-export const MOCK_CODE = '095270';
+export { MOCK_SMS_CODE as MOCK_CODE } from '@tyde/shared';
 export const SESSION_DAYS = 30;
 export function digest(value: string): string {
   return createHash('sha256').update(value).digest('hex');

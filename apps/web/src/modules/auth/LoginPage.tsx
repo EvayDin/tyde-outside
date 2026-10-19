@@ -1,169 +1,217 @@
-import { useEffect, useState } from 'react';
-import { Alert, Button, Form, Input, Space, Typography } from 'antd';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
-import { ApiError, type CodeResult, type RegistrationRequired } from '@tyde/shared';
-import { api } from '../../services/api';
-import { SESSION_KEY } from '../../hooks/useSession';
-import { ErrorNotice } from '../../components/ErrorNotice';
+import { useEffect, useRef, useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from '@tanstack/react-router';
+import { ApiError, MOCK_SMS_CODE } from '@tyde/shared';
+import { api } from '@/services/api';
+import { SESSION_KEY, sessionQuery } from '@/hooks/useSession';
+import { useAuthFlow } from './AuthFlow';
+import { ErrorNotice } from '@/components/ErrorNotice';
+import { Button } from '@/components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import LoginFormPanel from './components/LoginFormPanel';
+import type { LoginFormController, LoginFormValues, LoginMode } from './types';
 
-export interface PendingRegistration extends RegistrationRequired {
-  phone: string;
-}
-export function LoginPage({
-  onRegistration,
-}: {
-  onRegistration: (grant: PendingRegistration) => void;
-}) {
-  const [form] = Form.useForm<{ phone: string; code: string }>();
-  const [challenge, setChallenge] = useState<CodeResult>();
-  const [readyAt, setReadyAt] = useState(0);
-  const [tick, setTick] = useState(Date.now());
-  const [localError, setLocalError] = useState<unknown>();
+/** 通过统一双端适配完成短信或密码登录。 */
+export function LoginPage() {
   const navigate = useNavigate();
   const cache = useQueryClient();
-  const remaining = Math.max(0, Math.ceil((readyAt - tick) / 1000));
+  const flow = useAuthFlow();
+  const [initialFeedback] = useState(flow.loginFeedback);
+  const [mode, setMode] = useState<LoginMode>(initialFeedback ? 'password' : 'sms');
+  const [notice, setNotice] = useState(initialFeedback?.message ?? '');
+  const [error, setError] = useState<unknown>(null);
+  const [sending, setSending] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [countdown, setCountdown] = useState(0);
+  const cooldownUntil = useRef(0);
+  const inFlight = useRef(false);
+  const mounted = useRef(false);
+  const focusCode = useRef(false);
+  const form = useForm<LoginFormValues>({
+    defaultValues: { account: initialFeedback?.phone ?? '', code: '', password: '' },
+    shouldUnregister: true,
+  });
+
   useEffect(() => {
-    const timer = window.setInterval(() => setTick(Date.now()), 500);
-    return () => window.clearInterval(timer);
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
   }, []);
-  const send = useMutation({
-    mutationFn: async () => {
-      const { phone } = await form.validateFields(['phone']);
-      return api.sendCode({ region: 'CN', phone: phone.trim() });
+
+  useEffect(() => {
+    flow.clearLoginFeedback();
+  }, [flow.clearLoginFeedback]);
+
+  const coolingDown = countdown > 0;
+  useEffect(() => {
+    if (mode === 'sms' && focusCode.current) {
+      focusCode.current = false;
+      form.setFocus('code');
+    }
+  }, [form, mode]);
+
+  useEffect(() => {
+    if (!coolingDown) return;
+    const timer = window.setInterval(() => {
+      setCountdown(Math.max(0, Math.ceil((cooldownUntil.current - Date.now()) / 1000)));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [coolingDown]);
+
+  function startCooldown(seconds: number) {
+    cooldownUntil.current = Date.now() + seconds * 1000;
+    setCountdown(Math.max(0, Math.ceil(seconds)));
+  }
+
+  function changeMode(nextMode: LoginMode) {
+    if (inFlight.current || nextMode === mode) return;
+    form.reset({ account: form.getValues('account'), code: '', password: '' });
+    setNotice('');
+    setError(null);
+    setMode(nextMode);
+  }
+
+  async function sendCode() {
+    if (inFlight.current || cooldownUntil.current > Date.now()) return;
+    inFlight.current = true;
+    setNotice('');
+    setError(null);
+    try {
+      if (!(await form.trigger('account', { shouldFocus: true })) || !mounted.current) return;
+      setSending(true);
+      form.setValue('code', '');
+      const phone = form.getValues('account');
+      const result = await api.sendCode({ phone, scene: 'login' });
+      if (mounted.current)
+        setNotice(
+          result.includes(MOCK_SMS_CODE) ? result : `${result} 测试验证码：${MOCK_SMS_CODE}`,
+        );
+    } catch (failure) {
+      if (!mounted.current) return;
+      setError(failure);
+      if (failure instanceof ApiError && failure.status === 429 && failure.retryAfter)
+        startCooldown(failure.retryAfter);
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) setSending(false);
+    }
+  }
+
+  const controller: LoginFormController = {
+    mode,
+    form,
+    submitting,
+    sms: {
+      sending,
+      countdown,
+      send: () => void sendCode(),
     },
-    onSuccess: (data) => {
-      setChallenge(data);
-      setReadyAt(Date.now() + data.resendAfterSeconds * 1000);
-      setTick(Date.now());
-      form.setFieldValue('code', '');
-      setLocalError(undefined);
-    },
-    onError: (error) => {
-      if (error instanceof ApiError && error.retryAfter) {
-        setReadyAt(Date.now() + error.retryAfter * 1000);
-        setTick(Date.now());
-      }
-    },
-  });
-  const verify = useMutation({
-    mutationFn: async (values: { phone: string; code: string }) => {
-      if (!challenge) throw new Error('请先获取验证码');
-      if (new Date(challenge.expiresAt).getTime() <= Date.now())
-        throw new Error('验证码已过期，请重新获取');
-      return api.verifyCode({
-        region: 'CN',
-        phone: values.phone.trim(),
-        code: values.code,
-        challengeId: challenge.challengeId,
-      });
-    },
-    onSuccess: (result, values) => {
-      if (result.status === 'registration_required') {
-        onRegistration({ ...result, phone: values.phone.trim() });
-        navigate('/register');
-      } else {
-        cache.setQueryData(SESSION_KEY, result);
-        navigate('/', { replace: true });
-      }
-    },
-    onError: (error) => {
-      if (error instanceof ApiError && error.status === 410) setChallenge(undefined);
-    },
-  });
-  return (
-    <>
-      <span className="step-label">欢迎回来</span>
-      <Typography.Title level={2}>登录 / 注册</Typography.Title>
-      <p className="subtitle">使用手机验证码继续，首次使用将自动注册。</p>
-      <Form
-        form={form}
-        layout="vertical"
-        requiredMark={false}
-        onFinish={(values) => {
-          setLocalError(undefined);
-          verify.mutate(values);
-        }}
-        onValuesChange={(changed) => {
-          if ('phone' in changed) {
-            setChallenge(undefined);
-            verify.reset();
-            send.reset();
+    actions: {
+      changeAccount: () => {
+        form.setValue('code', '');
+        form.clearErrors('code');
+        setNotice('');
+        setError(null);
+      },
+      finish: async ({ account, code, password }) => {
+        if (inFlight.current) return;
+        inFlight.current = true;
+        setSubmitting(true);
+        setError(null);
+        setNotice('');
+        try {
+          if (mode === 'password') {
+            await api.login({ account, password });
+          } else {
+            const result = await api.verifyCode({ phone: account, code });
+            if (!mounted.current) return;
+            if (result.status === 'registration_required') {
+              if (
+                !Number.isFinite(Date.parse(result.expiresAt)) ||
+                Date.parse(result.expiresAt) <= Date.now()
+              )
+                throw new Error('注册凭证已过期，请重新获取验证码。');
+              flow.startRegistration({ ...result, phone: account });
+              await navigate({ to: '/register' });
+              return;
+            }
           }
-        }}
+          if (!mounted.current) return;
+          await cache.cancelQueries({ queryKey: SESSION_KEY });
+          const user = await cache.fetchQuery({ ...sessionQuery, staleTime: 0 });
+          if (!user) throw new Error('无法确认登录状态，请重新登录。');
+          if (mounted.current) await navigate({ to: '/', replace: true });
+        } catch (failure) {
+          if (!mounted.current) return;
+          setError(failure);
+          if (failure instanceof ApiError && failure.status === 429 && failure.retryAfter)
+            startCooldown(failure.retryAfter);
+        } finally {
+          inFlight.current = false;
+          if (mounted.current) setSubmitting(false);
+        }
+      },
+    },
+  };
+  return (
+    <Tabs
+      value={mode}
+      onValueChange={(value) => {
+        if (value === 'sms' || value === 'password') changeMode(value);
+      }}
+      aria-label="登录 / 注册表单"
+    >
+      <TabsList
+        aria-label="登录方式"
+        className="grid h-[44px] w-full grid-cols-2 rounded-none border-b bg-transparent p-0"
       >
-        <Form.Item
-          name="phone"
-          label="手机号码"
-          rules={[
-            { required: true, message: '请输入手机号' },
-            { pattern: /^1[3-9]\d{9}$/, message: '请输入 11 位大陆手机号码' },
-          ]}
-        >
-          <Input
-            addonBefore="+86"
-            autoComplete="tel-national"
-            inputMode="tel"
-            maxLength={11}
-            placeholder="请输入手机号码"
-            disabled={send.isPending || verify.isPending}
-          />
-        </Form.Item>
-        <Form.Item label="验证码" required>
-          <Space.Compact block>
-            <Form.Item
-              name="code"
-              noStyle
-              rules={[
-                { required: true, message: '请输入验证码' },
-                { pattern: /^\d{6}$/, message: '请输入 6 位验证码' },
-              ]}
-            >
-              <Input
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                maxLength={6}
-                placeholder="6 位验证码"
-                disabled={verify.isPending}
-              />
-            </Form.Item>
+        {(['sms', 'password'] as const).map((value) => (
+          <TabsTrigger
+            key={value}
+            value={value}
+            disabled={sending || submitting}
+            className="h-[44px] rounded-none border-b-2 border-transparent bg-transparent text-[14px] data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none"
+          >
+            {value === 'sms' ? '验证码登录' : '密码登录'}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+      <TabsContent value={mode} className="mt-[24px]">
+        <LoginFormPanel controller={controller} />
+        {error != null && (
+          <div className="mt-[12px]">
+            <ErrorNotice error={error} />
+          </div>
+        )}
+        {notice && (
+          <p
+            role="status"
+            aria-label="操作提示"
+            className="mt-[12px] rounded-[6px] bg-accent px-[12px] py-[9px] text-[12px] text-foreground"
+          >
+            {notice}
+          </p>
+        )}
+        {mode === 'password' && (
+          <p className="mt-[8px] flex items-center justify-center text-[12px] text-muted-foreground">
+            还没有账号？
             <Button
-              loading={send.isPending}
-              disabled={remaining > 0 || verify.isPending}
+              variant="link"
+              size="mobileTouch"
+              className="px-[4px]"
+              disabled={sending || submitting}
               onClick={() => {
-                setLocalError(undefined);
-                send.mutate();
+                focusCode.current = true;
+                changeMode('sms');
               }}
             >
-              {remaining > 0 ? `${remaining}s 后重发` : '获取验证码'}
+              验证码注册
             </Button>
-          </Space.Compact>
-        </Form.Item>
-        {challenge?.mode === 'mock' && (
-          <Alert
-            type="info"
-            showIcon
-            title="当前为内部试用，不发送短信。测试验证码：095270"
-            className="notice"
-          />
+          </p>
         )}
-        <ErrorNotice
-          error={
-            localError ?? verify.error ?? (send.error instanceof Error ? send.error : undefined)
-          }
-        />
-        <Button
-          type="primary"
-          htmlType="submit"
-          block
-          loading={verify.isPending}
-          disabled={send.isPending}
-          className="submit"
-        >
-          继续
-        </Button>
-      </Form>
-      <p className="fine-print">验证码仅用于本次登录。请使用约定的测试手机号。</p>
-    </>
+      </TabsContent>
+    </Tabs>
   );
 }

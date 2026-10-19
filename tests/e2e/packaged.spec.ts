@@ -10,16 +10,19 @@ test('打包后的桌面从本地资源加载同一 React 页面，安全配置�
       : resolve('release/win-unpacked/tyde.exe');
   if (!existsSync(executablePath))
     throw new Error('请先构建当前系统的安装包。此检查默认需要连接本机后端的试用包。');
-  const app = await electron.launch({ executablePath, args: [] });
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  const app = await electron.launch({ executablePath, args: [], env });
   try {
     const page = await app.firstWindow();
-    await expect(page.locator('.wordmark')).toContainText('tyde');
+    await expect(page.getByRole('banner')).toContainText('Tyde');
     await expect(page).toHaveURL(/^tyde-app:\/\/app\/index\.html/);
     const health = await page.evaluate(() => window.tydeDesktop!.health());
     expect(health).toEqual({ ok: true, data: { status: 'ready' } });
     const state = await page.evaluate(() => window.tydeDesktop!.getCurrentUser());
     expect(state.ok || state.status === 401).toBe(true);
-    expect(JSON.stringify(state)).not.toContain('sessionToken');
+    expect(JSON.stringify(state)).not.toContain('accessToken');
+    expect(JSON.stringify(state)).not.toContain('refreshToken');
     const preferences = await app.evaluate(({ BrowserWindow }) => {
       const p = BrowserWindow.getAllWindows()[0]!.webContents.getLastWebPreferences();
       return {
@@ -30,7 +33,7 @@ test('打包后的桌面从本地资源加载同一 React 页面，安全配置�
     });
     expect(preferences).toEqual({ contextIsolation: true, sandbox: true, nodeIntegration: false });
     await page.reload();
-    await expect(page.locator('.wordmark')).toContainText('tyde');
+    await expect(page.getByRole('banner')).toContainText('Tyde');
     await mkdir('artifacts/screenshots', { recursive: true });
     await page.screenshot({ path: 'artifacts/screenshots/packaged-desktop.png' });
   } finally {

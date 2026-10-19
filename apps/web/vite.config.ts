@@ -1,5 +1,7 @@
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
+import { fileURLToPath } from 'node:url';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, import.meta.dirname, 'API_PROXY_TARGET');
@@ -8,10 +10,11 @@ export default defineConfig(({ mode }) => {
   const useHttps = new URL(apiProxyTarget).protocol === 'https:';
   return {
     base: './',
-    plugins: [react(), ...(useHttps ? [basicSsl()] : [])],
+    plugins: [react(), tailwindcss(), ...(useHttps ? [basicSsl()] : [])],
+    resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
     server: {
       host: useHttps ? 'localhost' : '127.0.0.1',
-      port: 5173,
+      port: 3001,
       strictPort: true,
       proxy: {
         '/api': {
