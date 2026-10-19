@@ -4,19 +4,14 @@ import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolve, dirname } from 'node:path';
+import { postgresTool } from './lib/postgres-tools.mjs';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const server = resolve(root, 'apps/server');
 if (existsSync(resolve(server, '.env')))
   throw new Error(
     '已有 apps/server/.env，保留现有配置。请直接运行 pnpm db:deploy；不自动覆盖账号或密码。',
   );
-const appPsql = '/Applications/Postgres.app/Contents/Versions/latest/bin/psql';
-const psql = process.env.PSQL_BIN ?? (existsSync(appPsql) ? appPsql : 'psql');
-const check = spawnSync(psql, ['--version'], { encoding: 'utf8' });
-if (check.error || check.status)
-  throw new Error(
-    '未找到 psql，请先安装并启动 PostgreSQL；Mac 可使用 Postgres.app，其他路径通过 PSQL_BIN 指定。',
-  );
+const psql = postgresTool('psql');
 function sql(input) {
   const localSocket = resolve(root, '.local/postgres');
   const connection = existsSync(resolve(localSocket, 'PG_VERSION')) ? ['-h', localSocket] : [];

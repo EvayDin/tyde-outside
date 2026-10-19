@@ -21,15 +21,14 @@ protocol.registerSchemesAsPrivileged([
 if (app.isPackaged) app.setPath('userData', resolve(app.getPath('appData'), 'tyde-outside'));
 if (!app.isPackaged && process.env.TYDE_TEST_USER_DATA)
   app.setPath('userData', process.env.TYDE_TEST_USER_DATA);
-if (!app.requestSingleInstanceLock()) app.quit();
-else {
-  app.on('second-instance', () => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window) {
-      if (window.isMinimized()) window.restore();
-      window.focus();
-    }
-  });
+function startupFailed() {
+  dialog.showErrorBox('tyde 启动失败', '请检查安装资源、运行配置和系统权限。');
+  app.quit();
+}
+if (!app.requestSingleInstanceLock()) {
+  console.info('tyde 已在运行，已请求打开现有窗口。');
+  app.quit();
+} else {
   app
     .whenReady()
     .then(async () => {
@@ -57,15 +56,27 @@ else {
         }
       });
       registerIpc(await loadRuntime());
-      await createWindow();
-      app.on('activate', () => {
-        if (BrowserWindow.getAllWindows().length === 0) void createWindow();
-      });
+      let creatingWindow: Promise<BrowserWindow> | undefined;
+      async function showMainWindow() {
+        let window = BrowserWindow.getAllWindows()[0];
+        if (creatingWindow || !window) {
+          creatingWindow ??= createWindow().finally(() => {
+            creatingWindow = undefined;
+          });
+          window = await creatingWindow;
+        }
+        if (window.isDestroyed()) return;
+        if (window.isMinimized()) window.restore();
+        window.show();
+        window.focus();
+        if (process.platform === 'darwin') app.focus({ steal: true });
+      }
+      const openMainWindow = () => void showMainWindow().catch(startupFailed);
+      app.on('second-instance', openMainWindow);
+      app.on('activate', openMainWindow);
+      await showMainWindow();
     })
-    .catch(() => {
-      dialog.showErrorBox('tyde 启动失败', '请检查安装资源、运行配置和系统权限。');
-      app.quit();
-    });
+    .catch(startupFailed);
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
   });

@@ -18,6 +18,7 @@ const url = 'http://127.0.0.1:5174/';
 const children = new Set();
 let stopping = false;
 function start(args, env = {}) {
+  if (stopping) return;
   const child = spawn('npm', args, {
     stdio: 'inherit',
     shell: process.platform === 'win32',

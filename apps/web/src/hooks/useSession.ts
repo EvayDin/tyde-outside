@@ -15,5 +15,16 @@ export const sessionQuery = {
 };
 
 export function useSession() {
-  return useQuery(sessionQuery);
+  return useQuery({
+    ...sessionQuery,
+    refetchInterval: ({ state }) => {
+      const error = state.error;
+      return error instanceof ApiError &&
+        error.code !== 'INVALID_RESPONSE' &&
+        (error.status === 0 || (error.status >= 500 && error.status < 600))
+        ? 3000
+        : false;
+    },
+    refetchIntervalInBackground: true,
+  });
 }

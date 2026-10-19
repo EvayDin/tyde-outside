@@ -20,6 +20,7 @@
     "db:local:start": "node scripts/postgres-local.mjs start",
     "db:local:stop": "node scripts/postgres-local.mjs stop",
     "db:local:status": "node scripts/postgres-local.mjs status",
+    "dev:local": "node scripts/dev-local.mjs",
     "dev:web": "npm --prefix apps/web run dev",
     "dev:server": "npm --prefix apps/server run dev",
     "dev:electron": "node scripts/dev-electron.mjs",

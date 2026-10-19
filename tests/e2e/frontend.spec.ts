@@ -1,8 +1,9 @@
-import { test, expect, _electron as electron, type Page } from '@playwright/test';
+import { test, expect, _electron as electron, type Page, type Request } from '@playwright/test';
 import { createRequire } from 'node:module';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createServer } from 'node:http';
+import { spawn } from 'node:child_process';
 import type { AuthUser } from '../../packages/shared/src/index';
 
 const require = createRequire(resolve('apps/electron/package.json'));
@@ -67,6 +68,8 @@ async function webBackend(page: Page) {
     sendMessage: serverMessage,
     sendNetworkFailure: false,
     currentStatus: 200,
+    currentNetworkFailure: false,
+    currentInvalidResponse: false,
     smsStatus: 200,
   };
   const requests: RequestRecord[] = [];
@@ -85,7 +88,9 @@ async function webBackend(page: Page) {
       route.fulfill({ status, json: failure(status, message), headers });
     switch (path) {
       case '/api/v1/users/me':
+        if (state.currentNetworkFailure) return route.abort('failed');
         if (state.currentStatus !== 200) return reject(state.currentStatus, '会话服务暂不可用');
+        if (state.currentInvalidResponse) return reply(null);
         return state.signedIn && request.headers().cookie?.includes('fixture_session=active')
           ? reply(user)
           : reject(401, '请先登录');
@@ -151,6 +156,28 @@ function expectNoLegacyRequests(requests: RequestRecord[]) {
     false,
   );
   expect(requests.every(({ client }) => client === 'web' || client === 'desktop')).toBe(true);
+}
+
+async function pauseClock(page: Page) {
+  await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
+  await page.clock.pauseAt(new Date('2026-01-01T00:00:01Z'));
+}
+async function sessionRead(page: Page, action: () => Promise<unknown>, failed = false) {
+  const matches = (request: Request) =>
+    request.method() === 'GET' && new URL(request.url()).pathname === '/api/v1/users/me';
+  const completed = failed
+    ? page.waitForEvent('requestfailed', matches)
+    : page.waitForEvent('requestfinished', matches);
+  await action();
+  await completed;
+  // 网络 Promise 完成后，React Query 的通知仍需执行零延时定时器。
+  await page.clock.runFor(50);
+}
+function expectSessionReads(requests: RequestRecord[]) {
+  expect(requests.length).toBeGreaterThan(0);
+  expect(
+    requests.every(({ method, path }) => method === 'GET' && path === '/api/v1/users/me'),
+  ).toBe(true);
 }
 
 for (const [mode, origin] of [
@@ -350,7 +377,8 @@ for (const [mode, origin] of [
   });
 
   test(`Web ${mode} 会话恢复503显示重试，恢复后进入欢迎页`, async ({ page }) => {
-    const { state } = await webBackend(page);
+    const { state, requests } = await webBackend(page);
+    await pauseClock(page);
     state.signedIn = true;
     state.currentStatus = 503;
     await page
@@ -358,13 +386,98 @@ for (const [mode, origin] of [
       .addCookies([
         { name: 'fixture_session', value: 'active', url: origin, httpOnly: true, sameSite: 'Lax' },
       ]);
-    await page.goto(origin + '/');
+    await sessionRead(page, () => page.goto(origin + '/'));
     await expect(page.getByText('会话服务暂不可用', { exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toHaveCount(0);
+    expect(requests).toHaveLength(1);
+    await sessionRead(page, () => page.getByRole('button', { name: '重试', exact: true }).click());
+    await expect(page.getByRole('button', { name: '重试', exact: true })).toBeEnabled();
+    expect(requests).toHaveLength(2);
+    state.currentNetworkFailure = true;
+    await sessionRead(
+      page,
+      () => page.getByRole('button', { name: '重试', exact: true }).click(),
+      true,
+    );
+    await expect(page.getByText('连接服务失败，请检查网络后重试', { exact: true })).toBeVisible();
+    expect(requests).toHaveLength(3);
+    state.currentNetworkFailure = false;
     state.currentStatus = 200;
-    await page.getByRole('button', { name: '重试', exact: true }).click();
+    await sessionRead(page, () => page.getByRole('button', { name: '重试', exact: true }).click());
     await expectWelcome(page);
+    expect(requests).toHaveLength(4);
+    expectSessionReads(requests);
   });
+
+  test(`Web ${mode} 会话网络失败和503无需点击自动恢复，成功后停止轮询`, async ({ page }) => {
+    const { state, requests } = await webBackend(page);
+    await pauseClock(page);
+    state.signedIn = true;
+    state.currentNetworkFailure = true;
+    await page
+      .context()
+      .addCookies([
+        { name: 'fixture_session', value: 'active', url: origin, httpOnly: true, sameSite: 'Lax' },
+      ]);
+    await sessionRead(page, () => page.goto(origin + '/'), true);
+    await expect(page.getByText('连接服务失败，请检查网络后重试', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '重试', exact: true })).toBeEnabled();
+    expect(requests).toHaveLength(1);
+
+    state.currentNetworkFailure = false;
+    state.currentStatus = 503;
+    await sessionRead(page, () => page.clock.runFor(3_000));
+    await expect(page.getByText('会话服务暂不可用', { exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toHaveCount(0);
+    expect(requests).toHaveLength(2);
+
+    state.currentStatus = 200;
+    await sessionRead(page, () => page.clock.runFor(3_000));
+    await expectWelcome(page);
+    expect(requests).toHaveLength(3);
+    await page.clock.runFor(9_000);
+    expect(requests).toHaveLength(3);
+    expectSessionReads(requests);
+  });
+
+  test(`Web ${mode} 会话503恢复为401自动进入登录页并停止轮询`, async ({ page }) => {
+    const { state, requests } = await webBackend(page);
+    await pauseClock(page);
+    state.currentStatus = 503;
+    await sessionRead(page, () => page.goto(origin + '/'));
+    await expect(page.getByText('会话服务暂不可用', { exact: true })).toBeVisible();
+    expect(requests).toHaveLength(1);
+    state.currentStatus = 401;
+    await sessionRead(page, () => page.clock.runFor(3_000));
+    await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
+    await expect(page).toHaveURL(/#\/auth$/);
+    expect(requests).toHaveLength(2);
+    await page.clock.runFor(9_000);
+    expect(requests).toHaveLength(2);
+    expectSessionReads(requests);
+  });
+
+  for (const invalidResponse of [false, true]) {
+    test(`Web ${mode} 会话${invalidResponse ? '响应格式异常' : '403'}保留手动重试且不自动轮询`, async ({
+      page,
+    }) => {
+      const { state, requests } = await webBackend(page);
+      await pauseClock(page);
+      state.currentStatus = invalidResponse ? 200 : 403;
+      state.currentInvalidResponse = invalidResponse;
+      await sessionRead(page, () => page.goto(origin + '/'));
+      await expect(
+        page.getByText(invalidResponse ? '服务响应格式异常，请稍后重试' : '会话服务暂不可用', {
+          exact: true,
+        }),
+      ).toBeVisible();
+      await expect(page.getByRole('button', { name: '重试', exact: true })).toBeEnabled();
+      expect(requests).toHaveLength(1);
+      await page.clock.runFor(9_000);
+      expect(requests).toHaveLength(1);
+      expectSessionReads(requests);
+    });
+  }
 }
 
 test('个人资料在1280与375视口保留字段、键盘操作和完整单页布局', async ({ page }) => {
@@ -410,7 +523,7 @@ test('个人资料在1280与375视口保留字段、键盘操作和完整单页�
 
 async function desktopBackend() {
   const requests: RequestRecord[] = [];
-  const state = { registered: false, signedIn: false };
+  const state = { registered: false, signedIn: false, currentStatus: 200 };
   const server = createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -446,6 +559,10 @@ async function desktopBackend() {
           state.signedIn = true;
           return reply(loginTokens);
         case '/api/v1/users/me':
+          if (state.currentStatus !== 200)
+            return response
+              .writeHead(state.currentStatus, { 'Content-Type': 'application/json' })
+              .end(JSON.stringify(failure(state.currentStatus, '会话服务暂不可用')));
           return state.signedIn &&
             request.headers.authorization === 'Bearer ' + loginTokens.accessToken
             ? reply(user)
@@ -464,6 +581,7 @@ async function desktopBackend() {
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('未分配测试端口');
   return {
+    state,
     requests,
     url: 'http://127.0.0.1:' + address.port,
     close: () =>
@@ -627,3 +745,165 @@ for (const [mode, origin] of [
     }
   });
 }
+
+test('Electron DEV 已登录会话503无需点击自动恢复，成功后停止轮询且不重放写请求', async () => {
+  const backend = await desktopBackend();
+  await mkdir('.local/frontend', { recursive: true });
+  const profile = await mkdtemp(resolve('.local/frontend/recovery-'));
+  const env = {
+    ...process.env,
+    TYDE_WEB_URL: 'http://127.0.0.1:5177/',
+    TYDE_API_BASE_URL: backend.url,
+    TYDE_TEST_USER_DATA: profile,
+  };
+  delete env.ELECTRON_RUN_AS_NODE;
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({
+      executablePath: require('electron') as string,
+      args: [resolve('apps/electron/out/main/index.js')],
+      env,
+    });
+    const page = await app.firstWindow();
+    await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
+    const login = await page.evaluate(
+      ({ phone, password }) => window.tydeDesktop!.login({ account: phone, password }),
+      { phone, password },
+    );
+    expect(login.ok).toBe(true);
+    backend.state.currentStatus = 503;
+    const beforeRecovery = backend.requests.length;
+    await page.reload();
+    await expect(page.getByText('会话服务暂不可用', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '重试', exact: true })).toBeEnabled();
+    expect(backend.requests.slice(beforeRecovery)).toHaveLength(1);
+
+    backend.state.currentStatus = 200;
+    await expectWelcome(page);
+    expect(backend.requests.slice(beforeRecovery)).toHaveLength(2);
+    await page.waitForTimeout(3_500);
+    const recoveryRequests = backend.requests.slice(beforeRecovery);
+    expect(recoveryRequests).toHaveLength(2);
+    expectSessionReads(recoveryRequests);
+    expect(recoveryRequests.every(({ client }) => client === 'desktop')).toBe(true);
+  } finally {
+    try {
+      await app?.close();
+    } finally {
+      await backend.close();
+      await rm(profile, { recursive: true, force: true });
+    }
+  }
+});
+
+test('Electron macOS 真实重复启动重开或恢复窗口，激活事件不创建重复窗口', async () => {
+  test.skip(process.platform !== 'darwin', '关闭全部窗口后保留应用是 macOS 生命周期行为');
+  const backend = await desktopBackend();
+  await mkdir('.local/frontend', { recursive: true });
+  const profile = await mkdtemp(resolve('.local/frontend/lifecycle-'));
+  const executablePath = require('electron') as string;
+  const args = [resolve('apps/electron/out/main/index.js')];
+  const env = {
+    ...process.env,
+    TYDE_WEB_URL: 'http://127.0.0.1:5177/',
+    TYDE_API_BASE_URL: backend.url,
+    TYDE_TEST_USER_DATA: profile,
+  };
+  delete env.ELECTRON_RUN_AS_NODE;
+  const secondaryProcesses = new Set<ReturnType<typeof spawn>>();
+  const startAgain = async () => {
+    const child = spawn(executablePath, args, {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      signal: AbortSignal.timeout(10_000),
+    });
+    secondaryProcesses.add(child);
+    let output = '';
+    child.stdout.on('data', (chunk) => (output += chunk));
+    child.stderr.on('data', (chunk) => (output += chunk));
+    const result = await new Promise<{ code: number | null; signal: string | null }>(
+      (accept, reject) => {
+        child.once('error', (error) => {
+          if (!child.pid) secondaryProcesses.delete(child);
+          reject(error);
+        });
+        child.once('exit', (code, signal) => {
+          secondaryProcesses.delete(child);
+          accept({ code, signal });
+        });
+      },
+    );
+    expect(result, output).toEqual({ code: 0, signal: null });
+  };
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ executablePath, args, env });
+    const desktop = app;
+    const windowState = () =>
+      desktop.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().map((window) => ({
+          visible: window.isVisible(),
+          minimized: window.isMinimized(),
+        })),
+      );
+    const closeWindows = async () => {
+      await desktop.evaluate(({ BrowserWindow }) => {
+        for (const window of BrowserWindow.getAllWindows()) window.close();
+      });
+      await expect.poll(windowState).toEqual([]);
+      expect(desktop.process().exitCode).toBeNull();
+    };
+    const expectLogin = (page: Page) =>
+      expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
+    await expectLogin(await desktop.firstWindow());
+    await closeWindows();
+
+    const [page] = await Promise.all([desktop.waitForEvent('window'), startAgain()]);
+    await expectLogin(page);
+    await expect.poll(windowState).toEqual([{ visible: true, minimized: false }]);
+    for (const state of ['hide', 'minimize'] as const) {
+      await desktop.evaluate(({ BrowserWindow }, state) => {
+        BrowserWindow.getAllWindows()[0]![state]();
+      }, state);
+      await expect
+        .poll(async () => {
+          const [window] = await windowState();
+          return state === 'hide' ? !window?.visible : window?.minimized;
+        })
+        .toBe(true);
+      await startAgain();
+      await expect.poll(windowState).toEqual([{ visible: true, minimized: false }]);
+      await expectLogin(page);
+    }
+
+    await closeWindows();
+    const [activated] = await Promise.all([
+      desktop.waitForEvent('window'),
+      desktop.evaluate(({ app }) => {
+        for (let index = 0; index < 5; index++) {
+          app.emit('activate');
+          app.emit('second-instance');
+        }
+      }),
+    ]);
+    await expectLogin(activated);
+    await expect.poll(windowState).toEqual([{ visible: true, minimized: false }]);
+  } finally {
+    try {
+      await Promise.all(
+        [...secondaryProcesses].map(
+          (child) =>
+            new Promise<void>((accept) => {
+              child.once('exit', () => accept());
+              if (child.exitCode !== null || child.signalCode !== null) accept();
+              else child.kill('SIGKILL');
+            }),
+        ),
+      );
+      await app?.close();
+    } finally {
+      await backend.close();
+      await rm(profile, { recursive: true, force: true });
+    }
+  }
+});

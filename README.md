@@ -22,13 +22,21 @@ pnpm setup:local
 pnpm db:deploy
 ```
 
-`db:local:start` 使用 Postgres.app 的二进制，在本项目 `.local/postgres` 下创建独立数据库实例，仅监听回环地址 5432，数据不提交 Git。若 Postgres.app 或其他数据库已占用 5432，请选择一种实例运行方式，不要同时启动两个实例。
+`db:local:start` 自动查找已安装的 Postgres.app、Homebrew PostgreSQL 18 或 PATH 中的 PostgreSQL 工具，在本项目 `.local/postgres` 下创建独立数据库实例，仅监听回环地址 5432，数据不提交 Git。若 Postgres.app 或其他数据库已占用 5432，请选择一种实例运行方式，不要同时启动两个实例。
 
 `setup:local` 创建 `tyde_outside_dev` 角色、开发库和专用自动化测试库，生成随机凭据到 `apps/server/.env` 与 `.env.test`（权限 0600）。它不会覆盖已有 `.env` 或重置已有角色密码。已有数据库时可自行复制 `.env.example` 并配置；特殊 PostgreSQL 路径通过 `PG_BIN` / `PSQL_BIN` 指定。
 
 开发和生产前端均访问真实后端，不生成本地验证码或模拟账号。连接本地后端前需完成上述数据库准备及新增迁移，再启动后端与 Web 或 Electron。短信发送当前仍由后端 mock，固定测试验证码 `095270` 统一定义在 `@tyde/shared` 的 `MOCK_SMS_CODE`；后端通过 `MOCK_CODE` 使用，前端不另行定义，只在发码成功后展示同一值。验证码有效期和校验由后端决定；接入真实短信时须同步移除固定测试码提示。
 
-分别打开终端：
+本地一键启动数据库、后端和 Electron：
+
+```sh
+pnpm dev:local
+```
+
+该命令按需初始化本地配置、应用本地开发库迁移，确认后端身份及数据库就绪后再启动客户端。Ctrl+C 只停止本次启动的开发进程，保留数据库及原有服务；Electron 正常退出或第二实例转交后，后端保留到 Ctrl+C。`dev:local` 只允许本机 5432 开发库，拒绝远程库和 `_test` 库；使用线上数据库的本地后端须自行配置忽略的 `apps/server/.env`，再分别运行下方命令。
+
+也可分别打开终端：
 
 ```sh
 # 终端 1：独立后端
@@ -47,13 +55,15 @@ Web 地址：<http://127.0.0.1:3001>。认证入口默认打开“验证码登�
 
 资料页保留密码、确认密码、姓名、昵称、身份证号和邮箱，不重复填写手机号或验证码，不提供角色或组织注册。提交调用真实个人注册接口；注册成功后回到密码页提示登录，不自动建立会话。已登录用户刷新可通过后端恢复会话；退出请求成功后清除页面会话缓存。网络或服务错误显示实际错误，不回退为本地 mock，不自动发健康检查。
 
+会话查询遇到网络错误或 HTTP 5xx 时，每 3 秒自动重查；后端热重载恢复后自动继续，成功或返回 401 后停止。其他 4xx 与响应格式异常保留手动重试。后台允许自动重查，但实际计时可能被浏览器节流；仅重查当前会话，不自动重放发码、登录、注册等写请求。
+
 Electron 的 `pnpm dev:electron:test` 加载 `apps/electron/config/test.env` 指定测试后端；shell 中已有的 `TYDE_API_BASE_URL` 优先于文件配置。开发和生产页面均通过受限 IPC 请求该后端，令牌对只由 main 加密保存，不返回页面。
 
 开发客户端直接按 `F12`，在当前窗口的 Network 面板筛选 `tyde-debug`，即可查看认证请求的路径、提交参数和响应。preload 先通过受限 IPC 校验来源和参数，再以一次性票据请求本地 `tyde-debug://desktop/api/v1/...` 代理；代理等待 main 的真实后端调用，返回不含登录令牌的 bridge 结果。这里显示的是开发代理请求，主进程仍负责远程 HTTP 和会话令牌；安装包不启用该通道。
 
 普通开发命令不启动主进程 inspector。需要调试上游 Node HTTP 时，运行 `pnpm dev:electron:inspect`，测试后端使用 `pnpm dev:electron:test:inspect`；这两条命令额外启用 `--inspect=9229` 和 `--experimental-network-inspection`，可在 Chrome 的 `chrome://inspect` 连接 `localhost:9229`。F12 Network 本地代理不依赖 inspector。
 
-Electron 开发命令监听 main / preload 的文件变更，修改 main 后会自动重建并重启桌面窗口。开发版主窗口按 `F12` 切换开发者工具；Mac 顶部按键默认控制音量时使用 `Fn + F12`。安装包禁用开发者工具。
+Electron 开发命令监听 main / preload 的文件变更，修改 main 后会自动重建并重启桌面窗口。开发版主窗口按 `F12` 切换开发者工具；Mac 顶部按键默认控制音量时使用 `Fn + F12`。安装包禁用开发者工具。macOS 关闭窗口后应用仍可能在后台运行，再次启动会重新打开或恢复现有窗口；完全退出可使用 Cmd+Q。
 
 Web 通过 `API_PROXY_TARGET` 切换后端，shell 优先于 `apps/web/.env.local`；默认代理到 `http://127.0.0.1:3000`。例如运行 `API_PROXY_TARGET=https://test.example.com pnpm dev:web`，其中域名须替换为已配置的测试后端。HTTPS 目标会自动启用自签名 HTTPS，Web 地址改为 `https://localhost:3001`，后端 `WEB_ORIGINS` 须包含该来源。生产预览同样可设置 `API_PROXY_TARGET`，浏览器 Origin 由后端校验；请求失败显示实际错误。
 
