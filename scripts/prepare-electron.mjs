@@ -6,7 +6,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const kind = process.argv[2];
 if (!['mac', 'win'].includes(kind)) throw new Error('请指定桌面打包平台 mac 或 win');
 await access(resolve(root, 'apps/web/dist/index.html'));
-const api = new URL(process.env.TYDE_API_BASE_URL ?? 'http://127.0.0.1:3000');
+const api = new URL(process.env.TYDE_API_BASE_URL ?? 'https://aact.pw');
 const local = ['localhost', '127.0.0.1', '[::1]'].includes(api.hostname);
 if (api.username || api.password || api.search || api.hash || api.pathname !== '/')
   throw new Error('TYDE_API_BASE_URL 必须为无路径的源地址');

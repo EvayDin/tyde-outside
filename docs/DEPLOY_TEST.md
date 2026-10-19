@@ -129,9 +129,11 @@ curl --fail https://test.example.com/api/v1/docs/yaml
 
 ## 桌面分发
 
-Mac：`TYDE_API_BASE_URL=https://真实测试域名 pnpm package:mac`。
+桌面安装包默认连接 `https://aact.pw`，本地开发仍默认连接本机后端。
 
-Windows PowerShell：先 `$env:TYDE_API_BASE_URL='https://真实测试域名'`，再 `pnpm package:win`。
+Mac：`pnpm package:mac`；Windows：`pnpm package:win`。
+
+打包时仍可设置 `TYDE_API_BASE_URL` 覆盖默认地址；例如本地联调包使用 `TYDE_API_BASE_URL=http://127.0.0.1:3000 pnpm package:mac`，Windows PowerShell 先设置 `$env:TYDE_API_BASE_URL='http://127.0.0.1:3000'`，再运行 `pnpm package:win`。
 
 运行 `node scripts/checksums.mjs release`，把安装包、SHA256SUMS 和 `docs/INSTALL_TRIAL.md` 一起交付。没有测试环境时可以打本地包检查安装和页面，但跨电脑完整登录需先有可达后端。
 

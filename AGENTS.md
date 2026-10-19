@@ -100,6 +100,8 @@ React 页面 → services/api → packages/platform
 
 `pnpm build:server` 统一构建 Web 到 `apps/server/public` 并构建后端；`pnpm package:server` 将两者放进同一个后端包。独立入口 `main.ts` 与 Vercel 入口 `app.ts` 均通过 `web.ts` 托管页面；本地未构建 Web 时仅提供 API。HTTPS 部署可使用 `deploy/nginx-server.conf.example` 将全部路径转发至后端。
 
+Electron 的 `package:mac` / `package:win` 通过 `scripts/prepare-electron.mjs` 将可信 API 源写入安装包运行配置，默认 `https://aact.pw`，可用 `TYDE_API_BASE_URL` 覆盖。本地开发仍默认连接本机后端。
+
 Vercel 项目 Root Directory 为 `apps/server`，`apps/server/vercel.json` 调用根目录 `build:vercel`（复用 `build:server`）。`web.ts` 枚举 Web 目录以供 Vercel 文件追踪包含全部资源。`apps/server/public` 是忽略的构建产物；普通 Web / Electron 构建仍使用 `apps/web/dist`。控制台须开启根目录之外源码访问、关闭 Skip unaffected projects，并将页面源加入 `WEB_ORIGINS`。详细设置见 `docs/DEPLOY_TEST.md`。
 
 默认端口：Web 3001、Electron 开发页面 5174、API 3000、PostgreSQL 5432。开发客户端 F12 Network 可筛选 `tyde-debug` 查看本地代理请求；普通开发命令不开启主进程 inspector，需要上游 Node HTTP 调试时显式运行 `dev:electron:inspect` 或 `dev:electron:test:inspect`，额外启用 `--inspect=9229` 与 `--experimental-network-inspection`。集成测试会清表，只能连接 `.env.test` 指定且库名以 `_test` 结尾的专用测试库。
