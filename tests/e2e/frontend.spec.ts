@@ -1,739 +1,629 @@
-import { test, expect, _electron as electron } from '@playwright/test';
+import { test, expect, _electron as electron, type Page } from '@playwright/test';
 import { createRequire } from 'node:module';
-import { mkdir, mkdtemp } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createServer } from 'node:http';
-import type { CodeResult } from '../../packages/shared/src/index';
+import type { AuthUser } from '../../packages/shared/src/index';
 
 const require = createRequire(resolve('apps/electron/package.json'));
-
-function codeResult(mode: CodeResult['mode'] = 'mock'): CodeResult {
-  return {
-    challengeId: 'b8e0a281-3dc9-4ad1-b470-1f6edbeddf63',
-    expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
-    resendAfterSeconds: 60,
-    mode,
-  };
+const phone = '13812345678';
+const verificationCode = '731846';
+const password = 'Password123!';
+const registrationToken = 'g'.repeat(43);
+const serverMessage = '服务端已受理短信请求 A7';
+const successNotice = `${serverMessage} 测试验证码：095270`;
+const user: AuthUser = {
+  id: 'fixture-user',
+  uid: 'TYDE10001',
+  accountType: 'INDIVIDUAL',
+  phone,
+  nickname: '潮汐测试员',
+  realName: '测试小明',
+  idCardNo: '110************01X',
+  idVerified: 0,
+  avatarUrl: null,
+  bio: null,
+  role: 'EXPERT',
+  roles: ['EXPERT'],
+  selectedRole: 'EXPERT',
+  hasExpertManagementRole: false,
+  status: 'ACTIVE',
+  creditScore: 100,
+  lastLoginAt: null,
+  lastLoginIp: null,
+  organization: null,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+};
+const loginTokens = {
+  accessToken: 'a'.repeat(43),
+  refreshToken: 'r'.repeat(43),
+  tokenType: 'Bearer',
+  expiresIn: 1800,
+};
+const grant = () => ({
+  status: 'registration_required',
+  registrationToken,
+  expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+});
+const success = (data: unknown) => ({ code: 200, message: '操作成功', data });
+const failure = (status: number, message: string) => ({
+  code: status === 429 ? 4292 : status,
+  message,
+  data: null,
+});
+interface RequestRecord {
+  path: string;
+  method: string;
+  body: unknown;
+  client?: string;
 }
 
-test('Web 仅为合法手机号发送验证码，发送与倒计时防重复且不自动登录', async ({ page }) => {
-  const requests: string[] = [];
-  const sent: { method: string; body: unknown }[] = [];
-  let releaseResponse!: () => void;
-  const responseGate = new Promise<void>((resolve) => {
-    releaseResponse = resolve;
+async function webBackend(page: Page) {
+  const state = {
+    signedIn: false,
+    registered: false,
+    sendStatus: 200,
+    sendMessage: serverMessage,
+    sendNetworkFailure: false,
+    currentStatus: 200,
+    smsStatus: 200,
+  };
+  const requests: RequestRecord[] = [];
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    requests.push({
+      path,
+      method: request.method(),
+      body: request.postData() ? request.postDataJSON() : null,
+      client: request.headers()['x-tyde-client'],
+    });
+    const reply = (data: unknown, headers?: Record<string, string>) =>
+      route.fulfill({ json: success(data), headers });
+    const reject = (status: number, message: string, headers?: Record<string, string>) =>
+      route.fulfill({ status, json: failure(status, message), headers });
+    switch (path) {
+      case '/api/v1/users/me':
+        if (state.currentStatus !== 200) return reject(state.currentStatus, '会话服务暂不可用');
+        return state.signedIn && request.headers().cookie?.includes('fixture_session=active')
+          ? reply(user)
+          : reject(401, '请先登录');
+      case '/api/v1/auth/refresh':
+        return state.signedIn ? reply(loginTokens) : reject(401, '登录已过期');
+      case '/api/v1/auth/sms/send':
+        if (state.sendNetworkFailure) return route.abort('failed');
+        if (state.sendStatus === 429)
+          return reject(429, '发送频繁，请稍后重试', { 'Retry-After': '60' });
+        if (state.sendStatus !== 200) return reject(state.sendStatus, '短信服务暂不可用');
+        return reply(state.sendMessage);
+      case '/api/v1/auth/sms/login':
+        if (state.smsStatus !== 200) return reject(state.smsStatus, '验证码校验失败');
+        if (!state.registered) return reply(grant());
+        state.signedIn = true;
+        return reply(loginTokens, {
+          'Set-Cookie': 'fixture_session=active; HttpOnly; SameSite=Lax; Path=/',
+        });
+      case '/api/v1/auth/register':
+        state.registered = true;
+        return reply(user);
+      case '/api/v1/auth/login':
+        state.signedIn = true;
+        return reply(loginTokens, {
+          'Set-Cookie': 'fixture_session=active; HttpOnly; SameSite=Lax; Path=/',
+        });
+      case '/api/v1/auth/logout':
+        state.signedIn = false;
+        return reply(null, { 'Set-Cookie': 'fixture_session=; Max-Age=0; HttpOnly; Path=/' });
+      default:
+        return reject(503, '调用了未约定的接口');
+    }
   });
-  page.on('request', (request) => {
-    if (request.url().includes('/api/')) requests.push(new URL(request.url()).pathname);
-  });
-  await page.route('**/api/v1/auth/code', async (route) => {
-    sent.push({ method: route.request().method(), body: route.request().postDataJSON() });
-    await responseGate;
-    await route.fulfill({ json: codeResult() });
-  });
-  await page.clock.install();
-  await page.goto('/');
-  await expect(page).toHaveURL(/#\/auth$/);
-  await expect(
-    page.getByRole('heading', { name: '欢迎使用 Tyde 潮汐协作平台', level: 1 }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole('heading', { name: '登录 / 注册', level: 1, exact: true }),
-  ).toBeVisible();
-  await expect(page.getByRole('tab')).toHaveCount(2);
-  await expect(page.getByRole('tab', { name: '验证码登录', exact: true })).toHaveAttribute(
-    'aria-selected',
-    'true',
-  );
-  await expect(page.getByRole('radio')).toHaveCount(0);
-  await expect(page.getByLabel(/^密码\s*\*?\s*$/)).toHaveCount(0);
-  await expect(page.getByRole('link', { name: '注册账号', exact: true })).toHaveCount(0);
-  expect(requests).toEqual([]);
-  const sendButton = page.getByRole('button', { name: /获取验证码|发送中|\d+s 后重发/ });
-  await sendButton.click();
-  await expect(page.getByText('请输入手机号', { exact: true })).toBeVisible();
-  await page.getByLabel(/^手机号/).fill('123');
-  await sendButton.click();
-  await expect(page.getByText('请输入 11 位大陆手机号码', { exact: true })).toBeVisible();
-  expect(requests).toEqual([]);
-  await page.getByLabel(/^手机号/).fill('13812345678');
-  await sendButton.click();
-  await expect(sendButton).toHaveText('发送中');
-  await expect(sendButton).toBeDisabled();
-  await expect(page.getByLabel(/^手机号/)).toBeDisabled();
-  await expect(page.getByRole('tab', { name: '验证码登录', exact: true })).toBeDisabled();
-  await expect(page.getByRole('tab', { name: '密码登录', exact: true })).toBeDisabled();
-  await expect
-    .poll(() => sent)
-    .toEqual([{ method: 'POST', body: { region: 'CN', phone: '13812345678' } }]);
-  releaseResponse();
-  await expect(page.getByText(/095270/)).toBeVisible();
-  await expect(sendButton).toHaveText(/^(60|59)s 后重发$/);
-  await expect(sendButton).toBeDisabled();
-  await expect(page.getByLabel(/^手机号/)).toBeEnabled();
-  await page.getByRole('textbox', { name: '验证码', exact: true }).fill('095270');
-  await page.getByRole('button', { name: '继续', exact: true }).click();
-  await expect(page.getByRole('status', { name: '操作提示' })).toContainText(
-    '登录 / 注册功能暂未开放，尚未验证手机号或创建账号',
-  );
-  await expect(page).toHaveURL(/#\/auth$/);
-  await expect(page.getByRole('heading', { name: '完善个人资料', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '退出登录', exact: true })).toHaveCount(0);
-  await page.getByLabel(/^手机号/).fill('13912345678');
-  await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toHaveValue('');
-  await expect(page.getByText(/095270/)).toHaveCount(0);
-  await expect(page.getByRole('status', { name: '操作提示' })).toHaveCount(0);
-  await expect(sendButton).toBeDisabled();
-  await page.clock.fastForward(61_000);
-  await expect(sendButton).toHaveText('获取验证码');
-  await expect(sendButton).toBeEnabled();
-  expect(requests).toEqual(['/api/v1/auth/code']);
-  expect(sent).toHaveLength(1);
-  await page.reload();
+  return { state, requests };
+}
+const smsButton = (page: Page) =>
+  page.getByRole('button', { name: /获取验证码|发送中|\d+s 后重发/ });
+async function openAuth(page: Page, origin: string) {
+  await page.goto(origin + '/#/auth');
   await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
-  await expect(page.getByLabel(/^手机号/)).toHaveValue('');
-  await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toHaveValue('');
-  await expect(page.getByRole('status', { name: '操作提示' })).toHaveCount(0);
-  expect(requests).toEqual(['/api/v1/auth/code']);
-  await mkdir('artifacts/screenshots', { recursive: true });
-  await page.screenshot({ path: 'artifacts/screenshots/frontend-web.png' });
-});
-
-test('发送验证码遇到 429 显示错误并遵守 Retry-After，换号不能绕过倒计时', async ({ page }) => {
-  const requests: string[] = [];
-  page.on('request', (request) => {
-    if (request.url().includes('/api/')) requests.push(new URL(request.url()).pathname);
-  });
-  await page.route('**/api/v1/auth/code', (route) =>
-    route.fulfill({
-      status: 429,
-      headers: { 'Retry-After': '60' },
-      json: { code: 'RATE_LIMITED', message: '发送频繁，请稍后重试' },
-    }),
-  );
-  await page.clock.install();
-  await page.goto('/#/auth');
-  await page.getByLabel(/^手机号/).fill('13812345678');
-  const sendButton = page.getByRole('button', { name: /获取验证码|\d+s 后重发/ });
-  await sendButton.click();
-  await expect(page.getByText('发送频繁，请稍后重试', { exact: true })).toBeVisible();
-  await expect(sendButton).toHaveText(/^(60|59)s 后重发$/);
-  await expect(sendButton).toBeDisabled();
-  await page.getByLabel(/^手机号/).fill('13912345678');
-  await expect(page.getByText('发送频繁，请稍后重试', { exact: true })).toHaveCount(0);
-  await expect(sendButton).toBeDisabled();
-  await page.clock.fastForward(30_000);
-  await expect(sendButton).toBeDisabled();
-  await page.clock.fastForward(31_000);
-  await expect(sendButton).toHaveText('获取验证码');
-  await expect(sendButton).toBeEnabled();
-  expect(requests).toEqual(['/api/v1/auth/code']);
-  await expect(page.getByText(/095270/)).toHaveCount(0);
-});
-
-test('发送验证码遇到 503 可重试，sms 响应不显示固定测试码', async ({ page }) => {
-  const requests: string[] = [];
-  const sent: unknown[] = [];
-  page.on('request', (request) => {
-    if (request.url().includes('/api/')) requests.push(new URL(request.url()).pathname);
-  });
-  await page.route('**/api/v1/auth/code', (route) => {
-    expect(route.request().method()).toBe('POST');
-    sent.push(route.request().postDataJSON());
-    return sent.length === 1
-      ? route.fulfill({
-          status: 503,
-          json: { code: 'SERVICE_UNAVAILABLE', message: '短信服务暂不可用' },
-        })
-      : route.fulfill({ json: codeResult('sms') });
-  });
-  await page.goto('/#/auth');
-  await page.getByLabel(/^手机号/).fill('13812345678');
-  const sendButton = page.getByRole('button', { name: /获取验证码|\d+s 后重发/ });
-  await sendButton.click();
-  await expect(page.getByText('短信服务暂不可用', { exact: true })).toBeVisible();
-  await expect(sendButton).toHaveText('获取验证码');
-  await expect(sendButton).toBeEnabled();
-  await expect(page.getByText(/095270/)).toHaveCount(0);
-  await sendButton.click();
-  await expect(page.getByRole('status', { name: '操作提示' })).toContainText('已发送');
-  await expect(page.getByText('短信服务暂不可用', { exact: true })).toHaveCount(0);
-  await expect(page.getByText(/095270/)).toHaveCount(0);
-  await expect(sendButton).toHaveText(/^(60|59)s 后重发$/);
-  await expect(sendButton).toBeDisabled();
-  await page.getByRole('textbox', { name: '验证码', exact: true }).fill('123456');
+}
+async function smsLogin(page: Page) {
+  await page.getByLabel(/^手机号/).fill(phone);
+  await page.getByRole('textbox', { name: '验证码', exact: true }).fill(verificationCode);
   await page.getByRole('button', { name: '继续', exact: true }).click();
-  await expect(page.getByRole('status', { name: '操作提示' })).toContainText('功能暂未开放');
-  expect(sent).toEqual([
-    { region: 'CN', phone: '13812345678' },
-    { region: 'CN', phone: '13812345678' },
-  ]);
-  expect(requests).toEqual(['/api/v1/auth/code', '/api/v1/auth/code']);
-  await expect(page).toHaveURL(/#\/auth$/);
-});
+}
+async function fillRegistration(page: Page) {
+  await page.getByLabel(/^登录密码/).fill(password);
+  await page.getByLabel(/^确认密码/).fill(password);
+  await page.getByLabel(/^姓名/).fill(user.realName);
+  await page.getByLabel(/^昵称/).fill(user.nickname);
+  await page.getByLabel(/^身份证号/).fill('11010119900101001X');
+  await page.getByLabel(/^邮箱/).fill('sample@example.com');
+}
+async function expectWelcome(page: Page) {
+  await expect(
+    page.getByRole('heading', { name: '欢迎，' + user.nickname, exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: '退出登录', exact: true })).toBeVisible();
+}
+function expectNoLegacyRequests(requests: RequestRecord[]) {
+  expect(requests.some(({ path }) => /\/health\/|\/auth\/(code|verify|me)$/.test(path))).toBe(
+    false,
+  );
+  expect(requests.every(({ client }) => client === 'web' || client === 'desktop')).toBe(true);
+}
 
-test('密码页首次提供验证码注册入口，密码校验与显隐仅在本地完成', async ({ page }) => {
-  const requests: string[] = [];
-  await page.route('**/api/**', async (route) => {
-    requests.push(route.request().url());
-    await route.abort();
+for (const [mode, origin] of [
+  ['生产', 'http://127.0.0.1:5176'],
+  ['DEV', 'http://127.0.0.1:5177'],
+] as const) {
+  test(`Web ${mode} 验证码真实发送，成功显示测试码并保留服务端提示且不重复`, async ({ page }) => {
+    const { state, requests } = await webBackend(page);
+    await openAuth(page, origin);
+    await expect(page.getByRole('tab')).toHaveCount(2);
+    await expect(page.getByRole('radio')).toHaveCount(0);
+    await smsButton(page).click();
+    await expect(page.getByText('请输入手机号', { exact: true })).toBeVisible();
+    await page.getByLabel(/^手机号/).fill('123');
+    await smsButton(page).click();
+    await expect(page.getByText('请输入 11 位大陆手机号码', { exact: true })).toBeVisible();
+    expect(requests.filter(({ path }) => path.includes('/sms/'))).toEqual([]);
+    await page.getByLabel(/^手机号/).fill(phone);
+    await smsButton(page).click();
+    await expect(page.getByRole('status', { name: '操作提示' })).toHaveText(successNotice);
+    await expect(smsButton(page)).toBeEnabled();
+    await expect(smsButton(page)).toHaveText('获取验证码');
+    expect(requests.filter(({ path }) => path.endsWith('/sms/send'))).toEqual([
+      {
+        path: '/api/v1/auth/sms/send',
+        method: 'POST',
+        body: { phone, scene: 'login' },
+        client: 'web',
+      },
+    ]);
+    state.sendMessage = '本地测试验证码：095270（不会发送短信）。';
+    await smsButton(page).click();
+    await expect(page.getByRole('status', { name: '操作提示' })).toHaveText(state.sendMessage);
+    await smsLogin(page);
+    await expect(page).toHaveURL(/#\/register$/);
+    expect(requests.find(({ path }) => path.endsWith('/sms/login'))?.body).toEqual({
+      phone,
+      code: verificationCode,
+    });
+    expectNoLegacyRequests(requests);
   });
-  await page.goto('/#/auth');
-  await page.getByRole('tab', { name: '密码登录', exact: true }).click();
-  const password = page.getByLabel(/^密码\s*\*?\s*$/);
-  await expect(password).toHaveAttribute('type', 'password');
-  await expect(password).toHaveAttribute('autocomplete', 'current-password');
-  await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toHaveCount(0);
-  await expect(page.getByText('还没有账号？')).toBeVisible();
-  await expect(page.getByRole('button', { name: '验证码注册', exact: true })).toBeVisible();
-  await expect(page.getByRole('status', { name: '操作提示' })).toHaveCount(0);
-  await mkdir('artifacts/screenshots', { recursive: true });
-  await page.screenshot({ path: 'artifacts/screenshots/frontend-password.png', fullPage: true });
-  const desktopViewport = page.viewportSize() ?? { width: 1280, height: 720 };
-  await page.setViewportSize({ width: 375, height: 812 });
-  await expect(page.getByRole('button', { name: '验证码注册', exact: true })).toBeVisible();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
-    true,
-  );
-  await page.screenshot({
-    path: 'artifacts/screenshots/frontend-password-mobile.png',
-    fullPage: true,
-  });
-  await page.setViewportSize(desktopViewport);
-  await page.getByRole('button', { name: '验证码注册', exact: true }).click();
-  await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toBeFocused();
-  await expect(password).toHaveCount(0);
-  await expect(page.getByText(/^请输入(手机号|密码|验证码)$/)).toHaveCount(0);
-  expect(requests).toEqual([]);
-  await page.getByRole('tab', { name: '密码登录', exact: true }).click();
-  await page.getByRole('button', { name: '登录', exact: true }).click();
-  await expect(page.getByText('请输入手机号', { exact: true })).toBeVisible();
-  await expect(page.getByText('请输入密码', { exact: true })).toBeVisible();
-  await page.getByLabel(/^手机号/).fill('13812345678');
-  await password.fill('demo');
-  await page.getByRole('button', { name: '显示密码', exact: true }).click();
-  await expect(password).toHaveAttribute('type', 'text');
-  await page.getByRole('button', { name: '隐藏密码', exact: true }).click();
-  await expect(password).toHaveAttribute('type', 'password');
-  await page.getByRole('button', { name: '登录', exact: true }).click();
-  await expect(page.getByRole('status', { name: '操作提示' })).toHaveText(
-    '密码登录暂未开放，请使用验证码登录或注册。',
-  );
-  await expect(page).toHaveURL(/#\/auth$/);
-  await expect(page.getByRole('button', { name: '退出登录', exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: '显示密码', exact: true }).click();
-  await page.getByRole('button', { name: '验证码注册', exact: true }).focus();
-  await page.keyboard.press('Enter');
-  await expect(page.getByRole('tab', { name: '验证码登录', exact: true })).toHaveAttribute(
-    'aria-selected',
-    'true',
-  );
-  await expect(page.getByLabel(/^手机号/)).toHaveValue('13812345678');
-  await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toHaveValue('');
-  await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toBeFocused();
-  await expect(password).toHaveCount(0);
-  await expect(page.getByRole('status', { name: '操作提示' })).toHaveCount(0);
-  await expect(page.getByText('请输入密码', { exact: true })).toHaveCount(0);
-  await page.getByRole('tab', { name: '密码登录', exact: true }).click();
-  await expect(password).toHaveValue('');
-  await expect(password).toHaveAttribute('type', 'password');
-  await expect(page.getByRole('button', { name: '验证码注册', exact: true })).toBeVisible();
-  await password.fill('Sensitive123');
-  await page.reload();
-  await expect(page.getByRole('tab', { name: '验证码登录', exact: true })).toHaveAttribute(
-    'aria-selected',
-    'true',
-  );
-  await page.getByRole('tab', { name: '密码登录', exact: true }).click();
-  await expect(password).toHaveValue('');
-  await expect(page.getByLabel(/^手机号/)).toHaveValue('');
-  expect(requests).toEqual([]);
-});
 
-test('个人资料页保留个人字段，校验后仅提示尚未提交', async ({ page }) => {
-  await page.setViewportSize({ width: 1280, height: 720 });
-  async function assertSinglePage() {
-    await expect
-      .poll(() =>
-        page.evaluate(() => {
-          const form = document.querySelector('form');
-          return {
-            documentFits:
-              Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) <=
-              window.innerHeight + 1,
-            atTop: window.scrollY === 0,
-            formFits: Boolean(form && form.scrollHeight <= form.clientHeight + 1),
-            internalScrolls: Array.from(form?.querySelectorAll('*') ?? []).some(
-              (element) =>
-                element instanceof HTMLElement &&
-                /auto|scroll/.test(getComputedStyle(element).overflowY) &&
-                element.scrollHeight > element.clientHeight + 1,
-            ),
-          };
-        }),
-      )
-      .toEqual({ documentFits: true, atTop: true, formFits: true, internalScrolls: false });
+  test(`Web ${mode} 429 遵守 Retry-After，503和网络失败不会本地成功`, async ({ page }) => {
+    const { state, requests } = await webBackend(page);
+    await page.clock.install();
+    await openAuth(page, origin);
+    await page.getByLabel(/^手机号/).fill(phone);
+    await smsButton(page).click();
+    await expect(page.getByRole('status', { name: '操作提示' })).toHaveText(successNotice);
+    state.sendStatus = 429;
+    await smsButton(page).click();
+    await expect(page.getByText('发送频繁，请稍后重试', { exact: true })).toBeVisible();
+    await expect(page.getByRole('status', { name: '操作提示' })).toHaveCount(0);
+    await expect(smsButton(page)).toHaveText(/^(60|59)s 后重发$/);
+    await expect(smsButton(page)).toBeDisabled();
+    await page.getByLabel(/^手机号/).fill('13912345678');
+    await expect(smsButton(page)).toBeDisabled();
+    await page.clock.fastForward(61_000);
+    state.sendStatus = 503;
+    await smsButton(page).click();
+    await expect(page.getByText('短信服务暂不可用', { exact: true })).toBeVisible();
+    await expect(smsButton(page)).toBeEnabled();
+    await expect(page.getByRole('status', { name: '操作提示' })).toHaveCount(0);
+    state.sendNetworkFailure = true;
+    await smsButton(page).click();
+    await expect(page.getByText('连接服务失败，请检查网络后重试', { exact: true })).toBeVisible();
+    await expect(page.getByRole('status', { name: '操作提示' })).toHaveCount(0);
+    await expect(page).toHaveURL(/#\/auth$/);
+    expect(requests.filter(({ path }) => path.endsWith('/sms/send'))).toHaveLength(4);
+    expectNoLegacyRequests(requests);
+  });
+
+  test(`Web ${mode} 验证码由服务端验证，老用户登录后恢复会话并退出`, async ({ page }) => {
+    const { state, requests } = await webBackend(page);
+    state.registered = true;
+    state.smsStatus = 400;
+    await openAuth(page, origin);
+    await smsLogin(page);
+    await expect(page.getByText('验证码校验失败', { exact: true })).toBeVisible();
+    await expect(page).toHaveURL(/#\/auth$/);
+    state.smsStatus = 200;
+    await page.getByRole('textbox', { name: '验证码', exact: true }).fill('268519');
+    await page.getByRole('button', { name: '继续', exact: true }).click();
+    await expectWelcome(page);
+    expect(requests.filter(({ path }) => path.endsWith('/sms/send'))).toHaveLength(0);
+    expect(
+      requests.filter(({ path }) => path.endsWith('/sms/login')).map(({ body }) => body),
+    ).toEqual([
+      { phone, code: verificationCode },
+      { phone, code: '268519' },
+    ]);
+    await page.reload();
+    await expectWelcome(page);
+    await page.getByRole('button', { name: '退出登录', exact: true }).click();
+    await expect(page).toHaveURL(/#\/auth$/);
+    await page.reload();
+    await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
+    expect(requests.filter(({ path }) => path.endsWith('/auth/logout'))).toHaveLength(1);
+    expectNoLegacyRequests(requests);
+  });
+
+  test(`Web ${mode} 密码登录提交真实账号密码，验证码注册入口清空敏感字段`, async ({ page }) => {
+    const { requests } = await webBackend(page);
+    await openAuth(page, origin);
+    await page.getByRole('tab', { name: '密码登录', exact: true }).click();
+    await expect(page.getByText('还没有账号？')).toBeVisible();
+    await expect(page.getByRole('button', { name: '验证码注册', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '登录', exact: true }).click();
+    expect(requests.filter(({ path }) => path.endsWith('/auth/login'))).toHaveLength(0);
+    await page.getByLabel(/^手机号/).fill(phone);
+    const input = page.getByLabel(/^密码\s*\*?\s*$/);
+    await input.fill(password);
+    await page.getByRole('button', { name: '显示密码', exact: true }).click();
+    await expect(input).toHaveAttribute('type', 'text');
+    await page.getByRole('button', { name: '验证码注册', exact: true }).click();
+    await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toBeFocused();
+    await expect(page.getByLabel(/^手机号/)).toHaveValue(phone);
+    await page.getByRole('tab', { name: '密码登录', exact: true }).click();
+    await expect(input).toHaveValue('');
+    await expect(input).toHaveAttribute('type', 'password');
+    await input.fill(password);
+    await page.getByRole('button', { name: '登录', exact: true }).click();
+    await expectWelcome(page);
+    expect(requests.find(({ path }) => path.endsWith('/auth/login'))?.body).toEqual({
+      account: phone,
+      password,
+    });
+    const storage = await page.evaluate(() =>
+      JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }),
+    );
+    expect(storage).not.toContain(loginTokens.accessToken);
+    expect(storage).not.toContain(loginTokens.refreshToken);
+    expectNoLegacyRequests(requests);
+  });
+
+  test(`Web ${mode} 注册携带服务端凭证和个人字段，成功后返回密码登录且不自动登录`, async ({
+    page,
+  }) => {
+    const { requests } = await webBackend(page);
+    await openAuth(page, origin);
+    await smsLogin(page);
+    await expect(page.getByRole('heading', { name: '完善个人资料', exact: true })).toBeVisible();
+    await expect(page.getByRole('radio')).toHaveCount(0);
+    await expect(page.getByRole('checkbox')).toHaveCount(0);
+    await expect(page.getByLabel(/^手机|^组织名称/)).toHaveCount(0);
+    await expect(page.locator('input[type="file"]')).toHaveCount(0);
+    await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toHaveCount(0);
+    await fillRegistration(page);
+    const currentCalls = requests.filter(({ path }) => path.endsWith('/users/me')).length;
+    await page.getByRole('button', { name: '提交', exact: true }).click();
+    await expect(page).toHaveURL(/#\/auth$/);
+    await expect(page.getByRole('tab', { name: '密码登录', exact: true })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    await expect(page.getByRole('status', { name: '操作提示' })).toHaveText(
+      '注册成功，请使用密码登录。',
+    );
+    await expect(page.getByLabel(/^手机号/)).toHaveValue(phone);
+    expect(requests.find(({ path }) => path.endsWith('/auth/register'))?.body).toEqual({
+      accountType: 'INDIVIDUAL',
+      phone,
+      registrationToken,
+      password,
+      confirmPassword: password,
+      realName: user.realName,
+      nickname: user.nickname,
+      idCardNo: '11010119900101001X',
+      email: 'sample@example.com',
+    });
+    expect(requests.filter(({ path }) => path.endsWith('/auth/login'))).toHaveLength(0);
+    expect(requests.filter(({ path }) => path.endsWith('/users/me'))).toHaveLength(currentCalls);
+    await expect(page.getByRole('button', { name: '退出登录', exact: true })).toHaveCount(0);
+    expectNoLegacyRequests(requests);
+  });
+
+  test(`Web ${mode} 注册凭证仅存在内存，直访、刷新和离开资料页均不能复用`, async ({ page }) => {
+    const { requests } = await webBackend(page);
+    await page.goto(origin + '/#/register');
+    await expect(page).toHaveURL(/#\/auth$/);
+    await smsLogin(page);
+    await expect(page).toHaveURL(/#\/register$/);
+    await fillRegistration(page);
+    await page.reload();
+    await expect(page).toHaveURL(/#\/auth$/);
+    await expect(page.getByLabel(/^手机号/)).toHaveValue('');
+    await smsLogin(page);
+    await expect(page).toHaveURL(/#\/register$/);
+    await page.getByRole('link', { name: '返回登录 / 注册', exact: true }).click();
+    await page.goto(origin + '/#/register');
+    await expect(page).toHaveURL(/#\/auth$/);
+    expect(requests.filter(({ path }) => path.endsWith('/auth/register'))).toHaveLength(0);
+    const storage = await page.evaluate(() =>
+      JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }),
+    );
+    expect(storage).not.toContain(registrationToken);
+  });
+
+  test(`Web ${mode} 会话恢复503显示重试，恢复后进入欢迎页`, async ({ page }) => {
+    const { state } = await webBackend(page);
+    state.signedIn = true;
+    state.currentStatus = 503;
+    await page
+      .context()
+      .addCookies([
+        { name: 'fixture_session', value: 'active', url: origin, httpOnly: true, sameSite: 'Lax' },
+      ]);
+    await page.goto(origin + '/');
+    await expect(page.getByText('会话服务暂不可用', { exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toHaveCount(0);
+    state.currentStatus = 200;
+    await page.getByRole('button', { name: '重试', exact: true }).click();
+    await expectWelcome(page);
+  });
+}
+
+test('个人资料在1280与375视口保留字段、键盘操作和完整单页布局', async ({ page }) => {
+  await webBackend(page);
+  for (const width of [1280, 375]) {
+    await page.setViewportSize({ width, height: width === 1280 ? 720 : 812 });
+    await openAuth(page, 'http://127.0.0.1:5176');
+    await page.getByRole('tab', { name: '验证码登录', exact: true }).focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(page.getByRole('tab', { name: '密码登录', exact: true })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    await page.getByRole('button', { name: '验证码注册', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await smsLogin(page);
+    await expect(page).toHaveURL(/#\/register$/);
+    await page.getByRole('button', { name: '提交', exact: true }).click();
+    await expect(page.getByText('请输入密码', { exact: true })).toBeVisible();
+    await expect(page.getByText('请输入姓名', { exact: true })).toBeVisible();
     for (const field of ['登录密码', '确认密码', '姓名', '昵称', '身份证号', '邮箱']) {
       await expect(page.getByLabel(new RegExp('^' + field))).toBeInViewport({ ratio: 1 });
     }
     await expect(page.getByRole('button', { name: '提交', exact: true })).toBeInViewport({
       ratio: 1,
     });
-  }
-  const requests: string[] = [];
-  page.on('request', (request) => {
-    if (request.url().includes('/api/')) requests.push(request.url());
-  });
-  await page.goto('/#/register');
-  await expect(page.getByRole('heading', { name: '完善个人资料', exact: true })).toBeVisible();
-  await expect(page.getByRole('tab')).toHaveCount(0);
-  await expect(page.getByRole('radio')).toHaveCount(0);
-  await expect(page.getByRole('checkbox')).toHaveCount(0);
-  await expect(page.getByLabel(/^手机/)).toHaveCount(0);
-  await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toHaveCount(0);
-  await expect(page.getByLabel(/^组织名称/)).toHaveCount(0);
-  await expect(page.locator('input[type="file"]')).toHaveCount(0);
-  await assertSinglePage();
-  await page.getByRole('button', { name: '提交', exact: true }).click();
-  await expect(page.getByText('请输入密码', { exact: true })).toBeVisible();
-  await expect(page.getByText('请输入姓名', { exact: true })).toBeVisible();
-  await assertSinglePage();
-  await page.getByLabel(/^登录密码/).fill('Password123');
-  await page.getByLabel(/^确认密码/).fill('Different123');
-  await page.getByLabel(/^姓名/).fill('测试小明');
-  await expect(page.getByText('两次输入的密码不一致', { exact: true })).toBeVisible();
-  await page.getByLabel(/^确认密码/).fill('Password123');
-  await page.getByLabel(/^昵称/).fill('潮汐测试员');
-  await page.getByLabel(/^身份证号/).fill('123456789012345');
-  await page.getByLabel(/^邮箱/).fill('sample@example.com');
-  await page.getByRole('button', { name: '提交', exact: true }).click();
-  await expect(page.getByRole('status', { name: '操作提示' })).toContainText(
-    '注册功能暂未开放，个人资料尚未提交',
-  );
-  await assertSinglePage();
-  await expect(page).toHaveURL(/#\/register$/);
-  await expect(page.getByRole('button', { name: '退出登录', exact: true })).toHaveCount(0);
-  expect(requests).toEqual([]);
-  await mkdir('artifacts/screenshots', { recursive: true });
-  await page.getByRole('heading', { name: '完善个人资料', exact: true }).scrollIntoViewIfNeeded();
-  await page.screenshot({ path: 'artifacts/screenshots/frontend-register.png', fullPage: true });
-  await page.getByRole('link', { name: '返回登录 / 注册', exact: true }).click();
-  await expect(page).toHaveURL(/#\/auth$/);
-  await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
-  expect(requests).toEqual([]);
-});
-
-test('输入校验、手机号变化、刷新和前进后退不保留敏感输入', async ({ page }) => {
-  await page.goto('/#/auth');
-  await page.getByRole('button', { name: '继续', exact: true }).click();
-  await expect(page.getByText('请输入手机号', { exact: true })).toBeVisible();
-  await expect(page.getByText('请输入验证码', { exact: true })).toBeVisible();
-  await page.getByLabel(/^手机号/).fill('123');
-  await page.getByRole('textbox', { name: '验证码', exact: true }).fill('12');
-  await page.getByRole('button', { name: '继续', exact: true }).click();
-  await expect(page.getByText('请输入 11 位大陆手机号码', { exact: true })).toBeVisible();
-  await expect(page.getByText('请输入 6 位验证码', { exact: true })).toBeVisible();
-  await page.getByLabel(/^手机号/).fill('13812345678');
-  await page.getByRole('textbox', { name: '验证码', exact: true }).fill('123456');
-  await page.getByLabel(/^手机号/).fill('13912345678');
-  await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toHaveValue('');
-  await page.getByRole('textbox', { name: '验证码', exact: true }).fill('654321');
-  await page.goto('/#/register');
-  await page.getByLabel(/^登录密码/).fill('Register123');
-  await page.getByLabel(/^确认密码/).fill('Register123');
-  await page.getByLabel(/^姓名/).fill('测试小明');
-  await page.reload();
-  await expect(page.getByRole('heading', { name: '完善个人资料', exact: true })).toBeVisible();
-  await expect(page.getByLabel(/^登录密码/)).toHaveValue('');
-  await expect(page.getByLabel(/^确认密码/)).toHaveValue('');
-  await expect(page.getByLabel(/^姓名/)).toHaveValue('');
-  await page.getByLabel(/^登录密码/).fill('Sensitive123');
-  await page.goBack();
-  await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
-  await expect(page.getByLabel(/^手机号/)).toHaveValue('');
-  await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toHaveValue('');
-  await page.getByLabel(/^手机号/).fill('13812345678');
-  await page.getByRole('textbox', { name: '验证码', exact: true }).fill('123456');
-  await page.goForward();
-  await expect(page.getByRole('heading', { name: '完善个人资料', exact: true })).toBeVisible();
-  await expect(page.getByLabel(/^登录密码/)).toHaveValue('');
-  await expect(page.getByLabel(/^姓名/)).toHaveValue('');
-  await page.getByRole('link', { name: '返回登录 / 注册', exact: true }).click();
-  await expect(page.getByLabel(/^手机号/)).toHaveValue('');
-  await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toHaveValue('');
-});
-
-test('375px 窄屏支持键盘操作，入口和资料表单无横向溢出', async ({ page }) => {
-  await page.setViewportSize({ width: 375, height: 812 });
-  await page.goto('/#/missing');
-  await expect(page).toHaveURL(/#\/auth$/);
-  await page.getByRole('tab', { name: '验证码登录', exact: true }).focus();
-  await page.keyboard.press('ArrowRight');
-  await expect(page.getByRole('tab', { name: '密码登录', exact: true })).toBeFocused();
-  await expect(page.getByLabel(/^密码\s*\*?\s*$/)).toBeVisible();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
-    true,
-  );
-  await page.keyboard.press('ArrowLeft');
-  await expect(page.getByRole('tab', { name: '验证码登录', exact: true })).toBeFocused();
-  await page.getByLabel(/^手机号/).focus();
-  await expect(page.getByLabel(/^手机号/)).toBeFocused();
-  await page.keyboard.type('13812345678');
-  await page.keyboard.press('Tab');
-  await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toBeFocused();
-  await page.keyboard.type('123456');
-  await page.keyboard.press('Tab');
-  await expect(page.getByRole('button', { name: '获取验证码', exact: true })).toBeFocused();
-  await page.keyboard.press('Tab');
-  await expect(page.getByRole('button', { name: '继续', exact: true })).toBeFocused();
-  await page.keyboard.press('Enter');
-  await expect(page.getByRole('status', { name: '操作提示' })).toContainText('功能暂未开放');
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
-    true,
-  );
-  await page.goto('/#/register');
-  await expect(page.getByLabel(/^登录密码/)).toBeVisible();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
-    true,
-  );
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () =>
+    expect(
+      await page.evaluate(() => ({
+        horizontal: document.documentElement.scrollWidth <= innerWidth,
+        vertical:
           Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) <=
-          window.innerHeight + 1,
-      ),
-    )
-    .toBe(true);
-  for (const field of ['登录密码', '确认密码', '姓名', '昵称', '身份证号', '邮箱']) {
-    await expect(page.getByLabel(new RegExp('^' + field))).toBeInViewport({ ratio: 1 });
+          innerHeight + 1,
+      })),
+    ).toEqual({ horizontal: true, vertical: true });
+    await mkdir('artifacts/screenshots', { recursive: true });
+    await page.screenshot({
+      path: `artifacts/screenshots/frontend-register-${width}.png`,
+      fullPage: true,
+      animations: 'disabled',
+    });
   }
-  await expect(page.getByRole('button', { name: '提交', exact: true })).toBeInViewport({
-    ratio: 1,
-  });
-  await mkdir('artifacts/screenshots', { recursive: true });
-  await page.screenshot({
-    path: 'artifacts/screenshots/frontend-register-mobile.png',
-    fullPage: true,
-    animations: 'disabled',
-  });
-  await page.getByLabel(/^邮箱/).scrollIntoViewIfNeeded();
-  const emailBox = await page.getByLabel(/^邮箱/).boundingBox();
-  const submitBox = await page.getByRole('button', { name: '提交', exact: true }).boundingBox();
-  if (!emailBox || !submitBox) throw new Error('窄屏个人资料字段与提交按钮必须可见');
-  expect(submitBox.y).toBeGreaterThanOrEqual(emailBox.y + emailBox.height);
-  await page.screenshot({
-    path: 'artifacts/screenshots/frontend-mobile.png',
-    fullPage: true,
-    animations: 'disabled',
-  });
-  await page.getByRole('link', { name: '返回登录 / 注册', exact: true }).focus();
-  await page.keyboard.press('Enter');
-  await expect(page).toHaveURL(/#\/auth$/);
 });
 
-test('Electron 仅通过受限 bridge 发送验证码，保留安全隔离和个人资料本地行为', async () => {
-  const requests: {
-    path: string | undefined;
-    method: string | undefined;
-    client: string | string[] | undefined;
-    body: string;
-  }[] = [];
-  const fixtureBackend = createServer((request, response) => {
+async function desktopBackend() {
+  const requests: RequestRecord[] = [];
+  const state = { registered: false, signedIn: false };
+  const server = createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on('data', (chunk: Buffer) => chunks.push(chunk));
     request.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      const body = raw ? JSON.parse(raw) : null;
+      const path = request.url ?? '';
       requests.push({
-        path: request.url,
-        method: request.method,
-        client: request.headers['x-tyde-client'],
-        body: Buffer.concat(chunks).toString('utf8'),
+        path,
+        method: request.method ?? '',
+        body,
+        client: String(request.headers['x-tyde-client'] ?? ''),
       });
-      if (request.url === '/api/v1/auth/code' && request.method === 'POST') {
+      const reply = (data: unknown) =>
         response
           .writeHead(200, { 'Content-Type': 'application/json' })
-          .end(JSON.stringify(codeResult()));
-      } else {
+          .end(JSON.stringify(success(data)));
+      const reject = () =>
         response
-          .writeHead(503, { 'Content-Type': 'application/json' })
-          .end(JSON.stringify({ code: 'SERVICE_UNAVAILABLE', message: '此接口不应被调用' }));
+          .writeHead(401, { 'Content-Type': 'application/json' })
+          .end(JSON.stringify(failure(401, '请先登录')));
+      switch (path) {
+        case '/api/v1/auth/sms/send':
+          return reply(serverMessage);
+        case '/api/v1/auth/sms/login':
+          if (!state.registered) return reply(grant());
+          state.signedIn = true;
+          return reply(loginTokens);
+        case '/api/v1/auth/register':
+          state.registered = true;
+          return reply(user);
+        case '/api/v1/auth/login':
+          state.signedIn = true;
+          return reply(loginTokens);
+        case '/api/v1/users/me':
+          return state.signedIn &&
+            request.headers.authorization === 'Bearer ' + loginTokens.accessToken
+            ? reply(user)
+            : reject();
+        case '/api/v1/auth/refresh':
+          return state.signedIn ? reply(loginTokens) : reject();
+        case '/api/v1/auth/logout':
+          state.signedIn = false;
+          return reply(null);
+        default:
+          response.writeHead(503).end(JSON.stringify(failure(503, '调用了未约定的接口')));
       }
     });
   });
-  await new Promise<void>((resolve) => fixtureBackend.listen(0, '127.0.0.1', resolve));
-  const address = fixtureBackend.address();
-  if (!address || typeof address === 'string') throw new Error('未能分配隔离测试端口');
-  await mkdir('.local/frontend', { recursive: true });
-  const profile = await mkdtemp(resolve('.local/frontend/ui-'));
-  try {
-    const app = await electron.launch({
-      executablePath: require('electron') as string,
-      args: [resolve('apps/electron/out/main/index.js')],
-      env: {
-        ...process.env,
-        TYDE_WEB_URL: 'http://127.0.0.1:5176/',
-        TYDE_API_BASE_URL: 'http://127.0.0.1:' + address.port,
-        TYDE_TEST_USER_DATA: profile,
-      },
-    });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('未分配测试端口');
+  return {
+    requests,
+    url: 'http://127.0.0.1:' + address.port,
+    close: () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  };
+}
+
+for (const [mode, origin] of [
+  ['生产', 'http://127.0.0.1:5176/'],
+  ['DEV', 'http://127.0.0.1:5177/'],
+] as const) {
+  test(`Electron ${mode} 通过真实bridge注册、登录、加密恢复及退出，令牌留在main`, async () => {
+    const backend = await desktopBackend();
+    await mkdir('.local/frontend', { recursive: true });
+    const profile = await mkdtemp(resolve('.local/frontend/session-'));
+    const env = {
+      ...process.env,
+      TYDE_WEB_URL: origin,
+      TYDE_API_BASE_URL: backend.url,
+      TYDE_TEST_USER_DATA: profile,
+    };
+    delete env.ELECTRON_RUN_AS_NODE;
+    const launch = () =>
+      electron.launch({
+        executablePath: require('electron') as string,
+        args: [resolve('apps/electron/out/main/index.js')],
+        env,
+      });
+    let app: Awaited<ReturnType<typeof launch>> | undefined;
     try {
-      const page = await app.firstWindow();
-      await expect(
-        page.getByRole('heading', { name: '欢迎使用 Tyde 潮汐协作平台', level: 1 }),
-      ).toHaveCount(0);
-      await expect(
-        page.getByRole('heading', { name: '登录 / 注册', level: 1, exact: true }),
-      ).toBeVisible();
-      await expect(page.getByRole('tab')).toHaveCount(2);
-      expect(requests).toEqual([]);
-      await page.getByRole('button', { name: '获取验证码', exact: true }).click();
-      await expect(page.getByText('请输入手机号', { exact: true })).toBeVisible();
-      expect(requests).toEqual([]);
-      await page.getByLabel(/^手机号/).fill('13812345678');
-      await page.getByRole('button', { name: '获取验证码', exact: true }).click();
-      await expect(page.getByText(/095270/)).toBeVisible();
-      await expect(page.getByRole('button', { name: /\d+s 后重发/ })).toBeDisabled();
-      expect(requests).toEqual([
-        {
-          path: '/api/v1/auth/code',
-          method: 'POST',
-          client: 'desktop',
-          body: JSON.stringify({ region: 'CN', phone: '13812345678' }),
-        },
-      ]);
-      await page.getByRole('textbox', { name: '验证码', exact: true }).fill('095270');
-      await page.getByRole('button', { name: '继续', exact: true }).click();
-      await expect(page.getByRole('status', { name: '操作提示' })).toContainText(
-        '尚未验证手机号或创建账号',
+      app = await launch();
+      let page = await app.firstWindow();
+      const rendererRequests: string[] = [];
+      const rendererTraffic: Promise<{ headers: Record<string, string>; body: string }>[] = [];
+      page.on('request', (request) => {
+        if (request.url().includes('/api/')) rendererRequests.push(request.url());
+      });
+      page.on('response', (response) => {
+        if (response.url().startsWith('tyde-debug://desktop/api/'))
+          rendererTraffic.push(
+            Promise.all([response.request().allHeaders(), response.text()]).then(
+              ([headers, body]) => ({
+                headers,
+                body,
+              }),
+            ),
+          );
+      });
+      await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
+      if (mode === 'DEV') {
+        const abandoned: { url?: string; body?: string } = {};
+        const inspection = await app.context().newCDPSession(page);
+        await inspection.send('Network.enable');
+        inspection.on('Network.requestWillBeSent', ({ request }) => {
+          if (request.url.startsWith('tyde-debug://desktop/api/v1/auth/sms/send?')) {
+            abandoned.url = request.url;
+            abandoned.body = request.postData ?? '';
+          }
+        });
+        await inspection.send('Network.setBlockedURLs', {
+          urls: ['tyde-debug://desktop/api/v1/auth/sms/send*'],
+        });
+        const aborted = await page.evaluate(
+          (phone) => window.tydeDesktop!.sendCode({ phone, scene: 'login' }),
+          phone,
+        );
+        expect(aborted.ok).toBe(false);
+        expect(backend.requests.filter(({ path }) => path.endsWith('/sms/send'))).toHaveLength(0);
+        if (!abandoned.url) throw new Error('未捕获开发代理请求');
+        const oldTicket = { url: abandoned.url, body: abandoned.body ?? '' };
+        await page.reload();
+        await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
+        await inspection.send('Network.setBlockedURLs', { urls: [] });
+        const replay = await page.evaluate(async ({ url, body }) => {
+          const response = await fetch(url, { method: 'POST', body, credentials: 'omit' });
+          await response.arrayBuffer();
+          return response.status;
+        }, oldTicket);
+        expect(replay).toBe(403);
+        expect(backend.requests.filter(({ path }) => path.endsWith('/sms/send'))).toHaveLength(0);
+        await inspection.detach();
+      }
+      await page.getByLabel(/^手机号/).fill(phone);
+      const sending = page.waitForResponse((response) =>
+        response.url().startsWith('tyde-debug://desktop/api/v1/auth/sms/send?'),
       );
-      await expect(page).toHaveURL(/#\/auth$/);
-      await page.goto('http://127.0.0.1:5176/#/register');
-      await expect(page.getByRole('heading', { name: '完善个人资料', exact: true })).toBeVisible();
-      await expect(page.getByRole('radio')).toHaveCount(0);
-      await expect(page.getByRole('checkbox')).toHaveCount(0);
-      await expect(page.locator('input[type="file"]')).toHaveCount(0);
-      await expect(page.getByLabel(/^手机/)).toHaveCount(0);
-      await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toHaveCount(0);
-      await page.getByLabel(/^登录密码/).fill('Password123');
-      await page.getByLabel(/^确认密码/).fill('Password123');
-      await page.getByLabel(/^姓名/).fill('测试小明');
+      await smsButton(page).click();
+      await expect(page.getByRole('status', { name: '操作提示' })).toHaveText(successNotice);
+      const sent = await sending;
+      expect(sent.status()).toBe(200);
+      expect(sent.request().method()).toBe('POST');
+      expect(JSON.parse(sent.request().postData()!)).toEqual({ phone, scene: 'login' });
+      expect(await sent.json()).toEqual({ ok: true, data: serverMessage });
+      await smsLogin(page);
+      await expect(page).toHaveURL(/#\/register$/);
+      await fillRegistration(page);
       await page.getByRole('button', { name: '提交', exact: true }).click();
-      await expect(page.getByRole('status', { name: '操作提示' })).toContainText(
-        '个人资料尚未提交',
+      await expect(page.getByRole('status', { name: '操作提示' })).toHaveText(
+        '注册成功，请使用密码登录。',
       );
-      await page.reload();
-      await expect(page.getByLabel(/^登录密码/)).toHaveValue('');
-      await expect(page.getByLabel(/^姓名/)).toHaveValue('');
+      expect(backend.requests.filter(({ path }) => path.endsWith('/auth/login'))).toHaveLength(0);
+      await page.getByLabel(/^密码\s*\*?\s*$/).fill(password);
+      await page.getByRole('button', { name: '登录', exact: true }).click();
+      await expectWelcome(page);
+      const login = await page.evaluate(
+        ({ phone, password }) => window.tydeDesktop!.login({ account: phone, password }),
+        { phone, password },
+      );
+      expect(login.ok).toBe(true);
+      const verification = await page.evaluate(
+        ({ phone, code }) => window.tydeDesktop!.verifyCode({ phone, code }),
+        { phone, code: verificationCode },
+      );
+      expect(verification).toEqual({ ok: true, data: { status: 'authenticated' } });
+      expect(JSON.stringify({ login, verification })).not.toContain(loginTokens.accessToken);
+      expect(JSON.stringify({ login, verification })).not.toContain(loginTokens.refreshToken);
       const preferences = await app.evaluate(({ BrowserWindow }) => {
-        const options = BrowserWindow.getAllWindows()[0]!.webContents.getLastWebPreferences();
+        const p = BrowserWindow.getAllWindows()[0]!.webContents.getLastWebPreferences();
         return {
-          sandbox: options.sandbox,
-          contextIsolation: options.contextIsolation,
-          nodeIntegration: options.nodeIntegration,
+          contextIsolation: p.contextIsolation,
+          sandbox: p.sandbox,
+          nodeIntegration: p.nodeIntegration,
         };
       });
       expect(preferences).toEqual({
-        sandbox: true,
         contextIsolation: true,
+        sandbox: true,
         nodeIntegration: false,
       });
-      await mkdir('artifacts/screenshots', { recursive: true });
-      await page
-        .getByRole('heading', { name: '完善个人资料', exact: true })
-        .scrollIntoViewIfNeeded();
-      await page.screenshot({ path: 'artifacts/screenshots/frontend-electron.png' });
-      await page.getByRole('link', { name: '返回登录 / 注册', exact: true }).click();
+      expect(rendererRequests.length).toBeGreaterThan(0);
+      expect(rendererRequests.every((url) => url.startsWith('tyde-debug://desktop/api/'))).toBe(
+        true,
+      );
+      const traffic = await Promise.all(rendererTraffic);
+      expect(traffic.every(({ headers }) => !headers.authorization && !headers.cookie)).toBe(true);
+      expect(JSON.stringify(traffic)).not.toContain(loginTokens.accessToken);
+      expect(JSON.stringify(traffic)).not.toContain(loginTokens.refreshToken);
+      await page.getByRole('button', { name: '退出登录', exact: true }).click();
       await expect(page).toHaveURL(/#\/auth$/);
-      await expect(page.getByRole('button', { name: '退出登录', exact: true })).toHaveCount(0);
-      expect(requests).toHaveLength(1);
-    } finally {
+      await smsLogin(page);
+      await expectWelcome(page);
       await app.close();
-    }
-  } finally {
-    await new Promise<void>((resolve, reject) =>
-      fixtureBackend.close((error) => (error ? reject(error) : resolve())),
-    );
-  }
-});
-
-test('DEV 的 Web 与 Electron 本地验证码引导新账号填写个人资料，全程不发 API 请求', async ({
-  page,
-}) => {
-  async function completeLocalRegistration(currentPage: typeof page) {
-    await expect(
-      currentPage.getByRole('heading', { name: '登录 / 注册', exact: true }),
-    ).toBeVisible();
-    await currentPage.getByLabel(/^手机号/).fill('13812345678');
-    await currentPage.getByRole('tab', { name: '密码登录', exact: true }).click();
-    await expect(
-      currentPage.getByRole('button', { name: '验证码注册', exact: true }),
-    ).toBeVisible();
-    await currentPage.getByRole('button', { name: '验证码注册', exact: true }).click();
-    await expect(currentPage.getByLabel(/^手机号/)).toHaveValue('13812345678');
-    await expect(currentPage.getByRole('textbox', { name: '验证码', exact: true })).toBeFocused();
-    await expect(currentPage.getByLabel(/^密码\s*\*?\s*$/)).toHaveCount(0);
-    await currentPage.getByRole('button', { name: '获取验证码', exact: true }).click();
-    await expect(currentPage.getByRole('status', { name: '操作提示' })).toContainText(
-      '本地测试验证码：095270',
-    );
-    await expect(currentPage.getByRole('status', { name: '操作提示' })).toContainText(
-      '不会发送短信',
-    );
-    await expect(currentPage.getByRole('button', { name: /^(60|59)s 后重发$/ })).toBeDisabled();
-    if (currentPage === page) {
-      await mkdir('artifacts/screenshots', { recursive: true });
-      await currentPage.screenshot({
-        path: 'artifacts/screenshots/frontend-local-sms-mock.png',
-        fullPage: true,
-      });
-    }
-    await currentPage.getByRole('textbox', { name: '验证码', exact: true }).fill('123456');
-    await currentPage.getByRole('button', { name: '继续', exact: true }).click();
-    await expect(currentPage.getByText('验证码不正确', { exact: true })).toBeVisible();
-    await expect(currentPage).toHaveURL('http://127.0.0.1:5177/#/auth');
-    await currentPage.getByRole('textbox', { name: '验证码', exact: true }).fill('095270');
-    await currentPage.getByRole('button', { name: '继续', exact: true }).click();
-    await expect(currentPage).toHaveURL('http://127.0.0.1:5177/#/register');
-    await expect(
-      currentPage.getByRole('heading', { name: '完善个人资料', exact: true }),
-    ).toBeVisible();
-    await expect(currentPage.getByRole('button', { name: '退出登录', exact: true })).toHaveCount(0);
-    if (currentPage === page) {
-      await currentPage.screenshot({
-        path: 'artifacts/screenshots/frontend-local-register-mock.png',
-        fullPage: true,
-      });
-    }
-    await currentPage.getByLabel(/^登录密码/).fill('Password123');
-    await currentPage.getByLabel(/^确认密码/).fill('Password123');
-    await currentPage.getByLabel(/^姓名/).fill('测试小明');
-    await currentPage.getByLabel(/^昵称/).fill('潮汐测试员');
-    await currentPage.getByLabel(/^身份证号/).fill('123456789012345');
-    await currentPage.getByLabel(/^邮箱/).fill('sample@example.com');
-    await currentPage.getByRole('button', { name: '提交', exact: true }).click();
-    await expect(currentPage.getByRole('status', { name: '操作提示' })).toContainText(
-      '注册功能暂未开放，个人资料尚未提交',
-    );
-    await expect(currentPage).toHaveURL('http://127.0.0.1:5177/#/register');
-    await expect(currentPage.getByRole('button', { name: '退出登录', exact: true })).toHaveCount(0);
-    await currentPage.getByRole('link', { name: '返回登录 / 注册', exact: true }).click();
-    await expect(currentPage).toHaveURL('http://127.0.0.1:5177/#/auth');
-    await expect(currentPage.getByLabel(/^手机号/)).toHaveValue('');
-    await expect(currentPage.getByRole('textbox', { name: '验证码', exact: true })).toHaveValue('');
-    await currentPage.reload();
-    await expect(currentPage.getByLabel(/^手机号/)).toHaveValue('');
-    await expect(currentPage.getByRole('textbox', { name: '验证码', exact: true })).toHaveValue('');
-    await expect(currentPage.getByRole('status', { name: '操作提示' })).toHaveCount(0);
-  }
-
-  const webRequests: string[] = [];
-  await page.route('**/api/**', async (route) => {
-    webRequests.push(route.request().url());
-    await route.abort();
-  });
-  await page.goto('http://127.0.0.1:5177/#/auth');
-  await completeLocalRegistration(page);
-  expect(webRequests).toEqual([]);
-
-  let bridgeRequests = 0;
-  const isolatedBackend = createServer((_request, response) => {
-    bridgeRequests++;
-    response.writeHead(503).end();
-  });
-  await new Promise<void>((resolve) => isolatedBackend.listen(0, '127.0.0.1', resolve));
-  const address = isolatedBackend.address();
-  if (!address || typeof address === 'string') throw new Error('未能分配隔离测试端口');
-  await mkdir('.local/frontend', { recursive: true });
-  const profile = await mkdtemp(resolve('.local/frontend/dev-ui-'));
-  try {
-    const app = await electron.launch({
-      executablePath: require('electron') as string,
-      args: [resolve('apps/electron/out/main/index.js')],
-      env: {
-        ...process.env,
-        TYDE_WEB_URL: 'http://127.0.0.1:5177/',
-        TYDE_API_BASE_URL: 'http://127.0.0.1:' + address.port,
-        TYDE_TEST_USER_DATA: profile,
-      },
-    });
-    try {
-      const desktopPage = await app.firstWindow();
-      const rendererRequests: string[] = [];
-      await desktopPage.route('**/api/**', async (route) => {
-        rendererRequests.push(route.request().url());
-        await route.abort();
-      });
-      await expect(
-        desktopPage.getByRole('heading', { name: '登录 / 注册', exact: true }),
-      ).toBeVisible();
-      expect(await desktopPage.evaluate(() => Boolean(window.tydeDesktop))).toBe(true);
-      await completeLocalRegistration(desktopPage);
-      expect(rendererRequests).toEqual([]);
-      expect(bridgeRequests).toBe(0);
+      app = await launch();
+      page = await app.firstWindow();
+      await expectWelcome(page);
+      await page.getByRole('button', { name: '退出登录', exact: true }).click();
+      await expect(page).toHaveURL(/#\/auth$/);
+      const cleared = await page.evaluate(() => window.tydeDesktop!.getCurrentUser());
+      expect(cleared.ok).toBe(false);
+      if (!cleared.ok) expect(cleared.status).toBe(401);
+      expect(
+        backend.requests.filter(({ path }) => path.endsWith('/sms/send')).map(({ body }) => body),
+      ).toEqual([{ phone, scene: 'login' }]);
+      expectNoLegacyRequests(backend.requests);
     } finally {
-      await app.close();
+      await app?.close();
+      await backend.close();
+      await rm(profile, { recursive: true, force: true });
     }
-  } finally {
-    await new Promise<void>((resolve, reject) =>
-      isolatedBackend.close((error) => (error ? reject(error) : resolve())),
-    );
-  }
-});
-
-test('DEV 本地凭证在切模式、换号或刷新后失效且五分钟过期', async ({ page }) => {
-  const requests: string[] = [];
-  await page.route('**/api/**', async (route) => {
-    requests.push(route.request().url());
-    await route.abort();
   });
-  await page.clock.install();
-  await page.goto('http://127.0.0.1:5177/#/auth');
-  await page.getByLabel(/^手机号/).fill('13812345678');
-  await page.getByRole('textbox', { name: '验证码', exact: true }).fill('095270');
-  await page.getByRole('button', { name: '继续', exact: true }).click();
-  await expect(page.getByText('请先获取本地测试验证码。', { exact: true })).toBeVisible();
-  await expect(page).toHaveURL('http://127.0.0.1:5177/#/auth');
-  await page.getByRole('button', { name: '获取验证码', exact: true }).click();
-  await expect(page.getByRole('status', { name: '操作提示' })).toContainText(
-    '本地测试验证码：095270',
-  );
-  await page.getByRole('tab', { name: '密码登录', exact: true }).click();
-  await page.getByRole('tab', { name: '验证码登录', exact: true }).click();
-  await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toHaveValue('');
-  await expect(page.getByRole('button', { name: /\d+s 后重发/ })).toBeDisabled();
-  await page.getByRole('textbox', { name: '验证码', exact: true }).fill('095270');
-  await page.getByRole('button', { name: '继续', exact: true }).click();
-  await expect(page.getByText('请先获取本地测试验证码。', { exact: true })).toBeVisible();
-  await expect(page).toHaveURL('http://127.0.0.1:5177/#/auth');
-  await page.getByRole('textbox', { name: '验证码', exact: true }).fill('095270');
-  await page.getByLabel(/^手机号/).fill('13912345678');
-  await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toHaveValue('');
-  await expect(page.getByRole('status', { name: '操作提示' })).toHaveCount(0);
-  await page.getByRole('textbox', { name: '验证码', exact: true }).fill('095270');
-  await page.getByRole('button', { name: '继续', exact: true }).click();
-  await expect(page.getByText('请先获取本地测试验证码。', { exact: true })).toBeVisible();
-  await expect(page).toHaveURL('http://127.0.0.1:5177/#/auth');
-  await page.clock.fastForward(61_000);
-  await page.getByRole('button', { name: '获取验证码', exact: true }).click();
-  await expect(page.getByRole('status', { name: '操作提示' })).toContainText(
-    '本地测试验证码：095270',
-  );
-  await page.getByRole('textbox', { name: '验证码', exact: true }).fill('095270');
-  await page.clock.fastForward(301_000);
-  await page.getByRole('button', { name: '继续', exact: true }).click();
-  await expect(page.getByText('验证码已过期，请重新获取。', { exact: true })).toBeVisible();
-  await expect(page).toHaveURL('http://127.0.0.1:5177/#/auth');
-  await page.getByRole('button', { name: '获取验证码', exact: true }).click();
-  await expect(page.getByRole('status', { name: '操作提示' })).toContainText(
-    '本地测试验证码：095270',
-  );
-  await page.reload();
-  await expect(page.getByLabel(/^手机号/)).toHaveValue('');
-  await expect(page.getByRole('textbox', { name: '验证码', exact: true })).toHaveValue('');
-  await page.getByLabel(/^手机号/).fill('13912345678');
-  await page.getByRole('textbox', { name: '验证码', exact: true }).fill('095270');
-  await page.getByRole('button', { name: '继续', exact: true }).click();
-  await expect(page.getByText('请先获取本地测试验证码。', { exact: true })).toBeVisible();
-  await expect(page).toHaveURL('http://127.0.0.1:5177/#/auth');
-  expect(requests).toEqual([]);
-});
+}

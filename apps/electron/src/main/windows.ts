@@ -48,6 +48,14 @@ export async function createWindow(): Promise<BrowserWindow> {
     },
   });
   window.setMenuBarVisibility(false);
+  if (!app.isPackaged) {
+    window.webContents.on('before-input-event', (event, input) => {
+      if (input.key === 'F12') {
+        event.preventDefault();
+        if (input.type === 'keyDown' && !input.isAutoRepeat) window.webContents.toggleDevTools();
+      }
+    });
+  }
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => {
     if (!trustedPage(url)) event.preventDefault();

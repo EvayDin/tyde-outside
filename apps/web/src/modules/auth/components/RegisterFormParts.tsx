@@ -1,5 +1,6 @@
 /** 提供注册表单内部复用的分区和确认密码字段组件。 */
 import type { ReactNode } from 'react';
+import { passwordPattern } from '@tyde/shared';
 import AuthFormField from '@/components/ui/shared/AuthFormField';
 import AuthPasswordInput from '@/components/ui/shared/AuthPasswordInput';
 import type { RegisterFormController } from '../types';
@@ -45,7 +46,7 @@ export function ConfirmPasswordField({
   const controlId = `register-confirm-password-${inputNameSuffix}`;
   const validationStatus = confirmPassword
     ? password === confirmPassword
-      ? /^(?=.*[A-Za-z])(?=.*\d).{8,64}$/.test(password)
+      ? new RegExp(passwordPattern).test(password)
         ? 'match'
         : undefined
       : 'mismatch'

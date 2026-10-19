@@ -1,29 +1,35 @@
 import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
+import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
-import { ApiError } from '@tyde/shared';
+import { ApiError, MOCK_SMS_CODE } from '@tyde/shared';
 import { api } from '@/services/api';
+import { SESSION_KEY, sessionQuery } from '@/hooks/useSession';
+import { useAuthFlow } from './AuthFlow';
 import { ErrorNotice } from '@/components/ErrorNotice';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import LoginFormPanel from './components/LoginFormPanel';
 import type { LoginFormController, LoginFormValues, LoginMode } from './types';
 
-/** 开发环境验证本地验证码后进入个人资料；真实登录与资料提交仍未开放。 */
+/** 通过统一双端适配完成短信或密码登录。 */
 export function LoginPage() {
   const navigate = useNavigate();
-  const [mode, setMode] = useState<LoginMode>('sms');
-  const [notice, setNotice] = useState('');
+  const cache = useQueryClient();
+  const flow = useAuthFlow();
+  const [initialFeedback] = useState(flow.loginFeedback);
+  const [mode, setMode] = useState<LoginMode>(initialFeedback ? 'password' : 'sms');
+  const [notice, setNotice] = useState(initialFeedback?.message ?? '');
   const [error, setError] = useState<unknown>(null);
   const [sending, setSending] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const cooldownUntil = useRef(0);
   const inFlight = useRef(false);
   const mounted = useRef(false);
-  const localChallenge = useRef<{ phone: string; expiresAt: number } | null>(null);
   const focusCode = useRef(false);
   const form = useForm<LoginFormValues>({
-    defaultValues: { account: '', code: '', password: '' },
+    defaultValues: { account: initialFeedback?.phone ?? '', code: '', password: '' },
     shouldUnregister: true,
   });
 
@@ -33,6 +39,10 @@ export function LoginPage() {
       mounted.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    flow.clearLoginFeedback();
+  }, [flow.clearLoginFeedback]);
 
   const coolingDown = countdown > 0;
   useEffect(() => {
@@ -57,7 +67,6 @@ export function LoginPage() {
 
   function changeMode(nextMode: LoginMode) {
     if (inFlight.current || nextMode === mode) return;
-    localChallenge.current = null;
     form.reset({ account: form.getValues('account'), code: '', password: '' });
     setNotice('');
     setError(null);
@@ -73,20 +82,12 @@ export function LoginPage() {
       if (!(await form.trigger('account', { shouldFocus: true })) || !mounted.current) return;
       setSending(true);
       form.setValue('code', '');
-      localChallenge.current = null;
       const phone = form.getValues('account');
-      const result = await api.sendCode({ region: 'CN', phone });
-      if (!mounted.current) return;
-      if (import.meta.env.DEV && result.mode === 'mock')
-        localChallenge.current = { phone, expiresAt: Date.parse(result.expiresAt) };
-      startCooldown(result.resendAfterSeconds);
-      setNotice(
-        result.mode === 'mock'
-          ? import.meta.env.DEV
-            ? '本地测试验证码：095270（不会发送短信）。'
-            : '当前为测试短信模式，不会发送真实短信，请使用验证码 095270。'
-          : '验证码已发送，请查收短信。',
-      );
+      const result = await api.sendCode({ phone, scene: 'login' });
+      if (mounted.current)
+        setNotice(
+          result.includes(MOCK_SMS_CODE) ? result : `${result} 测试验证码：${MOCK_SMS_CODE}`,
+        );
     } catch (failure) {
       if (!mounted.current) return;
       setError(failure);
@@ -101,7 +102,7 @@ export function LoginPage() {
   const controller: LoginFormController = {
     mode,
     form,
-    submitting: false,
+    submitting,
     sms: {
       sending,
       countdown,
@@ -109,38 +110,48 @@ export function LoginPage() {
     },
     actions: {
       changeAccount: () => {
-        localChallenge.current = null;
         form.setValue('code', '');
         form.clearErrors('code');
         setNotice('');
         setError(null);
       },
-      finish: ({ account, code }) => {
+      finish: async ({ account, code, password }) => {
+        if (inFlight.current) return;
+        inFlight.current = true;
+        setSubmitting(true);
         setError(null);
         setNotice('');
-        if (mode === 'password') {
-          setNotice('密码登录暂未开放，请使用验证码登录或注册。');
-          return;
+        try {
+          if (mode === 'password') {
+            await api.login({ account, password });
+          } else {
+            const result = await api.verifyCode({ phone: account, code });
+            if (!mounted.current) return;
+            if (result.status === 'registration_required') {
+              if (
+                !Number.isFinite(Date.parse(result.expiresAt)) ||
+                Date.parse(result.expiresAt) <= Date.now()
+              )
+                throw new Error('注册凭证已过期，请重新获取验证码。');
+              flow.startRegistration({ ...result, phone: account });
+              await navigate({ to: '/register' });
+              return;
+            }
+          }
+          if (!mounted.current) return;
+          await cache.cancelQueries({ queryKey: SESSION_KEY });
+          const user = await cache.fetchQuery({ ...sessionQuery, staleTime: 0 });
+          if (!user) throw new Error('无法确认登录状态，请重新登录。');
+          if (mounted.current) await navigate({ to: '/', replace: true });
+        } catch (failure) {
+          if (!mounted.current) return;
+          setError(failure);
+          if (failure instanceof ApiError && failure.status === 429 && failure.retryAfter)
+            startCooldown(failure.retryAfter);
+        } finally {
+          inFlight.current = false;
+          if (mounted.current) setSubmitting(false);
         }
-        if (import.meta.env.DEV) {
-          const challenge = localChallenge.current;
-          if (!challenge || challenge.phone !== account) {
-            setNotice('请先获取本地测试验证码。');
-            return;
-          }
-          if (challenge.expiresAt <= Date.now()) {
-            localChallenge.current = null;
-            setNotice('验证码已过期，请重新获取。');
-            return;
-          }
-          if (code !== '095270') {
-            form.setError('code', { type: 'validate', message: '验证码不正确' });
-            return;
-          }
-          void navigate({ to: '/register' });
-          return;
-        }
-        setNotice('登录 / 注册功能暂未开放，尚未验证手机号或创建账号。');
       },
     },
   };
@@ -160,7 +171,7 @@ export function LoginPage() {
           <TabsTrigger
             key={value}
             value={value}
-            disabled={sending}
+            disabled={sending || submitting}
             className="h-[44px] rounded-none border-b-2 border-transparent bg-transparent text-[14px] data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none"
           >
             {value === 'sms' ? '验证码登录' : '密码登录'}
@@ -190,6 +201,7 @@ export function LoginPage() {
               variant="link"
               size="mobileTouch"
               className="px-[4px]"
+              disabled={sending || submitting}
               onClick={() => {
                 focusCode.current = true;
                 changeMode('sms');

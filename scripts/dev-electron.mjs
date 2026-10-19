@@ -74,8 +74,9 @@ try {
     if (Date.now() > deadline) throw new Error('等待 Web 开发服务超时');
     await new Promise((resolve) => setTimeout(resolve, 400));
   }
+  const devScript = process.argv.includes('--inspect') ? 'dev:inspect' : 'dev';
   if (!stopping)
-    start(['--prefix', 'apps/electron', 'run', 'dev'], { TYDE_API_BASE_URL: apiBaseUrl });
+    start(['--prefix', 'apps/electron', 'run', devScript], { TYDE_API_BASE_URL: apiBaseUrl });
 } catch (error) {
   console.error(error.message);
   stop(1);

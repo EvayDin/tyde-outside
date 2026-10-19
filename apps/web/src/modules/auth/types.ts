@@ -9,7 +9,7 @@ export interface LoginFormValues {
   password: string;
 }
 
-/** 注册字段沿用原 Web 表单；不作为 API 请求直接提交。 */
+/** 个人注册表单字段；手机号与一次性注册凭证由内存流程补齐。 */
 export interface RegisterFormValues {
   password: string;
   confirmPassword: string;

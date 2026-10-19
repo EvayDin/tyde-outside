@@ -4,7 +4,9 @@
 
 认证后端已迁移到下表的接口路径与字段，注册和登录固定为执行专家 `EXPERT`，不要求选择身份。完整字段、联调示例、迁移说明和已知依赖见 [认证后端上下文](AUTH_BACKEND.md)。
 
-当前 Web/Electron 使用 Tailwind CSS、shadcn/ui 与 TanStack Router，开发模式只执行本地验证码 mock 和个人资料交互；真实登录与资料提交尚未开放。生产平台适配仍请求此前的 `/auth/code`、`/auth/verify`、`/auth/me` 及注册响应格式，与当前后端不兼容，需独立迁移。后端能力应通过本页 Swagger 或 API 客户端调试，不能视为前端已完成联调。
+当前 Web/Electron 使用 Tailwind CSS、shadcn/ui 与 TanStack Router，开发和生产均通过平台适配调用下列真实认证接口。发码成功后保留后端 data 提示字符串，并展示与服务端 mock 共用的 `@tyde/shared` 常量 `MOCK_SMS_CODE`（当前为 `095270`）；页面不另行定义测试码，提示已含该验证码时不重复追加，失败或限流时不显示测试码，验证码有效期和校验仍由后端决定。后端发码成功只返回“验证码已发送，请注意查收”，响应不另设验证码或重发间隔字段，限流倒计时来自 HTTP 429 的 `Retry-After`。后端短信目前仍为开发/测试 mock，接入真实短信时须同步移除固定测试码提示。
+
+短信登录按后端返回区分已有账号和注册指引；注册凭证仅存内存，个人资料提交后返回密码登录。Web 使用 HttpOnly Cookie，刷新令牌只留在平台适配器内存；Electron main 加密保管访问/刷新令牌对并处理轮换，IPC 不向页面返回登录令牌。注册返回用户资料，不自动创建会话；退出 HTTP 200 后清除客户端会话状态。
 
 执行 `pnpm dev:web` 后可通过 `http://127.0.0.1:3001/api/v1/docs/` 访问同源文档；`API_PROXY_TARGET` 指向 HTTPS 后端时使用 `https://localhost:3001/api/v1/docs/`。部署包及 Vercel 由同一个 Fastify 服务托管 Web 与 API，数据库状态以 `/api/v1/health/ready` 为准。
 

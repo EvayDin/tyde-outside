@@ -1,5 +1,4 @@
 import { Type, type Static } from '@sinclair/typebox';
-import type { RegistrationRequired } from './index.js';
 const options = { additionalProperties: false };
 // 输出普通 string + enum，避免 Swagger 把枚举拆成多个 anyOf，保留字面量类型推导。
 function stringEnum<const T extends readonly string[]>(values: T, description: string) {
@@ -295,6 +294,11 @@ export type SmsLoginInput = Static<typeof smsLoginSchema>;
 export type LoginInput = Static<typeof loginSchema>;
 export type SmsRegisterInput = Static<typeof smsRegisterSchema>;
 export type PasswordResetInput = Static<typeof passwordResetSchema>;
+export interface RegistrationRequired {
+  status: 'registration_required';
+  registrationToken: string;
+  expiresAt: string;
+}
 export type SmsLoginResponse = LoginResponse | RegistrationRequired;
 export interface LoginResponse {
   accessToken: string;

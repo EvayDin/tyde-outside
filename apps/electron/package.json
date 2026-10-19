@@ -7,7 +7,8 @@
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "electron-vite dev --watch",
+    "dev:inspect": "electron-vite dev --watch -- --inspect=9229 --experimental-network-inspection",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit",
     "package:mac": "node ../../scripts/prepare-electron.mjs mac && electron-builder --mac --universal --publish never && node ../../scripts/checksums.mjs ../../release",

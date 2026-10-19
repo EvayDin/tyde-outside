@@ -22,7 +22,9 @@ export default function IdentityFields({
   const idCardId = `register-id-card-${inputNameSuffix}`;
   const realNameField = form.register('realName', {
     required: '请输入姓名',
-    validate: (value) => Boolean(value.trim()) || '请输入姓名',
+    validate: (value) =>
+      /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z\-·]{0,63}$/.test(value.trim()) ||
+      '姓名仅支持中英文、连字符与间隔号，最多 64 字符',
   });
   const nicknameField = form.register('nickname');
 
@@ -62,6 +64,7 @@ export default function IdentityFields({
           size="authRegister"
           className={registerInputClassName}
           autoComplete="off"
+          maxLength={64}
           placeholder={realName || '默认展示真实姓名'}
           aria-invalid={Boolean(errors.nickname)}
           {...nicknameField}
@@ -84,7 +87,12 @@ export default function IdentityFields({
           maxLength={18}
           placeholder="15或18位身份证（选填）"
           aria-invalid={Boolean(errors.idCardNo)}
-          {...form.register('idCardNo')}
+          {...form.register('idCardNo', {
+            validate: (value) =>
+              !value?.trim() ||
+              /^(\d{15}|\d{17}[0-9X])$/.test(value.trim().toUpperCase()) ||
+              '请输入 15 位或 18 位身份证号',
+          })}
         />
       </AuthFormField>
       <AuthFormField

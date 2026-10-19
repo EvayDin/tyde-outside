@@ -1,6 +1,7 @@
 /** 渲染个人资料中由 React Hook Form 管理的密码字段。 */
 import { useEffect } from 'react';
 import { useWatch } from 'react-hook-form';
+import { passwordPattern } from '@tyde/shared';
 import AuthFormField from '@/components/ui/shared/AuthFormField';
 import AuthPasswordInput from '@/components/ui/shared/AuthPasswordInput';
 import type { RegisterFormController } from '../../types';
@@ -49,8 +50,8 @@ export default function AccountFields({
           {...form.register('password', {
             required: '请输入密码',
             validate: (value) =>
-              /^(?=.*[A-Za-z])(?=.*\d).{8,64}$/.test(value) ||
-              '请输入 8～64 位且包含字母和数字的密码',
+              new RegExp(passwordPattern).test(value) ||
+              '请输入 8～64 位字母、数字及允许的特殊字符，不能含空格或中文',
           })}
         />
       </AuthFormField>

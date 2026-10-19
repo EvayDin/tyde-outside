@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,6 +44,112 @@ function rejected(result) {
   assert.equal(result.status, 1, result.stderr);
   assert.doesNotMatch(result.stdout + result.stderr, /moonstone/i);
 }
+
+const digest = `Moonstone${'A'.repeat(77)}==`;
+const integrity = `sha512-${digest}`;
+const lockfile = (value = integrity) =>
+  `lockfileVersion: '9.0'\n\npackages:\n\n  public-package@1.0.0:\n    resolution: {integrity: ${value}}\n\nsnapshots: {}\n`;
+
+test('合法锁文件摘要的字面碰撞不误报，检查不修改索引或工作区', (t) => {
+  const { git, write, run } = fixture(t);
+  for (const [algorithm, value] of [
+    ['sha1', `Moonstone${'A'.repeat(18)}=`],
+    ['sha256', `Moonstone${'A'.repeat(34)}=`],
+    ['sha384', `Moonstone${'A'.repeat(55)}`],
+    ['sha512', digest],
+  ]) {
+    const content = lockfile(`${algorithm}-${value}`);
+    const path = write('pnpm-lock.yaml', content);
+    git('add', 'pnpm-lock.yaml');
+    const index = git('ls-files', '--stage', '-z');
+    const result = run();
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(git('ls-files', '--stage', '-z'), index);
+    assert.equal(readFileSync(path, 'utf8'), content);
+  }
+});
+
+test('不合法或不支持的摘要仍完整检查', (t) => {
+  const { git, write, run } = fixture(t);
+  for (const value of [
+    `sha999-${digest}`,
+    `SHA512-${digest}`,
+    `sha512-${digest.slice(0, -4)}`,
+    `sha512-${digest.replace(/==$/, 'B==')}`,
+    `sha512-${digest.replace(/A==$/, 'B==')}`,
+    `sha512-${digest.replace(/==$/, '=')}`,
+    `sha512-${digest.replace(/==$/, '!')}`,
+    `${integrity} ${integrity}`,
+    `${integrity}?option`,
+  ]) {
+    write('pnpm-lock.yaml', lockfile(value));
+    git('add', 'pnpm-lock.yaml');
+    rejected(run());
+  }
+});
+
+test('仍检查锁文件的包名、地址、旁注及其他字段', (t) => {
+  const { git, write, run } = fixture(t);
+  for (const content of [
+    lockfile().replace('public-package@', 'Moonstone@'),
+    lockfile().replace('}\n\nsnapshots', '} # Moonstone\n\nsnapshots'),
+    lockfile().replace(
+      '}\n\nsnapshots',
+      ', tarball: https://moonstone.example.test/pkg.tgz}\n\nsnapshots',
+    ),
+    lockfile().replace(
+      '}\n\nsnapshots',
+      '}\n    tarball: https://moonstone.example.test/pkg.tgz\n\nsnapshots',
+    ),
+    `${lockfile()}note: Moonstone\n`,
+  ]) {
+    write('pnpm-lock.yaml', content);
+    git('add', 'pnpm-lock.yaml');
+    rejected(run());
+  }
+});
+
+test('只识别根锁文件的包解析字段，不豁免其它路径或伪造上下文', (t) => {
+  const { git, write, run } = fixture(t);
+  for (const name of ['note.txt', 'docs/pnpm-lock.yaml', 'package-lock.json']) {
+    write(name, lockfile());
+    git('add', name);
+    rejected(run());
+    git('rm', '--cached', '--quiet', name);
+  }
+  for (const content of [
+    lockfile().replace('packages:', 'importers:'),
+    lockfile().replace('packages:', 'snapshots:'),
+    lockfile().replace('resolution:', 'note:'),
+    lockfile().replace("lockfileVersion: '9.0'", "lockfileVersion: '8.0'"),
+    lockfile().replace('packages:', 'note: "\npackages:') + '"\n',
+  ]) {
+    write('pnpm-lock.yaml', content);
+    git('add', 'pnpm-lock.yaml');
+    rejected(run());
+  }
+});
+
+test('同名符号链接目标及提交说明中的摘要仍完整检查', (t) => {
+  const { directory, repo, git, run } = fixture(t);
+  symlinkSync(lockfile(), join(repo, 'pnpm-lock.yaml'));
+  git('add', 'pnpm-lock.yaml');
+  rejected(run());
+  const message = join(directory, 'message');
+  writeFileSync(message, `chore: ${integrity}`);
+  rejected(run(['commit-msg', message]));
+});
+
+test('摘要豁免依据暂存版本，不被工作区锁文件掩盖', (t) => {
+  const { git, write, run } = fixture(t);
+  write('pnpm-lock.yaml', `${lockfile()}note: Moonstone\n`);
+  git('add', 'pnpm-lock.yaml');
+  write('pnpm-lock.yaml', lockfile());
+  rejected(run());
+  git('add', 'pnpm-lock.yaml');
+  write('pnpm-lock.yaml', `${lockfile()}note: Moonstone\n`);
+  assert.equal(run().status, 0);
+});
 
 test('检查暂存内容，不被工作区的清理掩盖', (t) => {
   const { git, write, run } = fixture(t);

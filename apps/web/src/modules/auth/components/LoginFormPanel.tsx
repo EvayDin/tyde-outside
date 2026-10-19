@@ -36,7 +36,7 @@ export default function LoginFormPanel({ controller }: { controller: LoginFormCo
             type="tel"
             inputMode="numeric"
             autoComplete={mode === 'password' ? 'username' : 'tel-national'}
-            disabled={sms.sending}
+            disabled={sms.sending || submitting}
             maxLength={11}
             placeholder="请输入手机号"
             required
@@ -58,6 +58,7 @@ export default function LoginFormPanel({ controller }: { controller: LoginFormCo
               size="auth"
               className={`${loginInputClassName} pl-[41px]`}
               autoComplete="current-password"
+              disabled={submitting}
               maxLength={64}
               placeholder="请输入密码"
               required
@@ -76,13 +77,16 @@ export default function LoginFormPanel({ controller }: { controller: LoginFormCo
               className={`${loginInputClassName} pr-[100px] pl-[41px]`}
               inputMode="numeric"
               autoComplete="one-time-code"
-              maxLength={6}
-              placeholder="请输入6位验证码"
+              disabled={submitting}
+              minLength={4}
+              maxLength={8}
+              placeholder="请输入验证码"
               required
               aria-invalid={Boolean(errors.code)}
               {...form.register('code', {
                 required: '请输入验证码',
-                pattern: { value: /^\d{6}$/, message: '请输入 6 位验证码' },
+                minLength: { value: 4, message: '请输入 4～8 位验证码' },
+                maxLength: { value: 8, message: '请输入 4～8 位验证码' },
               })}
             />
             <Button
@@ -90,7 +94,7 @@ export default function LoginFormPanel({ controller }: { controller: LoginFormCo
               variant="link"
               size="formControl"
               className="absolute top-1/2 right-[3px] -translate-y-1/2 px-[7px] font-[650] hover:no-underline"
-              disabled={sms.sending || sms.countdown > 0}
+              disabled={sms.sending || submitting || sms.countdown > 0}
               aria-busy={sms.sending || undefined}
               onClick={sms.send}
             >

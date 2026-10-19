@@ -23,6 +23,42 @@ function decode(buffer) {
   }
 }
 
+function policyText(path, text) {
+  if (path !== 'pnpm-lock.yaml' || !/^lockfileVersion: '9\.0'\r?\n/.test(text)) return text;
+  // Only pnpm's single-line scalar format is supported; unfamiliar quoting stays fully checked.
+  const scalars = text.replace(/'[^'\r\n]*'|"(?:[^"\\\r\n]|\\.)*"|#[^\r\n]*/g, '');
+  if (/['"]/.test(scalars)) return text;
+  let packages = false;
+  let packageEntry = false;
+  return text
+    .split('\n')
+    .map((line) => {
+      if (/^\S/.test(line)) {
+        packages = /^packages:\s*$/.test(line);
+        packageEntry = false;
+      }
+      if (!packages) return line;
+      if (/^ {2}(?:'[^']+'|"[^"]+"|[^'"\s][^:]*):\s*$/.test(line)) {
+        packageEntry = true;
+        return line;
+      }
+      const resolution = packageEntry
+        ? /^ {4}resolution: \{integrity: (sha(?:1|256|384|512))-([A-Za-z0-9+/]+={0,2})\}([ \t]*(?:#.*)?)\r?$/.exec(
+            line,
+          )
+        : null;
+      packageEntry = false;
+      if (!resolution) return line;
+      const [, algorithm, value] = resolution;
+      const bytes = Buffer.from(value, 'base64');
+      const length = { sha1: 20, sha256: 32, sha384: 48, sha512: 64 }[algorithm];
+      if (bytes.length !== length || bytes.toString('base64') !== value) return line;
+      // Digest bytes are opaque machine data; keep the algorithm, surrounding fields and comments.
+      return line.replace(`${algorithm}-${value}`, `${algorithm}-`);
+    })
+    .join('\n');
+}
+
 try {
   const args = process.argv.slice(2);
   const [mode, messageFile] = args;
@@ -73,10 +109,13 @@ try {
       if (stage !== '0' || !['100644', '100755', '120000'].includes(mode)) {
         fail('暂存区存在未合并文件或不支持的条目，已阻止提交。');
       }
-      if (matches(entry.slice(tab + 1))) fail('暂存路径包含受限内容，已阻止提交。');
+      const path = entry.slice(tab + 1);
+      if (matches(path)) fail('暂存路径包含受限内容，已阻止提交。');
       const text = decode(git('cat-file', 'blob', oid));
       if (text === null) binary = true;
-      else if (matches(text)) fail('暂存文本包含受限内容，已阻止提交。');
+      else if (matches(mode === '120000' ? text : policyText(path, text))) {
+        fail('暂存文本包含受限内容，已阻止提交。');
+      }
     }
     if (binary) {
       console.warn(
