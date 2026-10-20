@@ -1,7 +1,15 @@
 import { randomInt, randomUUID } from 'node:crypto';
-import { Prisma, PrismaClient, type User, type Organization } from '@prisma/client';
+import {
+  Prisma,
+  PrismaClient,
+  type User,
+  type Organization,
+  type UserOrgRel,
+} from '@prisma/client';
 import type {
   AuthUser,
+  UserProfileUpdateInput,
+  NicknameCheckResult,
   LoginInput,
   LoginResponse,
   SmsSendInput,
@@ -24,9 +32,16 @@ import {
 import { hashPassword, verifyPassword } from './password.js';
 import { MockSmsProvider, type SmsProvider } from './sms.js';
 import { FileRegistryService } from '../files/file-registry.service.js';
+import { lockOrganization, participatingStatuses } from '../organizations/organization.service.js';
 import { createObjectStorage } from '../files/object-storage.js';
 type Tx = Prisma.TransactionClient;
-type Profile = User & { organization?: Organization | null };
+type Profile = User & { memberships?: (UserOrgRel & { organization: Organization })[] };
+const profileInclude = {
+  memberships: {
+    where: { joinStatus: { in: participatingStatuses }, organization: { deleted: false } },
+    include: { organization: true },
+  },
+};
 // 服务端业务身份；角色只表示登录身份，业务权限和数据范围仍由各模块检查。
 export interface AuthPrincipal {
   userId: string;
@@ -44,7 +59,18 @@ async function lock(tx: Tx, key: string) {
   await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))::text`;
 }
 function publicUser(user: Profile, current = false): AuthUser {
-  const org = user.organization;
+  const memberships = (user.memberships ?? []).filter(
+    (rel) => participatingStatuses.includes(rel.joinStatus) && !rel.organization.deleted,
+  );
+  const chosen = [...memberships].sort((a, b) => {
+    const owner = Number(b.position === 'OWNER') - Number(a.position === 'OWNER');
+    return (
+      owner ||
+      (a.joinedAt?.getTime() ?? Infinity) - (b.joinedAt?.getTime() ?? Infinity) ||
+      a.id.localeCompare(b.id)
+    );
+  })[0];
+  const org = chosen?.organization;
   return {
     id: user.id,
     uid: user.uid,
@@ -55,14 +81,14 @@ function publicUser(user: Profile, current = false): AuthUser {
     idCardNo: user.idCardNo
       ? `${user.idCardNo.slice(0, 3)}${'*'.repeat(user.idCardNo.length - 7)}${user.idCardNo.slice(-4)}`
       : null,
-    idVerified: 0,
-    avatarUrl: null,
-    bio: null,
+    idVerified: user.idVerified ?? 0,
+    avatarUrl: user.avatarUrl ?? null,
+    bio: user.bio ?? null,
     role: 'EXPERT',
     roles: ['EXPERT'],
     selectedRole: current ? 'EXPERT' : null,
     hasExpertManagementRole: Boolean(
-      current && org && ['OWNER', 'ADMIN'].includes(user.orgPosition ?? ''),
+      current && memberships.some((rel) => rel.position === 'OWNER'),
     ),
     status: user.status,
     creditScore: 100,
@@ -79,10 +105,10 @@ function publicUser(user: Profile, current = false): AuthUser {
           businessLicenseUrl: org.businessLicenseKey ?? null,
           logoUrl: org.logoUrl,
           expertiseTags: org.expertiseTags,
-          verifyStatus: 'PENDING',
-          status: 'ACTIVE',
-          position: user.orgPosition,
-          joinStatus: 'ACTIVE',
+          verifyStatus: org.verifyStatus,
+          status: org.status,
+          position: chosen!.position,
+          joinStatus: chosen!.joinStatus,
           createdAt: org.createdAt.toISOString(),
         }
       : null,
@@ -194,6 +220,24 @@ export class AuthService {
   private async issue(tx: Tx, user: User, client: ClientType, ip?: string): Promise<LoginResponse> {
     if (user.status !== 'ACTIVE')
       throw new AuthError(403, 'FORBIDDEN', '账户已被禁用，请联系平台运营');
+    if (ip !== undefined) {
+      const pending = await tx.userOrgRel.findMany({
+        where: { userId: user.id, joinStatus: 'PENDING_ACTIVATION' },
+        select: { orgId: true },
+        orderBy: { orgId: 'asc' },
+      });
+      for (const rel of pending) await lockOrganization(tx, rel.orgId);
+      if (pending.length)
+        await tx.userOrgRel.updateMany({
+          where: { userId: user.id, joinStatus: 'PENDING_ACTIVATION' },
+          data: {
+            joinStatus: 'ACTIVE',
+            versionNo: { increment: 1 },
+            updatedBy: user.uid,
+            updatedAt: new Date(),
+          },
+        });
+    }
     if (ip !== undefined)
       await tx.user.update({
         where: { id: user.id },
@@ -291,15 +335,33 @@ export class AuthService {
             organizationId: organization?.id,
             orgPosition: organization ? (input.orgPosition ?? 'OWNER') : null,
           },
-          include: { organization: true },
+          include: profileInclude,
         });
+        if (organization) {
+          const membership = await tx.userOrgRel.create({
+            data: {
+              userId: user.id,
+              uid: user.uid,
+              orgId: organization.id,
+              position: user.orgPosition ?? 'OWNER',
+              joinStatus: 'ACTIVE',
+              createdBy: user.uid,
+              updatedBy: user.uid,
+            },
+          });
+          return publicUser({ ...user, memberships: [{ ...membership, organization }] });
+        }
         return publicUser(user);
       });
       if (result instanceof AuthError) throw result;
       return result;
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')
-        throw new AuthError(409, 'DUPLICATE', '手机号/邮箱/身份证/组织信息已被占用，请更换后重试');
+        throw new AuthError(
+          409,
+          'DUPLICATE',
+          '手机号/昵称/邮箱/身份证/组织信息已被占用，请更换后重试',
+        );
       throw error;
     }
   }
@@ -408,7 +470,7 @@ export class AuthService {
     if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) throw unauthorized();
     const session = await this.db.session.findUnique({
       where: { tokenDigest: digest(token) },
-      include: { user: { include: { organization: true } } },
+      include: { user: { include: profileInclude } },
     });
     if (
       !session ||
@@ -433,6 +495,92 @@ export class AuthService {
   async me(token: string | undefined, client: ClientType) {
     const session = await this.requireSession(token, client);
     return publicUser(session.user, true);
+  }
+  async checkNickname(nickname: string): Promise<NicknameCheckResult> {
+    const name = nickname.trim();
+    if (!name || Array.from(name).length > 64) throw invalid('昵称不能为空或超过64字符');
+    const exists = async (displayName: string) =>
+      Boolean(await this.db.user.findUnique({ where: { displayName }, select: { id: true } }));
+    if (!(await exists(name)))
+      return { nickname: name, available: true, suggestion: name, message: '昵称可用' };
+    // 推荐值也遵守注册64字符上限；最多1000次，避免无限数据库查询。
+    for (let i = 1; i <= 1000; i++) {
+      const suffix = String(i);
+      const candidate =
+        Array.from(name)
+          .slice(0, 64 - suffix.length)
+          .join('') + suffix;
+      if (!(await exists(candidate)))
+        return {
+          nickname: name,
+          available: false,
+          suggestion: candidate,
+          message: `昵称已存在，可使用推荐昵称「${candidate}」`,
+        };
+    }
+    throw new AuthError(409, 'DUPLICATE', '暂无可用推荐昵称，请更换昵称');
+  }
+  async updateCurrentUser(
+    token: string | undefined,
+    client: ClientType,
+    input: UserProfileUpdateInput,
+  ) {
+    const session = await this.requireSession(token, client);
+    const hasPassword = input.newPassword != null;
+    if (hasPassword || input.confirmNewPassword != null) {
+      if (
+        !hasPassword ||
+        input.confirmNewPassword == null ||
+        input.newPassword !== input.confirmNewPassword
+      )
+        throw invalid('两次输入的新密码不一致');
+    }
+    const passwordHash = hasPassword ? await hashPassword(input.newPassword!) : undefined;
+    try {
+      return await this.db.$transaction(async (tx) => {
+        // 与登录、刷新及重置密码共用手机号锁，锁内复查会话，防止已撤销凭据继续写入。
+        await lock(tx, session.user.phoneE164);
+        const active = await tx.session.findUnique({
+          where: { id: session.id },
+          include: { user: true },
+        });
+        if (
+          !active ||
+          active.revokedAt ||
+          active.expiresAt <= new Date() ||
+          active.user.status !== 'ACTIVE'
+        )
+          throw unauthorized();
+        const data: Prisma.UserUpdateInput = { updatedBy: session.user.uid, updatedAt: new Date() };
+        if (input.avatarUrl != null) data.avatarUrl = input.avatarUrl.trim() || null;
+        if (input.bio != null) data.bio = input.bio.trim() || null;
+        if (input.idCardNo != null) {
+          const idCardNo = input.idCardNo.trim().toUpperCase() || null;
+          if (idCardNo && !/^(\d{15}|\d{17}[0-9X])$/.test(idCardNo))
+            throw invalid('身份证号格式不正确');
+          if (active.user.idVerified === 1 && active.user.idCardNo !== idCardNo)
+            throw new AuthError(403, 'FORBIDDEN', '身份证已实名认证，不能修改');
+          data.idCardNo = idCardNo;
+        }
+        if (passwordHash !== undefined) data.passwordHash = passwordHash;
+        // 兼容roles字段但不持久化角色选择；自助流程始终EXPERT。
+        const user = await tx.user.update({
+          where: { id: session.userId },
+          data,
+          include: profileInclude,
+        });
+        if (passwordHash !== undefined)
+          await tx.session.updateMany({
+            where: { userId: session.userId, revokedAt: null },
+            data: { revokedAt: new Date() },
+          });
+        return publicUser(user);
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')
+        throw new AuthError(409, 'DUPLICATE', '身份证号已被其他用户使用');
+      throw error;
+    }
   }
   async logout(token: string | undefined) {
     if (token)

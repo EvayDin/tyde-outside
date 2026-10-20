@@ -81,7 +81,7 @@ UserDTO 使用 `id`、`uid`、`accountType`、`phone`、`nickname`、`realName`�
 
 令牌仍采用新项目的随机不透明值，数据库只存摘要，默认有效 30 天；并非旧项目 JWT。刷新后原访问/刷新令牌对失效；重置密码撤销全部会话；普通退出撤销当前会话。当前实现允许 Web/桌面及同客户端多个会话并存；单账号踢号、退出范围、刷新重放强制下线等兼容策略仍待用户确认，不能视为已验收。角色切换按固定 EXPERT 规则暂缓。
 
-Web 和 Electron 页面均使用 HttpOnly 会话 Cookie；浏览器来源须精确位于 `WEB_ORIGINS` 或 `DESKTOP_ORIGINS`。普通 Web 保持 SameSite=Lax，可信桌面来源使用 SameSite=None+Secure；服务端支持凭据 CORS、OPTIONS 预检并暴露 Retry-After。页面写请求声明 `X-Tyde-Client: web`，GET/HEAD 省略自定义头；刷新令牌仅保留在适配器内存，IPC 只返回公开 API 源。非浏览器 API 继续支持 `X-Tyde-Client: desktop` 与 Bearer，并禁止 Origin、Cookie 和 sec-fetch-*；无浏览器头、Cookie 和客户端声明的调试请求自动按 Bearer 处理。
+Web 和 Electron 页面均使用 HttpOnly 会话 Cookie；浏览器来源须精确位于 `WEB_ORIGINS` 或 `DESKTOP_ORIGINS`。普通 Web 保持 SameSite=Lax，可信桌面来源使用 SameSite=None+Secure；服务端支持凭据 CORS、OPTIONS 预检，允许审批/导入所需的 `Idempotency-Key`，并暴露 Retry-After 与 Content-Disposition。页面写请求声明 `X-Tyde-Client: web`，GET/HEAD 省略自定义头；刷新令牌仅保留在适配器内存，IPC 只返回公开 API 源。非浏览器 API 继续支持 `X-Tyde-Client: desktop` 与 Bearer，并禁止 Origin、Cookie 和 sec-fetch-*；无浏览器头、Cookie 和客户端声明的调试请求自动按 Bearer 处理。
 
 ## 联调与数据库
 
@@ -190,3 +190,25 @@ ALTER ROLE tyde_outside_dev LOGIN CREATEDB;
 01最新环境补充（2026-10-19）：用户已在开发库tyde_outside应用uploaded_files迁移，解决文件上传P2021；文件HTTP入口真实OSS联调通过，详情见[01记录](../../backend-migration/01-files/todoTask.md#完成与交接记录)。以下为历史测试记录。
 
 01 回补进展（2026-10-16）：用户本机已应用第三个迁移 `20261016010000_uploaded_files`（专用测试库，非开发库），并安装 multipart 依赖。修复大小不符测试中两个字符串同为10字节的夹具错误，改用台账大小+1；Agent先复测21项全部通过，再接入文件HTTP接口并扩展为29项集成全部通过（真实PostgreSQL+内存对象存储）。API-002营业执照上传/注册/认领/代理链路已验证；原API-002仍为部分迁移，多组织/昵称等其他回补不变。文件业务权限及真实OSS联调限制见 [01 记录](../../backend-migration/01-files/todoTask.md)。
+
+## 02 用户资料定向回补（2026-10-19）
+
+用户确认文件上传已联调成功，恢复02。新增匿名昵称校验及本人资料更新，API-002昵称唯一性由新增唯一索引兜底，冲突409、注册事务回滚；API-008头像/简介/实名状态读取持久化字段。姓名、邮箱仍沿用注册校验，不增加资料更新字段。固定EXPERT规则覆盖资料roles输入；改密更新和全部会话撤销同事务，锁内重验会话，Web/Electron清Cookie。实名核验、信用、多组织、主管及在线状态仍有回补，原接口保持部分迁移。
+
+新增迁移 `20261019010000_user_profile`，开发/部署库未应用；用户本机专用测试库已成功应用，12:17:58复测41项集成全部通过（总9.31秒），此前P1001/缺列阻塞已解除。随后运行中的本地后端51项HTTP检查全部通过，覆盖昵称冲突回滚、资料保存与隔离及改密后Web/Bearer/刷新令牌失效。本轮未执行迁移或查询迁移历史；开发库迁移记录核对、部署及兼容验收保留回补，结果及续验唯一记录见[02任务](../../backend-migration/02-user-profile/todoTask.md)。补迁移和接口细节见[API文档](API.md#用户资料与昵称02)。本轮不以历史认证/文件集成通过替代新字段验收。
+
+## 03 首批组织关系接入（2026-10-19）
+
+组织注册在原验证码/注册凭证、用户及营业执照事务中增加`UserOrgRel`创建；沿用提交的orgPosition，默认OWNER，初始ACTIVE。新增组织查询/编辑接口按关系表授权。`20261019020000_organization_memberships`已由用户应用专用测试库；2026-10-19 13:23:17复测45项集成全部通过（测试8.63秒、总17.37秒），此前缺列/表阻塞解除；155项单测通过。开发/部署库尚未应用本次迁移，部署新代码前须迁移目标库。
+
+03成员管理批次已将`publicUser`、API-002/008及资料更新响应切到有效多组织关系：OWNER优先，其次最早入组（null排后），排除已删除组织，读取实际position/joinStatus/组织状态；不从单组织兼容字段授权或展示。`hasExpertManagementRole`按旧SQL先接实OWNER分支，ADMIN本身不等于该职责，组织项目负责人分支归07。营业执照鉴权也读取指定组织参与状态的OWNER/ADMIN关系，离组/降权立即失效；注册成功的组织关系仍在原事务内创建。
+
+本批180项单测及52项专用PostgreSQL+内存存储集成通过，无新增schema/迁移。审批/退出已接入组织关系状态（项目清退仍待补偿），首次登录激活/导入仍归03后续批次；开发/部署及兼容验收未执行。详细验证及恢复入口见[03记录](../../backend-migration/03-organizations/todoTask.md)。
+
+03审批批次补充：用户已在专用测试库应用第6个迁移`20261019030000_approvals`，190项单测、63项集成通过。审批通过或合法代操作离组后，真实关系变LEFT，后续认证资料不再展示该组织、营业执照授权失效；未来PENDING_LEAVE继续保留组织参与权限，直到每日维护命令执行到期离职。部署调度尚未配置，项目清退仅持久化PENDING补偿记录，不能视为完整项目离组。认证首次激活已于后续导入批次接入并通过专用库集成，进度以03记录为准。
+
+## 03 导入及首次登录激活（专用库集成已通过）
+
+导入代码已创建无默认密码的个人EXPERT用户与PENDING_ACTIVATION关系；已有账号保留资料，符合无有效组织关系条件时直接ACTIVE。AuthService.issue在初次密码/SMS登录事务内、发令牌和记最近登录前条件激活所有待激活关系并版本+1；激活失败整笔回滚且不发令牌，刷新/重置本身不激活。手机号锁在外，组织锁按ID升序；导入也遵守该顺序，普通组织写操作不反向申请手机号锁。组织字段依旧按真实有效关系选择，API-002/008保留的其他兼容/项目负责人分支不变。
+
+用户已安装SheetJS，既有203项单测通过（本次未重跑）；第7个迁移20261019040000_member_imports提供整批事务幂等回执，已由用户应用专用测试库。2026-10-19 16:26:59 Agent复跑74项集成全部通过（总23.77秒），含注入激活失败/批中写失败的真实回滚场景，此前缺表阻塞解除。默认入口已交接04；用户随后已在开发库tyde_outside应用全部7个迁移，重启后41项业务HTTP复测全部符合预期，组织注册/登录及导入首次激活通过，原注册500已消除；部署迁移及兼容验收仍待完成，唯一逐接口验收见[03记录](../../backend-migration/03-organizations/todoTask.md)。

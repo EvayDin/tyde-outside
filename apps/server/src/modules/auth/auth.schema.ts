@@ -13,7 +13,7 @@ const organizationResponse = {
   nullable: true,
   additionalProperties: true,
   description:
-    '当前关联组织资料；没有组织时为 null。当前注册和资料查询仅返回新项目已保存的组织信息，完整多组织关系待迁移。',
+    '当前关联组织资料；没有组织时为 null。从可参与的多组织关系中选取：OWNER优先，其次最早入组，未记录入组时间排后；已删除组织不展示。',
   properties: {
     id: text('组织主键 ID，新项目为 UUID 字符串。', '00000000-0000-4000-8000-000000000002'),
     name: text('组织名称。', '示例标注团队'),
@@ -32,10 +32,10 @@ const organizationResponse = {
       examples: [['图像标注']],
     },
     verifyStatus: text(
-      '组织审核状态；当前实现固定返回 PENDING（待审核），审核流程尚未迁移。',
+      '组织审核状态，读取数据库：PENDING=待审核、APPROVED=通过、REJECTED=拒绝；审核写操作尚未迁移。',
       'PENDING',
     ),
-    status: text('组织状态；当前实现固定返回 ACTIVE（正常）。', 'ACTIVE'),
+    status: text('组织状态，读取数据库：ACTIVE=正常、FROZEN=冻结、DISSOLVED=解散。', 'ACTIVE'),
     position: {
       ...text(
         '当前用户在组织内的身份：OWNER=组织主管，ADMIN=管理员，MEMBER=成员；无身份记录时为 null。',
@@ -45,7 +45,7 @@ const organizationResponse = {
       enum: ['OWNER', 'ADMIN', 'MEMBER', null],
     },
     joinStatus: text(
-      '当前用户的组织加入状态；当前实现固定返回 ACTIVE（已加入），完整加入/退出流程尚未迁移。',
+      '当前所选组织关系状态：ACTIVE=在组、EXIT_APPROVING=退出审批中、PENDING_LEAVE=待离职；其他状态不展示。',
       'ACTIVE',
     ),
     createdAt: text('组织创建时间，ISO 8601 UTC 时间字符串。', '2026-10-16T08:00:00.000Z'),
@@ -98,11 +98,16 @@ export const userResponse = {
     idCardNo: text('脱敏身份证号；未填写时为 null，仅保留前 3 位和后 4 位。', null, true),
     idVerified: {
       type: 'integer',
-      description: '实名认证状态：0=未认证，1=已认证。当前实名能力尚未迁移，固定返回 0。',
+      description:
+        '实名认证状态：0=未认证，1=已认证。来自数据库，注册默认0；实名核验流程尚未迁移，本接口不能更改该状态。',
       examples: [0],
     },
-    avatarUrl: text('头像地址；当前头像资料能力尚未迁移，固定为 null。', null, true),
-    bio: text('个人简介；当前资料能力尚未迁移，固定为 null。', null, true),
+    avatarUrl: text(
+      '头像地址或objectKey，未填写/清空时为null；只存字符串，不代表拥有文件读取权限。',
+      null,
+      true,
+    ),
+    bio: text('个人简介，未填写或清空时为null。', null, true),
     role: { ...text('账号主角色，固定为 EXPERT（执行专家）。', 'EXPERT'), enum: ['EXPERT'] },
     roles: {
       type: 'array',
@@ -112,7 +117,7 @@ export const userResponse = {
     },
     selectedRole: {
       ...text(
-        '当前会话角色：查询 /users/me 时为 EXPERT；注册响应尚无会话，因此为 null。',
+        '当前会话角色：查询 /users/me 时为 EXPERT；注册及资料更新响应为 null（沿用旧更新服务返回资料的语义）。',
         null,
         true,
       ),
@@ -121,7 +126,7 @@ export const userResponse = {
     hasExpertManagementRole: {
       type: 'boolean',
       description:
-        '当前会话是否具备执行专家管理职责；当前简化为查询本人资料且组织身份为 OWNER/ADMIN，完整项目负责人规则待迁移。注册响应为 false。',
+        '当前会话是否具备执行专家管理职责；查询本人资料时按有效多组织关系判断，OWNER为true；旧SQL还包括组织项目负责人，该分支待07迁移，ADMIN本身不代表执行专家管理职责。注册及资料更新响应为 false；不作为业务权限凭据。',
       examples: [false],
     },
     status: text(
@@ -143,6 +148,32 @@ export const userResponse = {
     createdAt: text('账号创建时间，ISO 8601 UTC 时间字符串。', userExample.createdAt),
     updatedAt: text('账号最近更新时间，ISO 8601 UTC 时间字符串。', userExample.updatedAt),
   },
+};
+export const nicknameCheckResponse = {
+  type: 'object',
+  description: '昵称校验结果，建议仅保证查询时可用，不预留昵称。',
+  required: ['nickname', 'available', 'suggestion', 'message'],
+  properties: {
+    nickname: text('去除首尾空格后的原昵称。', '小明'),
+    available: {
+      type: 'boolean',
+      description: '是否可用：true=未占用，false=已占用。',
+      examples: [false],
+    },
+    suggestion: text(
+      '可用时等于原昵称；占用时推荐从1递增的数字后缀，最长64字符，必要时截短原昵称。最多尝试1000个，无可用值返回409。',
+      '小明1',
+    ),
+    message: text('中文校验提示。', '昵称已存在，可使用推荐昵称「小明1」'),
+  },
+  examples: [
+    {
+      nickname: '小明',
+      available: false,
+      suggestion: '小明1',
+      message: '昵称已存在，可使用推荐昵称「小明1」',
+    },
+  ],
 };
 export const loginResponse = {
   type: 'object',
@@ -233,20 +264,24 @@ export function resultSchema(data: DocumentedSchema) {
   };
 }
 const operationDescriptions: Record<string, string> = {
+  checkNickname:
+    '可匿名调用，无请求体，必填查询参数nickname；trim后检查唯一性，按数字后缀给出建议。不预留昵称，注册冲突仍返回409。新库按大小写敏感精确匹配，旧MySQL排序规则兼容性待验收。',
+  updateCurrentUser:
+    '仅更新当前有效会话本人，无目标用户参数；未传/null保持，头像/简介/未认证身份证空白可清空。姓名、邮箱及昵称不在旧更新字段中。已认证证件更改403、重复证件409。密码必须成对一致，更新与全部会话撤销同事务；成功清除Web/Electron Cookie并须重新登录。roles沿用固定EXPERT兼容策略，忽略已知角色选择。响应selectedRole=null、hasExpertManagementRole=false，与旧更新服务返回资料语义一致。多组织资料已按有效关系选取；在线状态/实时通知及完整项目管理能力待后续回补。',
   sendCode:
     '按 scene 发送验证码。不同场景独立验证，手机号跨场景共用 60 秒发送冷却；验证码 5 分钟有效，错误尝试最多 5 次。当前开发/测试仅 mock，不实际发短信，验证码为字符串 095270。',
   register:
     '使用 scene=register 的验证码或短信登录返回的 registrationToken 注册个人或组织账号（两者必须且只能提交一个），固定 EXPERT；成功返回用户资料，不自动登录。ORGANIZATION 必须填写 organization.name；个人账号不创建组织。可选营业执照须先通过文件上传获取 BUSINESS_LICENSE 的 objectKey/uploadToken；认领、验证码消费和注册同事务，失败回滚。',
   login:
-    '通过手机号、备用邮箱或 uid 与密码登录，固定 EXPERT。成功签发访问/刷新令牌并更新最近登录时间/IP；密码错误或无账号返回 401，禁用账号返回 403。',
+    '通过手机号、备用邮箱或 uid 与密码登录，固定 EXPERT。成功签发前在同一事务激活所有PENDING_ACTIVATION（待激活）组织关系并递增版本；激活失败整体回滚，不签发令牌。随后签发访问/刷新令牌并更新最近登录时间/IP；密码错误或无账号返回 401，禁用账号返回 403。',
   loginBySms:
-    '使用 scene=login 的验证码验证手机号，固定 EXPERT。已注册账号签发登录令牌；未注册返回 HTTP 200、status=registration_required、registrationToken 和 expiresAt，客户端展示注册表单。凭证绑定手机号、10 分钟有效且一次性，再次验证同手机号后旧凭证失效；未提交注册不创建用户或会话。验证码成功使用后失效。',
+    '使用 scene=login 的验证码验证手机号，固定 EXPERT。已注册账号先在同一事务激活待激活组织关系（版本递增），激活失败回滚验证码消费且不签发令牌；随后签发登录令牌。未注册返回 HTTP 200、status=registration_required、registrationToken 和 expiresAt，客户端展示注册表单。凭证绑定手机号、10 分钟有效且一次性，再次验证同手机号后旧凭证失效；未提交注册不创建用户或会话。验证码成功使用后失效。',
   refresh:
     '提交 refreshToken 换取新令牌对；原访问令牌及刷新令牌失效，重复使用返回 401。客户端类型必须与原登录一致；刷新不会更新最近登录时间/IP。',
   resetPassword:
     '使用 scene=reset_password 的验证码修改密码。成功后撤销该账号全部客户端的访问与刷新令牌，须重新登录；成功 data 为 null。',
   getCurrentUser:
-    '根据当前有效会话返回用户资料，selectedRole=EXPERT；没有有效会话返回 401。完整多组织、实名和项目管理能力尚待迁移，当前占位字段见响应说明。',
+    '根据当前有效会话返回用户资料，selectedRole=EXPERT；没有有效会话返回 401。组织资料按真实多组织关系选择；实名和项目管理能力尚待迁移，当前占位字段见响应说明。',
   logout:
     '撤销当前访问令牌对应的会话及其刷新令牌，Web/Electron 页面同时清除登录 Cookie；不影响其他客户端会话。没有会话也成功，data 为 null。',
 };
@@ -255,7 +290,7 @@ const errorDescriptions: Record<number, string> = {
   401: '账号密码错误、手机号未注册，或会话/刷新令牌无效、过期、已撤销。',
   403: '账号已禁用、请求来源或客户端凭据组合不被允许。',
   404: '需要操作的账号不存在。',
-  409: '手机号、邮箱、身份证或组织信息与已有数据冲突。',
+  409: '手机号、昵称、邮箱、身份证或组织信息与已有数据冲突，或昵称推荐耗尽。',
   413: '请求体超过服务端大小限制。',
   429: '操作频率或验证码错误次数超限；业务码 4292，Retry-After 响应头表示建议等待秒数。',
   500: '内部处理失败。',
@@ -272,7 +307,7 @@ export function authSchema(
     operationId,
     summary,
     tags: ['Auth'],
-    description: `${operationDescriptions[operationId] ?? summary}\n\n沿用旧字段与 code/message/data 包装。role/roles 可省略；即使传入其他已知角色仍固定 EXPERT。Web/Electron 页面使用 HttpOnly Cookie，写请求声明 X-Tyde-Client: web，Origin 须精确匹配 WEB_ORIGINS 或 DESKTOP_ORIGINS。普通 Web 使用 SameSite=Lax；桌面来源使用 SameSite=None、Secure，跨源 fetch 须使用 credentials: include。CORS 允许 Content-Type、X-Tyde-Client 并暴露 Retry-After。仅非浏览器 API 客户端使用 X-Tyde-Client: desktop 和 Bearer，禁止 Origin、Cookie、sec-fetch-*；无这些浏览器头、Cookie 和客户端声明的 API 调试请求自动按 Bearer 客户端处理。不要混用 Cookie 与 Authorization。`,
+    description: `${operationDescriptions[operationId] ?? summary}\n\n沿用旧字段与 code/message/data 包装。role/roles 可省略；即使传入其他已知角色仍固定 EXPERT。Web/Electron 页面使用 HttpOnly Cookie，写请求声明 X-Tyde-Client: web，Origin 须精确匹配 WEB_ORIGINS 或 DESKTOP_ORIGINS。普通 Web 使用 SameSite=Lax；桌面来源使用 SameSite=None、Secure，跨源 fetch 须使用 credentials: include。CORS 允许 Content-Type、X-Tyde-Client、Idempotency-Key，并暴露 Retry-After、Content-Disposition。仅非浏览器 API 客户端使用 X-Tyde-Client: desktop 和 Bearer，禁止 Origin、Cookie、sec-fetch-*；无这些浏览器头、Cookie 和客户端声明的 API 调试请求自动按 Bearer 客户端处理。不要混用 Cookie 与 Authorization。`,
     security: protectedRoute ? [{ webSession: [] }, { desktopSession: [] }] : [],
     response: {
       200: response,

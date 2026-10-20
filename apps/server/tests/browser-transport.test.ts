@@ -4,6 +4,12 @@ import { createApp } from '../src/application.js';
 import { readConfig } from '../src/config/index.js';
 import { AuthError } from '../src/modules/auth/auth.error.js';
 import { AuthService } from '../src/modules/auth/auth.service.js';
+import { OrganizationService } from '../src/modules/organizations/organization.service.js';
+import { OrganizationApprovalService } from '../src/modules/organizations/organization-approval.service.js';
+import { MemberImportService } from '../src/modules/organizations/member-import.service.js';
+import { organizationUpdateResponse } from '../src/modules/organizations/organization.schema.js';
+import { exitResponse } from '../src/modules/organizations/approval.schema.js';
+import { importExample } from '../src/modules/organizations/import.schema.js';
 
 const environment = {
   APP_ENV: 'test',
@@ -58,14 +64,18 @@ test('credential CORS preflights allow only exact sources, supported methods and
         headers: {
           origin,
           'access-control-request-method': 'POST',
-          'access-control-request-headers': 'Content-Type, X-Tyde-Client',
+          'access-control-request-headers': 'Content-Type, X-Tyde-Client, Idempotency-Key',
         },
       });
       expect(response.statusCode).toBe(204);
       expect(response.headers['access-control-allow-origin']).toBe(origin);
       expect(response.headers['access-control-allow-credentials']).toBe('true');
-      expect(response.headers['access-control-allow-headers']).toBe('Content-Type, X-Tyde-Client');
-      expect(response.headers['access-control-expose-headers']).toBe('Retry-After');
+      expect(response.headers['access-control-allow-headers']).toBe(
+        'Content-Type, X-Tyde-Client, Idempotency-Key',
+      );
+      expect(response.headers['access-control-expose-headers']).toBe(
+        'Retry-After, Content-Disposition',
+      );
       expect(response.headers.vary).toContain('Origin');
     }
     for (const headers of [
@@ -101,6 +111,7 @@ test('renderer login, refresh, recovery and logout use cookies with source-speci
   vi.spyOn(AuthService.prototype, 'refresh').mockResolvedValue(tokens);
   const me = vi.spyOn(AuthService.prototype, 'me').mockResolvedValue({ id: 'user' } as never);
   const logout = vi.spyOn(AuthService.prototype, 'logout').mockResolvedValue(undefined);
+  vi.spyOn(AuthService.prototype, 'updateCurrentUser').mockResolvedValue({ id: 'user' } as never);
   const app = await createApp(config, new PrismaClient());
   try {
     for (const origin of [...config.webOrigins, ...config.desktopOrigins]) {
@@ -143,6 +154,18 @@ test('renderer login, refresh, recovery and logout use cookies with source-speci
         sameSite: desktop ? 'None' : 'Lax',
       });
       expect(Boolean(loggedOut.cookies[0]!.secure)).toBe(desktop);
+      const changed = await app.inject({
+        method: 'POST',
+        url: '/api/v1/users/me/update',
+        headers: { ...headers, cookie: `tyde_session=${tokens.accessToken}` },
+        payload: { newPassword: 'Changed123!', confirmNewPassword: 'Changed123!' },
+      });
+      expect(changed.statusCode).toBe(200);
+      expect(changed.cookies[0]).toMatchObject({
+        value: '',
+        sameSite: desktop ? 'None' : 'Lax',
+      });
+      expect(Boolean(changed.cookies[0]!.secure)).toBe(desktop);
     }
   } finally {
     await app.close();
@@ -174,7 +197,7 @@ test('browser cookie file authentication and Retry-After work while Bearer restr
     });
     expect(limited.statusCode).toBe(429);
     expect(limited.headers['retry-after']).toBe('60');
-    expect(limited.headers['access-control-expose-headers']).toBe('Retry-After');
+    expect(limited.headers['access-control-expose-headers']).toContain('Retry-After');
     for (const headers of [
       { origin: 'https://untrusted.example', cookie: `tyde_session=${tokens.accessToken}` },
       { origin: 'tyde-app://app', authorization: `Bearer ${tokens.accessToken}` },
@@ -195,6 +218,80 @@ test('browser cookie file authentication and Retry-After work while Bearer restr
     });
     expect(apiClient.statusCode).toBe(200);
     expect(me).toHaveBeenLastCalledWith(tokens.accessToken, 'desktop');
+  } finally {
+    await app.close();
+  }
+});
+
+test('desktop Cookie sources reach organization, approval and multipart import services', async () => {
+  const identity = {
+    userId: '00000000-0000-4000-8000-000000000001',
+    uid: 'test-user',
+    sessionId: 'session',
+    role: 'EXPERT' as const,
+    clientType: 'web' as const,
+  };
+  const authenticate = vi.spyOn(AuthService.prototype, 'authenticate').mockResolvedValue(identity);
+  const update = vi
+    .spyOn(OrganizationService.prototype, 'update')
+    .mockResolvedValue(organizationUpdateResponse.examples[0]);
+  const exit = vi
+    .spyOn(OrganizationApprovalService.prototype, 'exit')
+    .mockResolvedValue((exitResponse.examples as unknown[])[0] as never);
+  const generate = vi
+    .spyOn(MemberImportService.prototype, 'generate')
+    .mockResolvedValue(importExample as never);
+  const app = await createApp(config, new PrismaClient());
+  const orgId = '00000000-0000-4000-8000-000000000002';
+  try {
+    for (const origin of config.desktopOrigins) {
+      const headers = {
+        origin,
+        'x-tyde-client': 'web',
+        cookie: `tyde_session=${tokens.accessToken}`,
+        'idempotency-key': 'desktop-example',
+      };
+      const updated = await app.inject({
+        method: 'POST',
+        url: '/api/v1/organizations/update',
+        headers,
+        payload: { orgId, description: '简介' },
+      });
+      expect(updated.statusCode).toBe(200);
+      expect(update).toHaveBeenLastCalledWith({ orgId, description: '简介' }, identity);
+      const exitBody = { orgId, reason: '个人原因', plannedLeaveDate: '2099-01-01' };
+      const exited = await app.inject({
+        method: 'POST',
+        url: '/api/v1/organizations/members/exit-requests',
+        headers,
+        payload: exitBody,
+      });
+      expect(exited.statusCode).toBe(200);
+      expect(exit).toHaveBeenLastCalledWith('desktop-example', exitBody, identity);
+      const memberText = '张三,13812345678,全职';
+      const imported = await app.inject({
+        method: 'POST',
+        url: '/api/v1/organizations/member-imports/generate',
+        headers: { ...headers, 'content-type': 'multipart/form-data; boundary=import-test' },
+        payload: `--import-test\r\nContent-Disposition: form-data; name="orgId"\r\n\r\n${orgId}\r\n--import-test\r\nContent-Disposition: form-data; name="memberText"\r\n\r\n${memberText}\r\n--import-test--\r\n`,
+      });
+      expect(imported.statusCode).toBe(200);
+      expect(generate).toHaveBeenLastCalledWith(
+        'desktop-example',
+        orgId,
+        identity,
+        undefined,
+        memberText,
+      );
+      expect(authenticate).toHaveBeenLastCalledWith(tokens.accessToken, 'web');
+      const template = await app.inject({
+        url: '/api/v1/organizations/member-imports/template',
+        headers: { origin, cookie: headers.cookie },
+      });
+      expect(template.statusCode).toBe(200);
+      expect(template.headers['content-disposition']).toContain('member-import-template.xlsx');
+      expect(template.headers['access-control-expose-headers']).toContain('Content-Disposition');
+    }
   } finally {
     await app.close();
   }

@@ -20,7 +20,8 @@
     "db:cleanup": "tsx --env-file=.env src/cleanup.ts",
     "test": "pnpm --filter @tyde/shared build && vitest run --exclude '**/*.integration.test.ts'",
     "test:integration": "pnpm --filter @tyde/shared build && prisma generate && vitest run tests/auth.integration.test.ts",
-    "storage:verify": "tsx --env-file=.env src/verify-oss.ts"
+    "storage:verify": "tsx --env-file=.env src/verify-oss.ts",
+    "organizations:departures": "tsx --env-file=.env src/organizations-departures.ts"
   },
   "dependencies": {
     "@fastify/cookie": "11.0.2",
@@ -33,7 +34,8 @@
     "ali-oss": "6.23.0",
     "fastify": "5.6.2",
     "libphonenumber-js": "1.12.24",
-    "prisma": "6.19.3"
+    "prisma": "6.19.3",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "@types/ali-oss": "6.23.3",

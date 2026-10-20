@@ -666,6 +666,7 @@ for (const [mode, origin] of [
       await expect(page.getByRole('status', { name: '操作提示' })).toHaveText(
         '注册成功，请使用密码登录。',
       );
+      expect(backend.requests.filter(({ path }) => path.endsWith('/auth/login'))).toHaveLength(0);
       await page.getByLabel(/^密码\s*\*?\s*$/).fill(password);
       await page.getByRole('button', { name: '登录', exact: true }).click();
       await expectWelcome(page);
@@ -725,6 +726,9 @@ for (const [mode, origin] of [
         ).status;
       });
       expect(cleared).toBe(401);
+      expect(
+        backend.requests.filter(({ path }) => path.endsWith('/sms/send')).map(({ body }) => body),
+      ).toEqual([{ phone, scene: 'login' }]);
       expectNoLegacyRequests(backend.requests);
       expect(backend.preflights).toContain('/api/v1/auth/sms/send');
       expect(backend.preflights).not.toContain('/api/v1/users/me');
@@ -765,9 +769,62 @@ test('Electron DEV 会话503自动恢复为401，进入登录页后停止轮询'
     expectSessionReads(backend.requests);
     expect(backend.preflights).toEqual([]);
   } finally {
-    await app?.close();
-    await backend.close();
-    await rm(profile, { recursive: true, force: true });
+    try {
+      await app?.close();
+    } finally {
+      await backend.close();
+      await rm(profile, { recursive: true, force: true });
+    }
+  }
+});
+
+test('Electron DEV 已登录会话503自动恢复为200，成功后停止轮询且不重放写请求', async () => {
+  const backend = await desktopBackend();
+  await mkdir('.local/frontend', { recursive: true });
+  const profile = await mkdtemp(resolve('.local/frontend/authenticated-recovery-'));
+  const env = {
+    ...process.env,
+    TYDE_WEB_URL: 'http://127.0.0.1:5177/',
+    TYDE_API_BASE_URL: backend.url,
+    TYDE_TEST_USER_DATA: profile,
+  };
+  delete env.ELECTRON_RUN_AS_NODE;
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({
+      executablePath: require('electron') as string,
+      args: [resolve('apps/electron/out/main/index.js')],
+      env,
+    });
+    const page = await app.firstWindow();
+    await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
+    await page.getByRole('tab', { name: '密码登录', exact: true }).click();
+    await page.getByLabel(/^手机号/).fill(phone);
+    await page.getByLabel(/^密码\s*\*?\s*$/).fill(password);
+    await page.getByRole('button', { name: '登录', exact: true }).click();
+    await expectWelcome(page);
+    backend.state.currentStatus = 503;
+    const beforeRecovery = backend.requests.length;
+    await page.reload();
+    await expect(page.getByText('会话服务暂不可用', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '重试', exact: true })).toBeEnabled();
+    expect(backend.requests.slice(beforeRecovery)).toHaveLength(1);
+    backend.state.currentStatus = 200;
+    await expectWelcome(page);
+    expect(backend.requests.slice(beforeRecovery)).toHaveLength(2);
+    await page.waitForTimeout(3500);
+    const recoveryRequests = backend.requests.slice(beforeRecovery);
+    expect(recoveryRequests).toHaveLength(2);
+    expectSessionReads(recoveryRequests);
+    expect(recoveryRequests.every(({ client }) => client === undefined)).toBe(true);
+    expect(backend.preflights).not.toContain('/api/v1/users/me');
+  } finally {
+    try {
+      await app?.close();
+    } finally {
+      await backend.close();
+      await rm(profile, { recursive: true, force: true });
+    }
   }
 });
 

@@ -43,7 +43,20 @@ test('OpenAPI preserves legacy auth names, request fields, Result and token resp
       '/api/v1/files/view',
       '/api/v1/health/live',
       '/api/v1/health/ready',
+      '/api/v1/organizations',
+      '/api/v1/organizations/approvals/pending',
+      '/api/v1/organizations/approvals/process',
+      '/api/v1/organizations/approvals/records',
+      '/api/v1/organizations/member-imports/generate',
+      '/api/v1/organizations/member-imports/template',
+      '/api/v1/organizations/members',
+      '/api/v1/organizations/members/exit-requests',
+      '/api/v1/organizations/members/position',
+      '/api/v1/organizations/members/update',
+      '/api/v1/organizations/update',
       '/api/v1/users/me',
+      '/api/v1/users/me/update',
+      '/api/v1/users/nickname/check',
     ]);
     const registration =
       spec.paths['/api/v1/auth/register'].post.requestBody.content['application/json'].schema;

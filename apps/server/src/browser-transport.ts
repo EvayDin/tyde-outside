@@ -6,7 +6,7 @@ import { AuthError } from './modules/auth/auth.error.js';
 export function registerBrowserTransport(app: FastifyInstance, config: Config) {
   const origins = [...config.webOrigins, ...config.desktopOrigins];
   const methods = ['GET', 'HEAD', 'POST', 'DELETE'];
-  const headers = ['content-type', 'x-tyde-client'];
+  const headers = ['content-type', 'x-tyde-client', 'idempotency-key'];
   app.addHook('onRequest', async (req, reply) => {
     if (!req.url.startsWith(`${API_PREFIX}/`)) return;
     reply.header('Vary', 'Origin');
@@ -16,7 +16,7 @@ export function registerBrowserTransport(app: FastifyInstance, config: Config) {
         throw new AuthError(403, 'ORIGIN_NOT_ALLOWED', '请求来源不可信');
       reply.header('Access-Control-Allow-Origin', origin);
       reply.header('Access-Control-Allow-Credentials', 'true');
-      reply.header('Access-Control-Expose-Headers', 'Retry-After');
+      reply.header('Access-Control-Expose-Headers', 'Retry-After, Content-Disposition');
     }
     if (req.method !== 'OPTIONS') return;
     const method = req.headers['access-control-request-method'];
@@ -32,7 +32,7 @@ export function registerBrowserTransport(app: FastifyInstance, config: Config) {
       throw new AuthError(403, 'ORIGIN_NOT_ALLOWED', '跨源请求的方法或请求头不被允许');
     reply.header('Vary', 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers');
     reply.header('Access-Control-Allow-Methods', methods.join(', '));
-    reply.header('Access-Control-Allow-Headers', 'Content-Type, X-Tyde-Client');
+    reply.header('Access-Control-Allow-Headers', 'Content-Type, X-Tyde-Client, Idempotency-Key');
     return reply.code(204).send();
   });
   app.options(`${API_PREFIX}/*`, { schema: { hide: true } }, async (_req, reply) =>

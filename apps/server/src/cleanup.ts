@@ -12,6 +12,7 @@ try {
     db.session.deleteMany({
       where: { OR: [{ expiresAt: { lt: cutoff } }, { revokedAt: { lt: cutoff } }] },
     }),
+    db.memberImportReceipt.deleteMany({ where: { expiresAt: { lt: new Date() } } }),
     db.authRateLimit.deleteMany({ where: { expiresAt: { lt: cutoff } } }),
   ]);
   console.info(
