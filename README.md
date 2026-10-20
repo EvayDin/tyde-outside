@@ -2,7 +2,7 @@
 
 项目原名为 `tyde-outside`。为兼容已有环境，数据库名与角色名、已部署的 Vercel 域名及桌面应用标识 `app.tydeoutside.desktop` 保持原值。
 
-React + Electron + Fastify + PostgreSQL 的 pnpm Monorepo。Web 与桌面共用 `apps/web`，使用 Tailwind CSS、shadcn/ui、TanStack Router 和 React Query。认证入口提供“验证码登录 / 密码登录”双页签，默认验证码登录；开发和生产均访问当前后端，支持短信或密码登录、个人注册、会话恢复及退出。前端不生成或在本地校验验证码；当前短信仅 mock，发码成功后保留服务端提示，并展示与后端共用的固定测试码。后端还提供组织注册、刷新令牌、密码重置及文件上传台账，真实短信尚未接入。后端字段和迁移说明见 [认证后端上下文](docs/AUTH_BACKEND.md)。
+React + Electron + Fastify + PostgreSQL 的 pnpm Monorepo。Web 与桌面共用 `apps/web`，使用 Tailwind CSS、shadcn/ui、TanStack Router 和 React Query。认证入口提供“验证码登录 / 密码登录”双页签，默认验证码登录；认证操作均访问当前后端，支持短信或密码登录、个人注册、会话恢复及退出。前端不生成或在本地校验验证码；当前短信仅 mock，发码成功后保留服务端提示，并展示与后端共用的固定测试码。后端还提供组织注册、刷新令牌、密码重置、用户资料更新、组织成员与审批、成员导入及文件上传台账，真实短信尚未接入。后端字段和迁移说明见 [认证后端上下文](docs/AUTH_BACKEND.md)。
 
 ## 环境
 
@@ -26,7 +26,7 @@ pnpm db:deploy
 
 `setup:local` 创建 `tyde_outside_dev` 角色、开发库和专用自动化测试库，生成随机凭据到 `apps/server/.env` 与 `.env.test`（权限 0600）。它不会覆盖已有 `.env` 或重置已有角色密码。已有数据库时可自行复制 `.env.example` 并配置；特殊 PostgreSQL 路径通过 `PG_BIN` / `PSQL_BIN` 指定。
 
-开发和生产前端均访问真实后端，不生成本地验证码或模拟账号。连接本地后端前需完成上述数据库准备及新增迁移，再启动后端与 Web 或 Electron。短信发送当前仍由后端 mock，固定测试验证码 `095270` 统一定义在 `@tyde/shared` 的 `MOCK_SMS_CODE`；后端通过 `MOCK_CODE` 使用，前端不另行定义，只在发码成功后展示同一值。验证码有效期和校验由后端决定；接入真实短信时须同步移除固定测试码提示。
+认证操作访问真实后端，前端不生成或本地校验验证码。Vite 开发模式仅对当前用户查询提供临时页面预览：运行 `pnpm dev:web` 或 `pnpm dev:electron` 后可直接查看 `/#/` 工作台，无需后端。设置 `VITE_MOCK_CURRENT_USER=false` 并重启开发服务即可恢复真实会话查询；生产构建始终真实。登录、注册页不主动查询当前用户，发码、登录、注册和退出仍请求后端，失败不会模拟成功。连接本地后端前需完成上述数据库准备及现有迁移，再启动后端与 Web 或 Electron。短信发送当前仍由后端 mock，固定测试验证码 `095270` 统一定义在 `@tyde/shared` 的 `MOCK_SMS_CODE`；后端通过 `MOCK_CODE` 使用，前端不另行定义，只在发码成功后展示同一值。验证码有效期和校验由后端决定；接入真实短信时须同步移除固定测试码提示。
 
 本地一键启动数据库、后端和 Electron：
 
@@ -57,19 +57,35 @@ Web 地址：<http://127.0.0.1:3001>。认证入口默认打开“验证码登�
 
 会话查询遇到网络错误或 HTTP 5xx 时，每 3 秒自动重查；后端热重载恢复后自动继续，成功或返回 401 后停止。其他 4xx 与响应格式异常保留手动重试。后台允许自动重查，但实际计时可能被浏览器节流；仅重查当前会话，不自动重放发码、登录、注册等写请求。
 
-Electron 的 `pnpm dev:electron:test` 加载 `apps/electron/config/test.env` 指定测试后端；shell 中已有的 `TYDE_API_BASE_URL` 优先于文件配置。开发和生产页面均通过受限 IPC 请求该后端，令牌对只由 main 加密保存，不返回页面。
+Electron 的 `pnpm dev:electron:test` 加载 `apps/electron/config/test.env` 指定测试后端；shell 中已有的 `TYDE_API_BASE_URL` 优先于文件配置。除开发当前用户预览外，页面通过平台适配直接 fetch 可信后端。IPC 仅返回经校验的公开 API 源；桌面使用按后端源隔离的持久 Chromium Cookie 会话，刷新令牌只保留在适配器内存。
 
-开发客户端直接按 `F12`，在当前窗口的 Network 面板筛选 `tyde-debug`，即可查看认证请求的路径、提交参数和响应。preload 先通过受限 IPC 校验来源和参数，再以一次性票据请求本地 `tyde-debug://desktop/api/v1/...` 代理；代理等待 main 的真实后端调用，返回不含登录令牌的 bridge 结果。这里显示的是开发代理请求，主进程仍负责远程 HTTP 和会话令牌；安装包不启用该通道。
+Web 和 Electron 的当前窗口按 `F12` 可查看真实业务 HTTP；开发与本地打包资源均适用。IPC 不承载业务请求，也不提供任意 URL 请求能力。
 
-普通开发命令不启动主进程 inspector。需要调试上游 Node HTTP 时，运行 `pnpm dev:electron:inspect`，测试后端使用 `pnpm dev:electron:test:inspect`；这两条命令额外启用 `--inspect=9229` 和 `--experimental-network-inspection`，可在 Chrome 的 `chrome://inspect` 连接 `localhost:9229`。F12 Network 本地代理不依赖 inspector。
+普通开发命令不启动主进程 inspector。需要调试主进程 JavaScript 时，运行 `pnpm dev:electron:inspect`，测试后端使用 `pnpm dev:electron:test:inspect`；这两条命令额外启用 `--inspect=9229` 和 `--experimental-network-inspection`，可在 Chrome 的 `chrome://inspect` 连接 `localhost:9229`。窗口 F12 Network 不依赖主进程 inspector。
 
-Electron 开发命令监听 main / preload 的文件变更，修改 main 后会自动重建并重启桌面窗口。开发版主窗口按 `F12` 切换开发者工具；Mac 顶部按键默认控制音量时使用 `Fn + F12`。安装包禁用开发者工具。macOS 关闭窗口后应用仍可能在后台运行，再次启动会重新打开或恢复现有窗口；完全退出可使用 Cmd+Q。
+Electron 开发命令监听 main / preload 的文件变更，修改 main 后会自动重建并重启桌面窗口。开发版和安装包主窗口按 `F12` 切换开发者工具；Mac 顶部按键默认控制音量时使用 `Fn + F12`。macOS 关闭窗口后应用仍可能在后台运行，再次启动会重新打开或恢复现有窗口；完全退出可使用 Cmd+Q。
 
 Web 通过 `API_PROXY_TARGET` 切换后端，shell 优先于 `apps/web/.env.local`；默认代理到 `http://127.0.0.1:3000`。例如运行 `API_PROXY_TARGET=https://test.example.com pnpm dev:web`，其中域名须替换为已配置的测试后端。HTTPS 目标会自动启用自签名 HTTPS，Web 地址改为 `https://localhost:3001`，后端 `WEB_ORIGINS` 须包含该来源。生产预览同样可设置 `API_PROXY_TARGET`，浏览器 Origin 由后端校验；请求失败显示实际错误。
 
 Electron main 的后端地址依次取 `TYDE_API_BASE_URL`、shell 或 `apps/web/.env.local` 中的 `API_PROXY_TARGET`、本地后端。桌面页面独立使用 `http://127.0.0.1:5174`，可与 Web 同时开发；切换后端配置后，发码、登录、注册及会话请求均访问所选后端。
 
 mock 不会发送短信或验证真实号码归属，请用约定的测试号码。默认生产模式禁止 mock，真实短信后续在 `apps/server/src/modules/auth/sms.ts` 接入。
+
+## 工作台与接口边界
+
+工作台使用公共顶栏展示账户信息，账户菜单提供退出入口。当前用户通过现有 `GET /api/v1/users/me` 读取，Vite 开发模式可使用上文的固定用户预览。资料修改、头像维护及登录态改密尚未接入。
+
+当前前端尚未接入个人资料写操作；本次同步引入 main 已有的后端能力，接口详情见 [API 文档](docs/API.md)：
+
+| 能力               | main 现有接口与限制                                                                | 前端状态 |
+| ------------------ | ---------------------------------------------------------------------------------- | -------- |
+| 用户资料及昵称查重 | GET `/users/nickname/check`、POST `/users/me/update`，本人资料更新及昵称唯一性校验 | 尚未接入 |
+| 头像更新           | 通用 `/files/upload` 上传 AVATAR，资料更新提交 avatarUrl                           | 尚未接入 |
+| 登录态修改密码     | POST `/users/me/update` 支持密码更新并撤销全部会话；保留当前会话的语义尚未提供     | 尚未接入 |
+
+main 已包含个人资料、组织成员、审批与成员导入的 schema 和四项新增迁移文件。本次同步只更新代码，不执行迁移；启动服务前需确认目标库已应用全部迁移。
+
+Electron 页面直接请求可信后端，IPC 仅提供公开运行配置。按用户授权，本分支的后端适配仅补桌面来源校验、精确凭据 CORS / OPTIONS 和跨源 Cookie 支持；数据库与业务能力沿用 main。`DESKTOP_ORIGINS` 默认仅允许 `tyde-app://app`，本地开发还需显式加入 `http://127.0.0.1:5174`；桌面使用 `SameSite=None; Secure` Cookie，普通 Web 保留原策略。远程 API 必须 HTTPS，切换此链路需更新后端并重新登录；旧主进程 Bearer 会话不迁移。
 
 ## 前后端合并部署
 
@@ -156,7 +172,7 @@ $env:TYDE_API_BASE_URL = 'https://test.example.com'
 pnpm package:win
 ```
 
-`test.example.com` 是占位符，必须替换。前端构建不会嵌入后端密钥；Web 使用同源 `/api` 代理，桌面由 main 固定请求可信后端。安装包中的 React 静态资源来自同一个 `apps/web/dist`。
+`test.example.com` 是占位符，必须替换。前端构建不会嵌入后端密钥；Web 使用同源 `/api` 代理，桌面页面从受限 IPC 获取可信 API 源后直接请求后端。安装包中的 React 静态资源来自同一个 `apps/web/dist`。
 
 后端包包含 Web 资源，不包含开发机 `node_modules`，须在 Linux 目标机安装锁定依赖并生成目标平台 Prisma client。[测试部署说明](docs/DEPLOY_TEST.md)包含迁移、Nginx、systemd 与健康检查；[试用安装说明](docs/INSTALL_TRIAL.md)包含 Mac / Windows 授信步骤。
 
@@ -165,7 +181,7 @@ pnpm package:win
 | 路径              | 职责                                            |
 | ----------------- | ----------------------------------------------- |
 | apps/web          | 唯一 React 前端、Tailwind / shadcn 页面         |
-| apps/electron     | 安全窗口、受限 IPC、加密保存会话、安装包        |
+| apps/electron     | 安全窗口、公开配置 IPC、持久 Cookie、安装包     |
 | apps/server       | Fastify 认证、上传台账、数据库、限流与 Web 托管 |
 | packages/shared   | 类型、schema、常量和 IPC 契约                   |
 | packages/platform | Web fetch / Electron preload 的统一接口         |
@@ -178,13 +194,13 @@ pnpm package:win
 - 页面、组件、Hash 路由和业务逻辑只维护在 `apps/web`；Electron 开发时加载同一 Vite 页面，打包时加载同一份 `apps/web/dist`，不另建 renderer 业务工程。
 - 认证页采用满页浅青背景与右侧白色悬浮卡片。桌面左侧沿用 main 的英文引导、中文主标题与辅助说明层级，使用当前的潮汐主题文案、协作说明和欢迎语。手机端使用相同背景与白卡，隐藏左侧文案。
 - 资料页使用 20px 标题并收紧顶部间距，分为“基础信息”（密码、确认密码）与“个人信息”（姓名、昵称、身份证号、邮箱）两段，保留全部字段与校验；375px 宽手机保持两列，仅宽度不超过 360px 时改为单列，手机卡片左右内边距为 16px。初始、校验错误和提交提示状态以在 1280×720 桌面及典型 375px 宽手机视口内单页完整展示为目标，手机和矮窗仍保留自然滚动，不隐藏溢出内容。
-- 布局优先复用现有组件、主题变量与基础样式。页面控制器统一通过 `services/api.ts` 调用平台适配，开发和生产均访问真实后端；短信 mock 只在后端执行，页面不创建本地验证码挑战或模拟验证成功。
-- 认证页自动查询当前用户以恢复会话，不自动发起健康检查。开发与生产均请求 `/api/v1/auth/sms/send` 等当前接口；Web 使用同源 Cookie，Electron 通过受限 bridge 请求后端并在 main 加密保存令牌对。发码成功显示后端文案，限流倒计时取 `Retry-After`，不会在请求失败时模拟验证码、账号或会话。
+- 布局优先复用现有组件、主题变量与基础样式。页面控制器统一通过 `services/api.ts` 调用平台适配，除开发当前用户预览外均访问现有真实后端；短信 mock 只在后端执行，页面不创建本地验证码挑战或模拟验证成功。
+- 登录、注册页不自动查询当前用户；工作台启动时查询，关闭开发预览或生产构建时恢复真实会话。不自动发起健康检查。开发与生产均请求 `/api/v1/auth/sms/send` 等当前接口；Web 使用同源 Cookie，Electron 页面使用跨源 Cookie 请求可信后端。发码成功显示后端文案，限流倒计时取 `Retry-After`，不会在请求失败时模拟验证码、账号或会话。
 - `/#/auth` 提供“验证码登录 / 密码登录”双页签，默认验证码登录，没有独立注册页签或角色选项。密码提交调用真实登录接口；首次进入密码页即提供“验证码注册”，无需先提交。点击注册入口保留手机号、清空密码与验证码并聚焦验证码输入框，不自动发送验证码。
 - 短信校验和新老账号判断均由后端完成；只有返回一次性注册凭证的新手机号才进入 `/#/register`。手机号与凭证仅留内存，刷新、直访或离开资料页后须重新验证。资料页保留个人字段，固定按个人账号提交，不提供组织注册或材料上传；成功后回到密码登录并保留手机号，不自动登录。已有会话进入欢迎页，退出成功后清除页面缓存。
 - 基础组件在 `apps/web/src/components/ui/`，主题变量在 `src/styles/global.css`；通过 `components.json` 配置 shadcn，源码使用 `@/` 别名。表单由 React Hook Form 管理，服务端数据由 React Query 管理。
-- 页面通过 `services/api.ts` 和 `@tyde/platform` 调用当前 Fastify API。浏览器继续使用 HttpOnly Cookie，桌面由 main 请求并加密保存令牌；前端不改用原 tyde-web 的 Java 服务。
-- 桌面专有功能通过 `platform.capabilities` 决定是否展示，Web 隐藏不支持的入口；路由与执行入口也需检查能力。当前只声明已实现的 `secureSessionStorage`，以后随实际 IPC 能力增加，不提前声明未实现的文件系统、托盘等能力。
+- 页面通过 `services/api.ts` 和 `@tyde/platform` 调用当前 Fastify API。浏览器继续使用 HttpOnly Cookie，桌面由页面 fetch，使用独立 Chromium Cookie 会话；前端不改用原 tyde-web 的 Java 服务。
+- 桌面专有功能通过 `platform.capabilities` 决定是否展示，Web 隐藏不支持的入口；路由与执行入口也需检查能力。当前没有需要页面调用的系统能力，`capabilities` 为空；不提前声明未实现的文件系统、托盘等能力。
 - 新业务接口由后端同学实现；联调前先约定 `packages/shared` 中的 DTO/schema、错误和授权方式，前端维护 Web/Electron 适配。当前认证适配已使用 Swagger 与 `packages/shared/src/auth.ts` 中的路径和响应，不再调用旧认证契约。
 
 无需数据库的前端回归：
@@ -193,7 +209,7 @@ pnpm package:win
 pnpm test:frontend
 ```
 
-该命令构建共用前端和 Electron，在 5176 启动生产预览、5177 启动开发页面。两种构建模式均使用浏览器路由替身和隔离 HTTP 服务，验证发送成功后展示共享测试码、提示去重、限流、失败提示清理及双端真实请求契约。同时覆盖个人资料页、本地校验、导航、键盘操作、窄屏布局和 Electron 安全隔离，断言没有额外认证请求、模拟账号或会话创建。结果与截图在 `artifacts/`。`pnpm test:e2e` 与打包 API 桥接检查已同步到当前认证契约；真实后端测试需要专用测试库，打包检查需要安装包及对应后端。隔离替身回归通过不代表远程环境联调或安装包验收已完成。
+该命令构建共用前端和 Electron，在 5176 启动生产预览、5177 启动开发页面。两种构建模式均使用浏览器路由替身和隔离 HTTP 服务，验证发送成功后展示共享测试码、提示去重、限流、失败提示清理及双端真实请求契约。同时覆盖注册资料页、本地校验、工作台账户菜单、键盘操作、窄屏布局和 Electron 安全隔离。回归关闭开发当前用户预览，断言不调用缺失接口、不在页面创建会话。结果与截图在 `artifacts/`。`pnpm test:e2e` 与打包 API 桥接检查已同步到当前认证契约；真实后端测试需要专用测试库，打包检查需要安装包及对应后端。隔离替身回归通过不代表远程环境联调或安装包验收已完成。
 
 ## 常见问题
 

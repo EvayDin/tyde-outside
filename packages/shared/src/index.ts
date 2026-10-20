@@ -50,12 +50,7 @@ export interface AuthApi {
 }
 export type BridgeResult<T> =
   { ok: true; data: T } | { ok: false; status: number; error: ApiFailure; retryAfter?: number };
+/** 桌面仅向页面提供公开运行配置，不暴露认证、任意网络或系统接口。 */
 export interface DesktopBridge {
-  health(): Promise<BridgeResult<{ status: string }>>;
-  sendCode(input: SmsSendInput): Promise<BridgeResult<string>>;
-  login(input: LoginInput): Promise<BridgeResult<void>>;
-  verifyCode(input: SmsLoginInput): Promise<BridgeResult<VerifyResult>>;
-  completeRegistration(input: SmsRegisterInput): Promise<BridgeResult<AuthUser>>;
-  getCurrentUser(): Promise<BridgeResult<AuthUser>>;
-  logout(): Promise<BridgeResult<void>>;
+  getRuntimeConfig(): Promise<BridgeResult<{ apiBaseUrl: string }>>;
 }

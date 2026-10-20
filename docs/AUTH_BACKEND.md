@@ -81,7 +81,7 @@ UserDTO 使用 `id`、`uid`、`accountType`、`phone`、`nickname`、`realName`�
 
 令牌仍采用新项目的随机不透明值，数据库只存摘要，默认有效 30 天；并非旧项目 JWT。刷新后原访问/刷新令牌对失效；重置密码撤销全部会话；普通退出撤销当前会话。当前实现允许 Web/桌面及同客户端多个会话并存；单账号踢号、退出范围、刷新重放强制下线等兼容策略仍待用户确认，不能视为已验收。角色切换按固定 EXPERT 规则暂缓。
 
-Web 使用 HttpOnly Cookie；有 Origin 的写请求必须来自 `WEB_ORIGINS`。桌面使用 `X-Tyde-Client: desktop` 与 Bearer，禁止 Origin、Cookie 和浏览器 fetch 头。无浏览器头、Cookie 和客户端声明的 API 调试请求按 Bearer 客户端处理，因此旧式 API 客户端无需额外自定义头。
+Web 和 Electron 页面均使用 HttpOnly 会话 Cookie；浏览器来源须精确位于 `WEB_ORIGINS` 或 `DESKTOP_ORIGINS`。普通 Web 保持 SameSite=Lax，可信桌面来源使用 SameSite=None+Secure；服务端支持凭据 CORS、OPTIONS 预检，允许审批/导入所需的 `Idempotency-Key`，并暴露 Retry-After 与 Content-Disposition。页面写请求声明 `X-Tyde-Client: web`，GET/HEAD 省略自定义头；刷新令牌仅保留在适配器内存，IPC 只返回公开 API 源。非浏览器 API 继续支持 `X-Tyde-Client: desktop` 与 Bearer，并禁止 Origin、Cookie 和 sec-fetch-*；无浏览器头、Cookie 和客户端声明的调试请求自动按 Bearer 处理。
 
 ## 联调与数据库
 
@@ -193,7 +193,7 @@ ALTER ROLE tyde_outside_dev LOGIN CREATEDB;
 
 ## 02 用户资料定向回补（2026-10-19）
 
-用户确认文件上传已联调成功，恢复02。新增匿名昵称校验及本人资料更新，API-002昵称唯一性由新增唯一索引兜底，冲突409、注册事务回滚；API-008头像/简介/实名状态读取持久化字段。姓名、邮箱仍沿用注册校验，不增加资料更新字段。固定EXPERT规则覆盖资料roles输入；改密更新和全部会话撤销同事务，锁内重验会话，Web清Cookie。实名核验、信用、多组织、主管及在线状态仍有回补，原接口保持部分迁移。
+用户确认文件上传已联调成功，恢复02。新增匿名昵称校验及本人资料更新，API-002昵称唯一性由新增唯一索引兜底，冲突409、注册事务回滚；API-008头像/简介/实名状态读取持久化字段。姓名、邮箱仍沿用注册校验，不增加资料更新字段。固定EXPERT规则覆盖资料roles输入；改密更新和全部会话撤销同事务，锁内重验会话，Web/Electron清Cookie。实名核验、信用、多组织、主管及在线状态仍有回补，原接口保持部分迁移。
 
 新增迁移 `20261019010000_user_profile`，开发/部署库未应用；用户本机专用测试库已成功应用，12:17:58复测41项集成全部通过（总9.31秒），此前P1001/缺列阻塞已解除。随后运行中的本地后端51项HTTP检查全部通过，覆盖昵称冲突回滚、资料保存与隔离及改密后Web/Bearer/刷新令牌失效。本轮未执行迁移或查询迁移历史；开发库迁移记录核对、部署及兼容验收保留回补，结果及续验唯一记录见[02任务](../../backend-migration/02-user-profile/todoTask.md)。补迁移和接口细节见[API文档](API.md#用户资料与昵称02)。本轮不以历史认证/文件集成通过替代新字段验收。
 

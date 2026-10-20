@@ -249,7 +249,7 @@ export const templateSchema = {
   ...organizationSchema(
     'downloadMemberImportTemplate',
     '下载成员导入模板',
-    '需有效登录，不要求管理身份或orgId；直接返回XLSX流，首行填写说明、次行为固定五列表头。Accept-Language以en开头时英文，其余中文；表头前三列必填。',
+    '需有效登录，不要求管理身份或orgId；直接返回XLSX流，首行填写说明、次行为固定五列表头。Accept-Language以en开头时英文，其余中文；表头前三列必填。跨源页面可读取已由CORS暴露的Content-Disposition下载文件名。',
     {},
   ),
   response: {

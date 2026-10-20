@@ -25,18 +25,19 @@ pnpm package:server
 8. 使用 `deploy/nginx-server.conf.example` 配置 HTTPS，把全部路径代理至 `127.0.0.1:3000`。无需独立静态站点目录；保留 `/api/v1` 前缀。页面域名须加入 `WEB_ORIGINS`。
 9. 验证 HTTPS 根路径登录页、JS/CSS、live / ready、Swagger，以及登录、刷新恢复和退出。缺少页面时检查是否使用完整后端包，不要只复制 `dist`。
 
-| 配置             | 测试环境设置                                                     |
-| ---------------- | ---------------------------------------------------------------- |
-| APP_ENV          | `test`（允许显式 mock；production 会拒绝启动）                   |
-| NODE_ENV         | 进程使用 `production`，与 APP_ENV 区分                           |
-| HOST / PORT      | 默认 `127.0.0.1` / `3000`，同机 Nginx 代理                       |
-| DATABASE_URL     | 测试库真实连接串，密码中的特殊符号需 URL 编码                    |
-| SMS_PROVIDER     | `mock`                                                           |
-| CODE_HMAC_SECRET | 至少 32 个随机字符；例如本机 Node crypto 生成后安全填入          |
-| WEB_ORIGINS      | 真实 `https://测试域名`，不带路径和结尾斜线；多个以逗号分隔      |
-| COOKIE_SECURE    | `true`                                                           |
-| TRUST_PROXY      | 同机 Nginx 时 `127.0.0.1/32,::1/128`，其他拓扑按可信代理地址填写 |
-| LOG_LEVEL        | `info`                                                           |
+| 配置             | 测试环境设置                                                                |
+| ---------------- | --------------------------------------------------------------------------- |
+| APP_ENV          | `test`（允许显式 mock；production 会拒绝启动）                              |
+| NODE_ENV         | 进程使用 `production`，与 APP_ENV 区分                                      |
+| HOST / PORT      | 默认 `127.0.0.1` / `3000`，同机 Nginx 代理                                  |
+| DATABASE_URL     | 测试库真实连接串，密码中的特殊符号需 URL 编码                               |
+| SMS_PROVIDER     | `mock`                                                                      |
+| CODE_HMAC_SECRET | 至少 32 个随机字符；例如本机 Node crypto 生成后安全填入                     |
+| WEB_ORIGINS      | 真实 `https://测试域名`，不带路径和结尾斜线；多个以逗号分隔                 |
+| DESKTOP_ORIGINS  | 默认 `tyde-app://app`；桌面开发需加入完整回环源，如 `http://127.0.0.1:5174` |
+| COOKIE_SECURE    | `true`                                                                      |
+| TRUST_PROXY      | 同机 Nginx 时 `127.0.0.1/32,::1/128`，其他拓扑按可信代理地址填写            |
+| LOG_LEVEL        | `info`                                                                      |
 
 Prisma CLI 放在服务端生产依赖中用于迁移和目标平台生成；不得为缩小包而移除必需 CLI 后继续声称可部署。`pnpm-workspace.yaml` 的生产允许脚本与依赖覆盖需一同保留。
 
@@ -114,7 +115,7 @@ curl --fail https://test.example.com/api/v1/health/live
 curl --fail https://test.example.com/api/v1/health/ready
 ```
 
-HTTPS 环境的网页与桌面连接同一域名：合并部署中页面和 API 均由同一后端提供，桌面 main 直接请求该域名 `/api/v1`。不要为了桌面而启用任意 CORS。仅开放必要网络入口，数据库不对测试人员电脑直接暴露。
+HTTPS 环境的网页与桌面连接同一域名：合并部署中页面和 API 均由同一后端提供，桌面页面直接 fetch 该域名 `/api/v1`，IPC 仅返回公开运行配置。后端须部署桌面来源/CORS/Cookie 适配，精确放行 `DESKTOP_ORIGINS`，不得使用通配 CORS；审批/导入预检允许 `Idempotency-Key`，模板下载暴露 `Content-Disposition`；桌面 Cookie 为 SameSite=None+Secure，普通 Web 保持原策略。旧主进程 Bearer 会话不迁移，升级后需重新登录。仅开放必要网络入口，数据库不对测试人员电脑直接暴露。
 
 ## Swagger 文档验收
 

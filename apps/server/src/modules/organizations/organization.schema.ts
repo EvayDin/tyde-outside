@@ -163,7 +163,7 @@ export function organizationSchema(
     operationId,
     summary,
     tags: ['Organization'],
-    description: `${description} 沿用 code/message/data 包装。组织权限只查指定 orgId 下的多组织成员关系，不由EXPERT身份或用户表兼容字段授权。Web使用HttpOnly Cookie，写请求须带受信Origin；普通无浏览器头API客户端使用Bearer；禁止混用Cookie和Bearer。UUID/ISO日期与旧库数值ID/本地时间格式的兼容验收尚未完成。`,
+    description: `${description} 沿用 code/message/data 包装。组织权限只查指定 orgId 下的多组织成员关系，不由EXPERT身份或用户表兼容字段授权。Web/Electron页面使用HttpOnly Cookie，写请求须带WEB_ORIGINS或DESKTOP_ORIGINS中的精确受信Origin，声明X-Tyde-Client: web；桌面来源Cookie使用SameSite=None、Secure，跨源fetch须携带credentials: include。审批退出和成员导入的Idempotency-Key已允许CORS预检。普通无Origin、sec-fetch-*或Cookie的API客户端使用Bearer；禁止混用Cookie和Bearer。UUID/ISO日期与旧库数值ID/本地时间格式的兼容验收尚未完成。`,
     security: [{ webSession: [] }, { desktopSession: [] }],
     response: {
       200: resultSchema(response),

@@ -11,6 +11,7 @@ import {
   useRouterState,
 } from '@tanstack/react-router';
 import { AuthLayout } from '../layouts/AuthLayout';
+import { WorkspaceLayout } from '../layouts/WorkspaceLayout';
 import { LoginPage } from '../modules/auth/LoginPage';
 import { RegisterPage } from '../modules/auth/RegisterPage';
 import { WelcomePage } from '../modules/auth/WelcomePage';
@@ -27,39 +28,52 @@ function RootLayout() {
   useEffect(() => {
     if (!registration) clearRegistration();
   }, [registration, clearRegistration]);
+  if (pathname !== '/auth' && !registration)
+    return (
+      <SessionBoundary>
+        <Workspace />
+      </SessionBoundary>
+    );
   return (
     <AuthLayout registration={registration}>
       <div className="flex min-w-0 flex-col">
-        {pathname !== '/' && (
-          <header className={`flex-none ${registration ? 'mb-0' : 'mb-[28px]'}`}>
-            <h1
-              className={`m-0 font-semibold text-foreground ${registration ? 'text-[20px]' : 'text-[24px]'}`}
+        <header className={`flex-none ${registration ? 'mb-0' : 'mb-[28px]'}`}>
+          <h1
+            className={`m-0 font-semibold text-foreground ${registration ? 'text-[20px]' : 'text-[24px]'}`}
+          >
+            {registration ? '完善个人资料' : '登录 / 注册'}
+          </h1>
+          <p className="mt-[8px] text-[13px] leading-relaxed text-muted-foreground">
+            {registration
+              ? '请完善个人信息，完成账号注册。'
+              : '使用手机号登录，新账号通过验证码注册。'}
+          </p>
+          {registration && (
+            <Link
+              to="/auth"
+              className="mt-[4px] inline-flex min-h-[44px] items-center rounded-md text-[12px] text-primary hover:underline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary"
             >
-              {registration ? '完善个人资料' : '登录 / 注册'}
-            </h1>
-            <p className="mt-[8px] text-[13px] leading-relaxed text-muted-foreground">
-              {registration
-                ? '请完善个人信息，完成账号注册。'
-                : '使用手机号登录，新账号通过验证码注册。'}
-            </p>
-            {registration && (
-              <Link
-                to="/auth"
-                className="mt-[4px] inline-flex min-h-[44px] items-center rounded-md text-[12px] text-primary hover:underline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary"
-              >
-                返回登录 / 注册
-              </Link>
-            )}
-          </header>
-        )}
+              返回登录 / 注册
+            </Link>
+          )}
+        </header>
         <Outlet />
       </div>
     </AuthLayout>
   );
 }
 
+function Workspace() {
+  const { data: user } = useSession();
+  return user ? (
+    <WorkspaceLayout user={user}>
+      <Outlet />
+    </WorkspaceLayout>
+  ) : null;
+}
+
 /** 会话请求失败时保留错误和重试入口，仅 401 视为未登录。 */
-function SessionBoundary({ children, guest = false }: PropsWithChildren<{ guest?: boolean }>) {
+function SessionBoundary({ children }: PropsWithChildren) {
   const session = useSession();
   if (session.isPending) return <p role="status">正在恢复登录状态...</p>;
   if (session.isError)
@@ -71,14 +85,13 @@ function SessionBoundary({ children, guest = false }: PropsWithChildren<{ guest?
         </Button>
       </div>
     );
-  if (guest && session.data) return <Navigate to="/" replace />;
-  if (!guest && !session.data) return <Navigate to="/auth" replace />;
+  if (!session.data) return <Navigate to="/auth" replace />;
   return children;
 }
 
 function HomePage() {
   const session = useSession();
-  return <SessionBoundary>{session.data && <WelcomePage user={session.data} />}</SessionBoundary>;
+  return session.data && <WelcomePage user={session.data} />;
 }
 
 const rootRoute = createRootRoute({
@@ -99,20 +112,12 @@ const homeRoute = createRoute({
 const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/auth',
-  component: () => (
-    <SessionBoundary guest>
-      <LoginPage />
-    </SessionBoundary>
-  ),
+  component: LoginPage,
 });
 const registrationRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/register',
-  component: () => (
-    <SessionBoundary guest>
-      <RegisterPage />
-    </SessionBoundary>
-  ),
+  component: RegisterPage,
 });
 const router = createRouter({
   routeTree: rootRoute.addChildren([homeRoute, loginRoute, registrationRoute]),

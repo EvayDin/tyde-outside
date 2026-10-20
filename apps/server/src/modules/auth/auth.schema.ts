@@ -178,7 +178,7 @@ export const nicknameCheckResponse = {
 export const loginResponse = {
   type: 'object',
   description:
-    '登录或刷新成功的令牌对。默认有效期 30 天；Web 同时设置 HttpOnly Cookie，API/桌面后续使用 accessToken 进行 Bearer 认证。',
+    '登录或刷新成功的令牌对。默认有效期 30 天；Web 与 Electron 页面同时设置 HttpOnly Cookie，后续由浏览器携带；仅非浏览器 API 客户端使用 accessToken 进行 Bearer 认证。',
   required: ['accessToken', 'refreshToken', 'tokenType', 'expiresIn'],
   examples: [
     {
@@ -190,7 +190,7 @@ export const loginResponse = {
   ],
   properties: {
     accessToken: text(
-      '访问令牌原值；后续 API 请求使用 Authorization: Bearer <accessToken>。当前为随机不透明字符串，不能按 JWT 解析；示例不是真实令牌。',
+      '访问令牌原值；仅非浏览器 API 客户端使用 Authorization: Bearer <accessToken>，Web/Electron 页面使用 HttpOnly Cookie。当前为随机不透明字符串，不能按 JWT 解析；示例不是真实令牌。',
       'a'.repeat(43),
     ),
     refreshToken: text(
@@ -267,7 +267,7 @@ const operationDescriptions: Record<string, string> = {
   checkNickname:
     '可匿名调用，无请求体，必填查询参数nickname；trim后检查唯一性，按数字后缀给出建议。不预留昵称，注册冲突仍返回409。新库按大小写敏感精确匹配，旧MySQL排序规则兼容性待验收。',
   updateCurrentUser:
-    '仅更新当前有效会话本人，无目标用户参数；未传/null保持，头像/简介/未认证身份证空白可清空。姓名、邮箱及昵称不在旧更新字段中。已认证证件更改403、重复证件409。密码必须成对一致，更新与全部会话撤销同事务；成功清除Web Cookie并须重新登录。roles沿用固定EXPERT兼容策略，忽略已知角色选择。响应selectedRole=null、hasExpertManagementRole=false，与旧更新服务返回资料语义一致。多组织资料已按有效关系选取；在线状态/实时通知及完整项目管理能力待后续回补。',
+    '仅更新当前有效会话本人，无目标用户参数；未传/null保持，头像/简介/未认证身份证空白可清空。姓名、邮箱及昵称不在旧更新字段中。已认证证件更改403、重复证件409。密码必须成对一致，更新与全部会话撤销同事务；成功清除Web/Electron Cookie并须重新登录。roles沿用固定EXPERT兼容策略，忽略已知角色选择。响应selectedRole=null、hasExpertManagementRole=false，与旧更新服务返回资料语义一致。多组织资料已按有效关系选取；在线状态/实时通知及完整项目管理能力待后续回补。',
   sendCode:
     '按 scene 发送验证码。不同场景独立验证，手机号跨场景共用 60 秒发送冷却；验证码 5 分钟有效，错误尝试最多 5 次。当前开发/测试仅 mock，不实际发短信，验证码为字符串 095270。',
   register:
@@ -283,7 +283,7 @@ const operationDescriptions: Record<string, string> = {
   getCurrentUser:
     '根据当前有效会话返回用户资料，selectedRole=EXPERT；没有有效会话返回 401。组织资料按真实多组织关系选择；实名和项目管理能力尚待迁移，当前占位字段见响应说明。',
   logout:
-    '撤销当前访问令牌对应的会话及其刷新令牌，Web 同时清除登录 Cookie；不影响其他客户端会话。没有会话也成功，data 为 null。',
+    '撤销当前访问令牌对应的会话及其刷新令牌，Web/Electron 页面同时清除登录 Cookie；不影响其他客户端会话。没有会话也成功，data 为 null。',
 };
 const errorDescriptions: Record<number, string> = {
   400: '请求字段/格式、验证码、密码确认或业务条件不正确。',
@@ -307,7 +307,7 @@ export function authSchema(
     operationId,
     summary,
     tags: ['Auth'],
-    description: `${operationDescriptions[operationId] ?? summary}\n\n沿用旧字段与 code/message/data 包装。role/roles 可省略；即使传入其他已知角色仍固定 EXPERT。Web 使用 HttpOnly Cookie，写请求 Origin 须在 WEB_ORIGINS 内。桌面使用 X-Tyde-Client: desktop 和 Bearer，禁止 Origin、Cookie、sec-fetch-*。无浏览器头、Cookie 和客户端声明的 API 调试请求自动按 Bearer 客户端处理。不要混用 Cookie 与 Authorization。`,
+    description: `${operationDescriptions[operationId] ?? summary}\n\n沿用旧字段与 code/message/data 包装。role/roles 可省略；即使传入其他已知角色仍固定 EXPERT。Web/Electron 页面使用 HttpOnly Cookie，写请求声明 X-Tyde-Client: web，Origin 须精确匹配 WEB_ORIGINS 或 DESKTOP_ORIGINS。普通 Web 使用 SameSite=Lax；桌面来源使用 SameSite=None、Secure，跨源 fetch 须使用 credentials: include。CORS 允许 Content-Type、X-Tyde-Client、Idempotency-Key，并暴露 Retry-After、Content-Disposition。仅非浏览器 API 客户端使用 X-Tyde-Client: desktop 和 Bearer，禁止 Origin、Cookie、sec-fetch-*；无这些浏览器头、Cookie 和客户端声明的 API 调试请求自动按 Bearer 客户端处理。不要混用 Cookie 与 Authorization。`,
     security: protectedRoute ? [{ webSession: [] }, { desktopSession: [] }] : [],
     response: {
       200: response,

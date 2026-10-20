@@ -38,7 +38,7 @@ SELECT 'CREATE DATABASE tyde_outside OWNER tyde_outside_dev' WHERE NOT EXISTS (S
 SELECT 'CREATE DATABASE tyde_outside_test OWNER tyde_outside_dev' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='tyde_outside_test')\n\\gexec
 `);
 await mkdir(server, { recursive: true });
-const common = `CODE_HMAC_SECRET=${secret}\nSMS_PROVIDER=mock\nWEB_ORIGINS=http://127.0.0.1:3001,http://localhost:3001,http://127.0.0.1:4173\nCOOKIE_SECURE=false\nTRUST_PROXY=false\n`;
+const common = `CODE_HMAC_SECRET=${secret}\nSMS_PROVIDER=mock\nWEB_ORIGINS=http://127.0.0.1:3001,http://localhost:3001,http://127.0.0.1:4173\nDESKTOP_ORIGINS=tyde-app://app,http://127.0.0.1:5174\nCOOKIE_SECURE=false\nTRUST_PROXY=false\n`;
 await writeFile(
   resolve(server, '.env'),
   `APP_ENV=development\nHOST=127.0.0.1\nPORT=3000\nDATABASE_URL=postgresql://tyde_outside_dev:${password}@127.0.0.1:5432/tyde_outside\n${common}`,

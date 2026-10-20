@@ -40,7 +40,10 @@ export async function fileRoutes(
           req.headers['x-tyde-client'] = 'desktop';
         let client;
         try {
-          client = validateTransport(req.headers, req.method, config.webOrigins);
+          client = validateTransport(req.headers, req.method, [
+            ...config.webOrigins,
+            ...config.desktopOrigins,
+          ]);
         } catch {
           throw new AuthError(403, 'ORIGIN_NOT_ALLOWED', '请求来源或会话凭据组合不可信');
         }

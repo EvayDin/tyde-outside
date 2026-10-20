@@ -14,6 +14,7 @@ import { fileRoutes } from './modules/files/file.routes.js';
 import { FileService } from './modules/files/file.service.js';
 import { FileRegistryService } from './modules/files/file-registry.service.js';
 import { createObjectStorage, type ObjectStorage } from './modules/files/object-storage.js';
+import { registerBrowserTransport } from './browser-transport.js';
 
 export function fastifyOptions(config: Config): FastifyServerOptions {
   return {
@@ -51,6 +52,7 @@ export async function createApp(
   storage: ObjectStorage = createObjectStorage(config.files),
 ) {
   await app.register(cookie);
+  registerBrowserTransport(app, config);
   await registerDocs(app, config);
   app.addHook('onClose', async () => {
     await db.$disconnect();

@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 
-test('打包后的桌面从本地资源加载同一 React 页面，安全配置与 API 桥接正常', async () => {
+test('打包后的桌面从本地资源加载同一 React 页面，安全配置与页面 API 请求正常', async () => {
   const executablePath =
     process.platform === 'darwin'
       ? resolve('release/mac-universal/tyde.app/Contents/MacOS/tyde')
@@ -17,12 +17,25 @@ test('打包后的桌面从本地资源加载同一 React 页面，安全配置�
     const page = await app.firstWindow();
     await expect(page.getByRole('banner')).toContainText('Tyde');
     await expect(page).toHaveURL(/^tyde-app:\/\/app\/index\.html/);
-    const health = await page.evaluate(() => window.tydeDesktop!.health());
-    expect(health).toEqual({ ok: true, data: { status: 'ready' } });
-    const state = await page.evaluate(() => window.tydeDesktop!.getCurrentUser());
-    expect(state.ok || state.status === 401).toBe(true);
-    expect(JSON.stringify(state)).not.toContain('accessToken');
-    expect(JSON.stringify(state)).not.toContain('refreshToken');
+    const runtime = await page.evaluate(() => window.tydeDesktop!.getRuntimeConfig());
+    if (!runtime.ok) throw new Error(runtime.error.message);
+    expect(runtime.data.apiBaseUrl).toBe(new URL(runtime.data.apiBaseUrl).origin);
+    expect(new URL(runtime.data.apiBaseUrl).protocol).toMatch(/^https?:$/);
+    expect(await page.evaluate(() => Object.keys(window.tydeDesktop!))).toEqual([
+      'getRuntimeConfig',
+    ]);
+    const health = await page.evaluate(async (apiBaseUrl) => {
+      const response = await fetch(apiBaseUrl + '/api/v1/health/ready', { credentials: 'include' });
+      return { status: response.status, data: await response.json() };
+    }, runtime.data.apiBaseUrl);
+    expect(health).toEqual({ status: 200, data: { status: 'ready' } });
+    const state = await page.evaluate(async (apiBaseUrl) => {
+      const response = await fetch(apiBaseUrl + '/api/v1/users/me', { credentials: 'include' });
+      const payload = await response.json();
+      return { status: response.status, data: payload.data };
+    }, runtime.data.apiBaseUrl);
+    expect([200, 401]).toContain(state.status);
+    expect(JSON.stringify(state)).not.toMatch(/accessToken|refreshToken/);
     const preferences = await app.evaluate(({ BrowserWindow }) => {
       const p = BrowserWindow.getAllWindows()[0]!.webContents.getLastWebPreferences();
       return {

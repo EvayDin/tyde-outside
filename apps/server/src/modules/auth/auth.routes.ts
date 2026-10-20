@@ -37,6 +37,12 @@ export async function authRoutes(app: FastifyInstance, service: AuthService, con
     sameSite: 'lax' as const,
     secure: config.cookieSecure,
   };
+  const browserOrigins = [...config.webOrigins, ...config.desktopOrigins];
+  function sessionCookieOptions(req: FastifyRequest) {
+    return req.headers.origin && config.desktopOrigins.includes(req.headers.origin)
+      ? { ...cookieOptions, sameSite: 'none' as const, secure: true }
+      : cookieOptions;
+  }
   function client(req: FastifyRequest): ClientType {
     return req.headers['x-tyde-client'] === 'desktop' ? 'desktop' : 'web';
   }
@@ -62,7 +68,7 @@ export async function authRoutes(app: FastifyInstance, service: AuthService, con
     )
       req.headers['x-tyde-client'] = 'desktop';
     try {
-      validateTransport(req.headers, req.method, config.webOrigins);
+      validateTransport(req.headers, req.method, browserOrigins);
     } catch (error) {
       throw new AuthError(403, 'ORIGIN_NOT_ALLOWED', (error as Error).message);
     }
@@ -70,7 +76,7 @@ export async function authRoutes(app: FastifyInstance, service: AuthService, con
   function finish(result: LoginResponse, req: FastifyRequest, reply: FastifyReply) {
     if (client(req) === 'web')
       reply.setCookie(cookieName, result.accessToken, {
-        ...cookieOptions,
+        ...sessionCookieOptions(req),
         maxAge: SESSION_DAYS * 86_400,
       });
     return success(result);
@@ -202,7 +208,7 @@ export async function authRoutes(app: FastifyInstance, service: AuthService, con
     async (req, reply) => {
       const user = await service.updateCurrentUser(token(req), client(req), req.body);
       if (req.body.newPassword != null && client(req) === 'web')
-        reply.clearCookie(cookieName, cookieOptions);
+        reply.clearCookie(cookieName, sessionCookieOptions(req));
       return success(user);
     },
   );
@@ -221,7 +227,7 @@ export async function authRoutes(app: FastifyInstance, service: AuthService, con
     },
     async (req, reply) => {
       await service.logout(token(req));
-      if (client(req) === 'web') reply.clearCookie(cookieName, cookieOptions);
+      if (client(req) === 'web') reply.clearCookie(cookieName, sessionCookieOptions(req));
       return success(null);
     },
   );
