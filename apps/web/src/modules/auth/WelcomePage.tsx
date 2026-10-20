@@ -1,7 +1,9 @@
-import { Check } from 'lucide-react';
+import { ArrowUpRight, Check, UserRound } from 'lucide-react';
+import { Link } from '@tanstack/react-router';
 import type { AuthUser } from '@tyde/shared';
+import { Button } from '../../components/ui/button';
 
-/** 展示当前账户信息，账户操作统一由工作台顶栏提供。 */
+/** 展示真实账户及个人中心入口，账户操作统一由工作台顶栏提供。 */
 export function WelcomePage({ user }: { user: AuthUser }) {
   return (
     <div className="space-y-6">
@@ -20,7 +22,7 @@ export function WelcomePage({ user }: { user: AuthUser }) {
           欢迎，{user.nickname || user.realName}
         </h2>
         <p className="mt-2 mb-6 text-[13px] text-[var(--color-neutral-strong)]">
-          你已成功登录 tyde，欢迎回到你的协作空间。
+          你已成功登录 tyde，从这里管理你的账户与个人资料。
         </p>
         <dl className="mb-5 space-y-3 text-sm">
           <div className="flex flex-wrap gap-x-4 gap-y-1">
@@ -32,6 +34,15 @@ export function WelcomePage({ user }: { user: AuthUser }) {
             <dd className="break-all">{user.uid}</dd>
           </div>
         </dl>
+        <div className="mt-6 flex flex-wrap items-center gap-3 border-t pt-6">
+          <Button asChild size="mobileTouch">
+            <Link to="/profile">
+              <UserRound className="size-4" aria-hidden />
+              个人中心
+              <ArrowUpRight className="size-4" aria-hidden />
+            </Link>
+          </Button>
+        </div>
         <p className="mt-4 text-[12px] text-[var(--color-neutral-strong)]">
           关闭应用或刷新页面后，登录状态会为你保留。
         </p>

@@ -7,24 +7,30 @@ import { cn } from '@/lib/utils';
 
 /** 保留原生密码语义，并提供可访问的显隐切换按钮。 */
 const AuthPasswordInput = forwardRef<HTMLInputElement, Omit<InputProps, 'type'>>(
-  ({ className, disabled, ...props }, ref) => {
+  ({ className, disabled, size, ...props }, ref) => {
     const [visible, setVisible] = useState(false);
 
     return (
       <div className="relative w-full min-w-0">
         <Input
           {...props}
+          size={size}
           ref={ref}
           disabled={disabled}
           type={visible ? 'text' : 'password'}
-          className={cn(className, 'pr-[38px]')}
+          className={cn(className, size === 'profile' ? 'pr-[48px]' : 'pr-[38px]')}
         />
-        {/* 密码框内图标是 32px 输入框的复合控件，保留原 28px 点击区域。 */}
+        {/* 个人中心随输入框扩展点击区，认证页保留紧凑尺寸。 */}
         <Button
           type="button"
           variant="ghost"
           size="iconSm"
-          className="absolute top-1/2 right-[5px] size-[28px] -translate-y-1/2 hover:bg-transparent"
+          className={cn(
+            'absolute top-1/2 -translate-y-1/2 hover:bg-transparent',
+            size === 'profile'
+              ? 'right-0 size-[40px] max-[640px]:size-[44px]'
+              : 'right-[5px] size-[28px]',
+          )}
           disabled={disabled}
           aria-label={visible ? '隐藏密码' : '显示密码'}
           aria-pressed={visible}

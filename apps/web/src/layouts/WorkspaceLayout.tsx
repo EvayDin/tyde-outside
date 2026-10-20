@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type PropsWithChildren } from 'react';
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, LayoutDashboard, LogOut } from 'lucide-react';
+import { ChevronDown, LayoutDashboard, LogOut, UserRound } from 'lucide-react';
 import type { AuthUser } from '@tyde/shared';
 import { TideIcon } from '@/components/icons';
 import { UserAvatar } from '@/components/UserAvatar';
@@ -120,6 +120,21 @@ export function WorkspaceLayout({ user, children }: PropsWithChildren<{ user: Au
                   </p>
                 </div>
                 <Button
+                  asChild
+                  variant="ghost"
+                  size="account"
+                  className="w-full justify-start gap-[12px] hover:bg-accent"
+                >
+                  <Link
+                    to="/profile"
+                    onClick={() => setOpen(false)}
+                    aria-current={pathname === '/profile' ? 'page' : undefined}
+                  >
+                    <UserRound className="size-[18px]" aria-hidden />
+                    个人中心
+                  </Link>
+                </Button>
+                <Button
                   variant="ghost"
                   size="account"
                   className="w-full justify-start gap-[12px]"
@@ -138,7 +153,7 @@ export function WorkspaceLayout({ user, children }: PropsWithChildren<{ user: Au
       <main
         id="workspace-main"
         tabIndex={-1}
-        className="mx-auto w-full max-w-[1280px] px-[16px] py-[24px] outline-none sm:px-[32px] sm:py-[32px]"
+        className={`mx-auto w-full max-w-[1280px] px-[16px] pb-[24px] outline-none sm:px-[32px] sm:pb-[32px] ${pathname === '/profile' ? 'pt-[16px]' : 'pt-[24px] sm:pt-[32px]'}`}
       >
         {children}
       </main>

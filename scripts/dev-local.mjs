@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -59,37 +59,28 @@ function start(command, args, env = process.env, watch = false) {
   return child;
 }
 
-async function run(command, args, env) {
-  if (stopping) throw new Error('启动已取消');
-  await new Promise((accept, reject) => {
-    const child = start(command, args, env);
-    child.once('error', () => reject(new Error('启动命令不可用，请检查开发环境。')));
-    child.once('exit', (code) =>
-      code === 0 ? accept() : reject(new Error('启动步骤失败，请查看上方错误。')),
-    );
-  });
-}
-
-function localConfig() {
-  const config = parseEnv(readFileSync(envFile, 'utf8'));
-  let database;
+function developmentConfig() {
+  let config;
   try {
-    database = new URL(config.DATABASE_URL);
+    config = parseEnv(readFileSync(envFile, 'utf8'));
   } catch {
-    throw new Error('请在 apps/server/.env 配置本地 DATABASE_URL。');
+    throw new Error('请先在 apps/server/.env 配置远程开发数据库和后端环境变量。');
   }
-  if (
-    !['postgres:', 'postgresql:'].includes(database.protocol) ||
-    !['127.0.0.1', 'localhost', '[::1]'].includes(database.hostname) ||
-    (database.port && database.port !== '5432') ||
-    !database.pathname.slice(1) ||
-    /_test$/i.test(decodeURIComponent(database.pathname)) ||
-    [...database.searchParams.keys()].some((key) => key !== 'schema') ||
-    database.hash
-  )
+  try {
+    const database = new URL(config.DATABASE_URL);
+    if (
+      !['postgres:', 'postgresql:'].includes(database.protocol) ||
+      !database.hostname ||
+      !database.pathname.slice(1) ||
+      /_test$/i.test(decodeURIComponent(database.pathname)) ||
+      database.hash
+    )
+      throw new Error();
+  } catch {
     throw new Error(
-      'dev:local 仅使用本机 5432 开发库；请检查 apps/server/.env，勿使用远程或测试库。',
+      'apps/server/.env 的 DATABASE_URL 必须是有效的 PostgreSQL 开发库，不能使用 _test 库。',
     );
+  }
   const port = Number(config.PORT ?? 3000);
   if (!Number.isInteger(port) || port < 1 || port > 65535)
     throw new Error('apps/server/.env 的 PORT 必须是有效端口。');
@@ -125,37 +116,28 @@ async function requireFreePort(port) {
   await new Promise((accept, reject) => {
     const probe = createServer();
     probe.once('error', () =>
-      reject(new Error('本地后端端口已占用且服务未就绪，请先检查已有进程。')),
+      reject(
+        new Error('后端端口已被其他服务占用，请先停止原服务，再启动以加载 apps/server/.env。'),
+      ),
     );
     probe.listen(port, '127.0.0.1', () => probe.close(accept));
   });
 }
 
 try {
-  // 在任何迁移或服务启动前拒绝已有的远程数据库配置。
-  let env = existsSync(envFile) ? localConfig() : null;
-  console.info('[本地启动] 启动或复用项目数据库');
-  await run(process.execPath, ['scripts/postgres-local.mjs', 'start']);
-  if (!env) {
-    console.info('[本地启动] 首次初始化本地配置和数据库');
-    await run(process.execPath, ['scripts/setup-local.mjs']);
-    env = localConfig();
-  }
-  console.info('[本地启动] 应用开发数据库迁移');
-  await run('npm', ['--prefix', 'apps/server', 'run', 'db:deploy'], env);
+  // .env 覆盖父进程的旧数据库配置；一键启动只管理本机开发进程。
+  const env = developmentConfig();
   const api = `http://127.0.0.1:${env.PORT}`;
-  if (!(await apiReady(api))) {
-    await requireFreePort(Number(env.PORT));
-    console.info(`[本地启动] 启动后端 ${api}`);
-    start('npm', ['--prefix', 'apps/server', 'run', 'dev'], env, 'server');
-    const deadline = Date.now() + 90_000;
-    while (!stopping && !(await apiReady(api))) {
-      if (Date.now() > deadline) throw new Error('等待本地后端就绪超时，请检查上方日志。');
-      await delay(400);
-    }
-  } else console.info(`[本地启动] 复用已就绪的后端 ${api}`);
+  await requireFreePort(Number(env.PORT));
+  console.info(`[本地启动] 使用 apps/server/.env 的数据库配置，启动后端 ${api}`);
+  start('npm', ['--prefix', 'apps/server', 'run', 'dev'], env, 'server');
+  const deadline = Date.now() + 90_000;
+  while (!stopping && !(await apiReady(api))) {
+    if (Date.now() > deadline) throw new Error('等待本地后端就绪超时，请检查上方日志。');
+    await delay(400);
+  }
   if (!stopping) {
-    console.info('[本地启动] 后端就绪，启动 Electron；Ctrl+C 停止本次开发进程，数据库保留。');
+    console.info('[本地启动] 后端就绪，启动 Electron；Ctrl+C 停止本次开发进程。');
     start(
       process.execPath,
       ['scripts/dev-electron.mjs'],

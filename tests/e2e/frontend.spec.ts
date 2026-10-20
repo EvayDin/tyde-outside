@@ -615,7 +615,7 @@ for (const [mode, origin] of [
   ['本地资源', 'tyde-app://app/index.html'],
   ['DEV', 'http://127.0.0.1:5177/'],
 ] as const) {
-  test(`Electron ${mode} 页面HTTP注册登录、Cookie恢复与退出`, async () => {
+  test(`Electron ${mode} 页面HTTP注册登录、Cookie恢复退出及本地资料演示`, async () => {
     const backend = await desktopBackend(
       origin.startsWith('tyde-app:') ? 'tyde-app://app' : new URL(origin).origin,
     );
@@ -704,8 +704,20 @@ for (const [mode, origin] of [
         sandbox: true,
         nodeIntegration: false,
       });
+      await page.getByRole('link', { name: '个人中心', exact: true }).click();
+      await page.getByRole('button', { name: '编辑资料', exact: true }).click();
+      await page.getByLabel('个人简介', { exact: true }).fill('桌面本地演示');
+      const writesBefore = backend.requests.filter(({ method }) => method === 'POST').length;
+      await page.getByRole('button', { name: '保存修改', exact: true }).click();
+      await expect(
+        page
+          .getByRole('tabpanel', { name: '个人资料', exact: true })
+          .getByText('桌面本地演示', { exact: true }),
+      ).toBeVisible();
+      expect(backend.requests.filter(({ method }) => method === 'POST')).toHaveLength(writesBefore);
       await page.reload();
-      await expectWelcome(page);
+      await expect(page.getByRole('tablist', { name: '个人中心设置', exact: true })).toBeVisible();
+      await expect(page.getByText('桌面本地演示', { exact: true })).toHaveCount(0);
       await page.getByRole('button', { name: '账户菜单', exact: true }).click();
       await page.getByRole('button', { name: '退出登录', exact: true }).click();
       await expect(page).toHaveURL(/#\/auth$/);

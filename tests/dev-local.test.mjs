@@ -9,7 +9,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const project = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const database = 'postgresql://fixture:fixture-password@127.0.0.1:5432/tyde_dev?schema=public';
+const database =
+  'postgresql://fixture:fixture-password@database.invalid:5432/tyde_dev?schema=public';
 const worker = String.raw`
 import { spawn } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
@@ -38,7 +39,9 @@ if (job === 'migrate') {
   });
   child.once('exit', () => process.exit(0));
 } else if (job === 'server') {
-  record('server:start', { database: process.env.DATABASE_URL });
+  record('server:start', { database: process.env.DATABASE_URL, host: process.env.HOST,
+    port: process.env.PORT, webOrigins: process.env.WEB_ORIGINS,
+    desktopOrigins: process.env.DESKTOP_ORIGINS, cookieSecure: process.env.COOKIE_SECURE });
   spawn(process.execPath, [fileURLToPath(import.meta.url), 'leaf', 'server'],
     { stdio: 'inherit' });
   let ready = false;
@@ -93,6 +96,12 @@ appendFileSync(process.env.FIXTURE_EVENTS, JSON.stringify({ event: 'db:' + proce
 `,
   );
   await writeFile(
+    join(root, 'scripts/setup-local.mjs'),
+    `import { appendFileSync } from 'node:fs';
+appendFileSync(process.env.FIXTURE_EVENTS, JSON.stringify({ event: 'setup' }) + '\\n');
+`,
+  );
+  await writeFile(
     join(root, 'scripts/dev-electron.mjs'),
     `process.argv.splice(2, 0, 'electron'); await import('./fixture-worker.mjs');\n`,
   );
@@ -125,7 +134,7 @@ appendFileSync(process.env.FIXTURE_EVENTS, JSON.stringify({ event: 'db:' + proce
       env: {
         ...process.env,
         FIXTURE_EVENTS: eventsFile,
-        DATABASE_URL: 'postgresql://shell:secret@remote.invalid/remote',
+        DATABASE_URL: 'postgresql://shell:secret@127.0.0.1:5432/old_local',
         TYDE_API_BASE_URL: 'https://remote.invalid',
         API_PROXY_TARGET: 'https://remote.invalid',
         HOST: '0.0.0.0',
@@ -177,14 +186,16 @@ appendFileSync(process.env.FIXTURE_EVENTS, JSON.stringify({ event: 'db:' + proce
   return { root, port, configure, events, eventsFile, launch };
 }
 
-test('local launcher rejects remote, test and redirected databases before running commands', async (t) => {
+test('local launcher requires a valid non-test database in .env before running commands', async (t) => {
   const local = await fixture(t);
   for (const url of [
-    'postgresql://fixture:do-not-print@remote.invalid:5432/tyde_dev',
-    'postgresql://fixture:do-not-print@127.0.0.1:5432/tyde_test',
-    'postgresql://fixture:do-not-print@127.0.0.1:5432/tyde_%74est',
-    'postgresql://fixture:do-not-print@127.0.0.1:5432/tyde_dev?host=remote.invalid',
-    'postgresql://fixture:do-not-print@127.0.0.1:5432/tyde_dev?hostaddr=192.0.2.1',
+    '',
+    'invalid-database-url',
+    'https://fixture:do-not-print@database.invalid/tyde_dev',
+    'postgresql:///tyde_dev',
+    'postgresql://fixture:do-not-print@database.invalid/',
+    'postgresql://fixture:do-not-print@database.invalid/tyde_test',
+    'postgresql://fixture:do-not-print@database.invalid/tyde_%74est',
   ]) {
     await local.configure(url);
     const result = await local.launch().finish();
@@ -192,9 +203,14 @@ test('local launcher rejects remote, test and redirected databases before runnin
     assert.doesNotMatch(result.output, /do-not-print|postgresql:\/\//);
     assert.deepEqual(await local.events(), []);
   }
+  await rm(join(local.root, 'apps/server/.env'));
+  const missing = await local.launch().finish();
+  assert.equal(missing.code, 1, missing.output);
+  assert.match(missing.output, /apps\/server\/\.env/);
+  assert.deepEqual(await local.events(), []);
 });
 
-test('local launcher orders startup, overrides remote shell config and cleans only owned processes', async (t) => {
+test('local launcher uses the remote .env, skips database changes and cleans owned processes', async (t) => {
   const local = await fixture(t);
   const run = local.launch();
   await waitFor(async () => {
@@ -204,17 +220,19 @@ test('local launcher orders startup, overrides remote shell config and cleans on
   const rows = await local.events();
   const names = rows.map((row) => row.event);
   for (const [before, after] of [
-    ['db:start', 'migrate'],
-    ['migrate', 'server:start'],
     ['server:start', 'server:ready'],
     ['server:ready', 'electron:start'],
   ])
     assert.ok(names.indexOf(before) < names.indexOf(after), names.join(', '));
-  const migration = rows.find((row) => row.event === 'migrate');
-  assert.equal(migration.database, database);
-  assert.equal(migration.host, '127.0.0.1');
-  assert.equal(migration.port, String(local.port));
-  assert.equal(rows.find((row) => row.event === 'server:start').database, database);
+  assert.ok(!names.some((name) => /^(db:|migrate$|setup$)/.test(name)), names.join(', '));
+  const backend = rows.find((row) => row.event === 'server:start');
+  assert.equal(backend.database, database);
+  assert.equal(backend.host, '127.0.0.1');
+  assert.equal(backend.port, String(local.port));
+  assert.ok(backend.webOrigins.split(',').includes('http://localhost:3001'));
+  assert.ok(backend.desktopOrigins.split(',').includes('http://127.0.0.1:5174'));
+  assert.equal(backend.cookieSecure, 'false');
+  assert.doesNotMatch(run.output(), /fixture-password|shell:secret|postgresql:\/\//);
   const electron = rows.find((row) => row.event === 'electron:start');
   assert.equal(electron.api, `http://127.0.0.1:${local.port}`);
   assert.equal(electron.proxy, electron.api);
@@ -267,7 +285,7 @@ test('a normal desktop exit preserves the owned backend until the launcher is st
   assert.ok(!(await local.events()).some((row) => row.event === 'db:stop'));
 });
 
-test('local launcher preserves an existing backend and refuses another application', async (t) => {
+test('local launcher rejects every occupied backend port without changing the existing service', async (t) => {
   const local = await fixture(t);
   let identity = true;
   const server = createServer((request, response) => {
@@ -282,24 +300,12 @@ test('local launcher preserves an existing backend and refuses another applicati
   const port = await listen(server);
   t.after(() => new Promise((accept) => server.close(accept)));
   await local.configure(database, port);
-  const run = local.launch();
-  await waitFor(
-    async () => (await local.events()).some((row) => row.event === 'electron:leaf'),
-    '复用后端时 Electron 未启动：' + run.output(),
-  );
-  run.child.kill('SIGTERM');
-  assert.equal((await run.finish()).code, 0);
-  assert.ok((await fetch(`http://127.0.0.1:${port}/api/v1/health/ready`)).ok);
-  assert.ok(!(await local.events()).some((row) => row.event === 'server:start'));
-
-  await writeFile(local.eventsFile, '');
-  identity = false;
-  const failure = await local.launch().finish();
-  assert.equal(failure.code, 1, failure.output);
-  assert.match(failure.output, /其他服务占用/);
-  assert.deepEqual(
-    (await local.events()).map((row) => row.event),
-    ['db:start', 'migrate'],
-  );
-  assert.ok((await fetch(`http://127.0.0.1:${port}/api/v1/health/ready`)).ok);
+  for (identity of [true, false]) {
+    const failure = await local.launch().finish();
+    assert.equal(failure.code, 1, failure.output);
+    assert.match(failure.output, /占用/);
+    assert.match(failure.output, /停止/);
+    assert.deepEqual(await local.events(), []);
+    assert.ok((await fetch(`http://127.0.0.1:${port}/api/v1/health/ready`)).ok);
+  }
 });
