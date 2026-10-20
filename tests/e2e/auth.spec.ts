@@ -75,6 +75,7 @@ test('Web真实API注册不登录、密码登录、Cookie恢复、令牌轮换�
   await page.goto('/');
   const { headers, tokens } = await registerWeb(page);
   await page.reload();
+  await page.goto('/#/');
   await expect(page.getByRole('heading', { name: '欢迎，潮汐测试员', exact: true })).toBeVisible();
   const current = await page.request.get('/api/v1/users/me', { headers });
   expect(current.ok()).toBe(true);
@@ -104,49 +105,47 @@ test('Web真实API注册不登录、密码登录、Cookie恢复、令牌轮换�
   await expect(page).toHaveURL(/#\/auth$/);
 });
 
-async function registerDesktop(page: Page) {
+async function registerDesktop(page: Page, requests: { path: string; method: string }[]) {
   const number = phone();
-  const sent = await page.evaluate(
-    (number) => window.tydeDesktop!.sendCode({ phone: number, scene: 'login' }),
-    number,
+  const fields = personalFields(number);
+  await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
+  const sessionReads = () => requests.filter(({ path }) => path === '/api/v1/users/me').length;
+  const readsBeforeRegistration = sessionReads();
+  await page.getByLabel(/^手机号/).fill(number);
+  await page.getByRole('button', { name: '获取验证码', exact: true }).click();
+  await expect(page.getByRole('status', { name: '操作提示' })).toContainText(MOCK_CODE);
+  await page.getByRole('textbox', { name: '验证码', exact: true }).fill(MOCK_CODE);
+  await page.getByRole('button', { name: '继续', exact: true }).click();
+  await expect(page).toHaveURL(/#\/register$/);
+  await page.getByLabel(/^登录密码/).fill(password);
+  await page.getByLabel(/^确认密码/).fill(password);
+  await page.getByLabel(/^姓名/).fill(fields.realName);
+  await page.getByLabel(/^昵称/).fill(fields.nickname);
+  await page.getByLabel(/^身份证号/).fill(fields.idCardNo);
+  await page.getByLabel(/^邮箱/).fill(fields.email);
+  await page.getByRole('button', { name: '提交', exact: true }).click();
+  await expect(page.getByRole('status', { name: '操作提示' })).toHaveText(
+    '注册成功，请使用密码登录。',
   );
-  if (!sent.ok) throw new Error(sent.error.message);
-  expect(typeof sent.data).toBe('string');
-  const verified = await page.evaluate(
-    ({ number, code }) => window.tydeDesktop!.verifyCode({ phone: number, code }),
-    { number, code: MOCK_CODE },
+  await expect(page.getByRole('tab', { name: '密码登录', exact: true })).toHaveAttribute(
+    'data-state',
+    'active',
   );
-  if (!verified.ok || verified.data.status !== 'registration_required')
-    throw new Error('未获得注册凭证');
-  const registered = await page.evaluate(
-    ({ input, number, registrationToken }) =>
-      window.tydeDesktop!.completeRegistration({ ...input, phone: number, registrationToken }),
-    {
-      input: personalFields(number),
-      number,
-      registrationToken: verified.data.registrationToken,
-    },
-  );
-  expect(registered.ok).toBe(true);
-  expect(JSON.stringify(registered)).not.toMatch(/accessToken|refreshToken/);
-  const anonymous = await page.evaluate(() => window.tydeDesktop!.getCurrentUser());
-  expect(anonymous.ok).toBe(false);
-  if (!anonymous.ok) expect(anonymous.status).toBe(401);
-  const login = await page.evaluate(
-    ({ number, password }) => window.tydeDesktop!.login({ account: number, password }),
-    { number, password },
-  );
-  expect(login.ok).toBe(true);
-  expect(JSON.stringify(login)).not.toMatch(/accessToken|refreshToken/);
+  expect(sessionReads()).toBe(readsBeforeRegistration);
+  await page.getByLabel(/^密码\s*\*?\s*$/).fill(password);
+  await page.getByRole('button', { name: '登录', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '欢迎，潮汐测试员', exact: true })).toBeVisible();
 }
 
-test('Electron真实bridge加密保存令牌对、重启恢复与200退出', async () => {
+test('Electron真实页面注册登录、renderer Cookie请求、重启恢复与200退出', async () => {
   await mkdir('.local/e2e', { recursive: true });
   const userData = await mkdtemp(resolve(root, '.local/e2e/profile-'));
+  const origin = 'http://127.0.0.1:5178';
+  const apiOrigin = 'http://127.0.0.1:3100';
   const env = {
     ...process.env,
-    TYDE_WEB_URL: 'http://127.0.0.1:5175/',
-    TYDE_API_BASE_URL: 'http://127.0.0.1:3100',
+    TYDE_WEB_URL: origin + '/',
+    TYDE_API_BASE_URL: apiOrigin,
     TYDE_TEST_USER_DATA: userData,
   };
   delete env.ELECTRON_RUN_AS_NODE;
@@ -158,27 +157,76 @@ test('Electron真实bridge加密保存令牌对、重启恢复与200退出', asy
   let app = await electron.launch(options);
   try {
     const first = await app.firstWindow();
-    await registerDesktop(first);
-    await first.reload();
-    await expect(
-      first.getByRole('heading', { name: '欢迎，潮汐测试员', exact: true }),
-    ).toBeVisible();
+    const requests: { path: string; method: string; hasAuthorization: boolean }[] = [];
+    first.on('request', (request) => {
+      if (request.url().startsWith(apiOrigin + '/api/v1/'))
+        requests.push({
+          path: new URL(request.url()).pathname,
+          method: request.method(),
+          hasAuthorization: Object.hasOwn(request.headers(), 'authorization'),
+        });
+    });
+    const runtime = await first.evaluate(() => window.tydeDesktop!.getRuntimeConfig());
+    expect(runtime).toEqual({ ok: true, data: { apiBaseUrl: apiOrigin } });
+    expect(await first.evaluate(() => Object.keys(window.tydeDesktop!))).toEqual([
+      'getRuntimeConfig',
+    ]);
+    await registerDesktop(first, requests);
+    const cookieMetadata = await app.evaluate(async ({ BrowserWindow }, apiOrigin) => {
+      const cookies = await BrowserWindow.getAllWindows()[0]!.webContents.session.cookies.get({
+        url: apiOrigin,
+      });
+      return cookies
+        .filter(({ name }) => name === 'tyde_session')
+        .map(({ name, httpOnly, secure, sameSite }) => ({ name, httpOnly, secure, sameSite }));
+    }, apiOrigin);
+    expect(cookieMetadata).toEqual([
+      { name: 'tyde_session', httpOnly: true, secure: true, sameSite: 'no_restriction' },
+    ]);
+    expect(
+      requests.some(({ path, method }) => path === '/api/v1/auth/login' && method === 'POST'),
+    ).toBe(true);
+    expect(
+      requests.some(({ path, method }) => path === '/api/v1/users/me' && method === 'GET'),
+    ).toBe(true);
+    expect(requests.every(({ hasAuthorization }) => !hasAuthorization)).toBe(true);
     await app.close();
     app = await electron.launch(options);
     const page = await app.firstWindow();
     await expect(
       page.getByRole('heading', { name: '欢迎，潮汐测试员', exact: true }),
     ).toBeVisible();
-    const current = await page.evaluate(() => window.tydeDesktop!.getCurrentUser());
-    if (!current.ok) throw new Error(current.error.message);
-    expect(current.data.nickname).toBe(profile.nickname);
-    expect(JSON.stringify(current)).not.toMatch(/accessToken|refreshToken/);
-    const logout = await page.evaluate(() => window.tydeDesktop!.logout());
-    expect(logout.ok).toBe(true);
-    const cleared = await page.evaluate(() => window.tydeDesktop!.getCurrentUser());
-    expect(cleared.ok).toBe(false);
-    if (!cleared.ok) expect(cleared.status).toBe(401);
+    const current = await page.evaluate(async () => {
+      const runtime = await window.tydeDesktop!.getRuntimeConfig();
+      if (!runtime.ok) throw new Error(runtime.error.message);
+      const response = await fetch(runtime.data.apiBaseUrl + '/api/v1/users/me', {
+        credentials: 'include',
+      });
+      const payload = await response.json();
+      return { status: response.status, nickname: payload.data?.nickname };
+    });
+    expect(current).toEqual({ status: 200, nickname: profile.nickname });
+    await page.getByRole('button', { name: '账户菜单', exact: true }).click();
+    const exited = page.waitForResponse(
+      (response) =>
+        response.url() === apiOrigin + '/api/v1/auth/logout' &&
+        response.request().method() === 'POST',
+    );
+    await page
+      .getByRole('navigation', { name: '账户选项', exact: true })
+      .getByRole('button', { name: '退出登录', exact: true })
+      .click();
+    expect((await exited).status()).toBe(200);
+    await expect(page).toHaveURL(/#\/auth$/);
+    const cleared = await page.evaluate(async () => {
+      const runtime = await window.tydeDesktop!.getRuntimeConfig();
+      if (!runtime.ok) throw new Error(runtime.error.message);
+      return (await fetch(runtime.data.apiBaseUrl + '/api/v1/users/me', { credentials: 'include' }))
+        .status;
+    });
+    expect(cleared).toBe(401);
     await page.reload();
+    await page.goto(origin + '/#/');
     await expect(page).toHaveURL(/#\/auth$/);
   } finally {
     await app.close();

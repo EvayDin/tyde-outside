@@ -25,13 +25,14 @@ export async function registerDocs(app: FastifyInstance, config: Config) {
             type: 'apiKey',
             in: 'cookie',
             name: config.cookieSecure ? '__Host-tyde_session' : 'tyde_session',
-            description: 'Web 登录自动设置 HttpOnly Cookie，浏览器自动携带。',
+            description:
+              'Web 与 Electron 页面 fetch 均使用 HttpOnly Cookie。Web 使用 SameSite=Lax；DESKTOP_ORIGINS 精确匹配的桌面页面使用 SameSite=None、Secure，跨源 fetch 须携带 credentials: include。',
           },
           desktopSession: {
             type: 'http',
             scheme: 'bearer',
             description:
-              'API 客户端或桌面使用 accessToken。桌面声明 X-Tyde-Client: desktop，禁止浏览器头或 Cookie；普通 API 客户端无浏览器头/Cookie 时可直接使用 Bearer。',
+              '仅非浏览器 API 客户端使用 accessToken；可声明 X-Tyde-Client: desktop，禁止 Origin、Cookie 和 sec-fetch-*。Electron 页面使用 Cookie，不使用此 Bearer 方案。',
           },
         },
       },

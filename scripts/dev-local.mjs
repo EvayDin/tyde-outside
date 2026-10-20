@@ -100,6 +100,7 @@ function localConfig() {
     HOST: '127.0.0.1',
     PORT: String(port),
     WEB_ORIGINS: 'http://127.0.0.1:3001,http://localhost:3001,http://127.0.0.1:4173',
+    DESKTOP_ORIGINS: 'tyde-app://app,http://127.0.0.1:5174',
     COOKIE_SECURE: 'false',
   };
 }

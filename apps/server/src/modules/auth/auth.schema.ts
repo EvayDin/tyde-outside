@@ -147,7 +147,7 @@ export const userResponse = {
 export const loginResponse = {
   type: 'object',
   description:
-    '登录或刷新成功的令牌对。默认有效期 30 天；Web 同时设置 HttpOnly Cookie，API/桌面后续使用 accessToken 进行 Bearer 认证。',
+    '登录或刷新成功的令牌对。默认有效期 30 天；Web 与 Electron 页面同时设置 HttpOnly Cookie，后续由浏览器携带；仅非浏览器 API 客户端使用 accessToken 进行 Bearer 认证。',
   required: ['accessToken', 'refreshToken', 'tokenType', 'expiresIn'],
   examples: [
     {
@@ -159,7 +159,7 @@ export const loginResponse = {
   ],
   properties: {
     accessToken: text(
-      '访问令牌原值；后续 API 请求使用 Authorization: Bearer <accessToken>。当前为随机不透明字符串，不能按 JWT 解析；示例不是真实令牌。',
+      '访问令牌原值；仅非浏览器 API 客户端使用 Authorization: Bearer <accessToken>，Web/Electron 页面使用 HttpOnly Cookie。当前为随机不透明字符串，不能按 JWT 解析；示例不是真实令牌。',
       'a'.repeat(43),
     ),
     refreshToken: text(
@@ -248,7 +248,7 @@ const operationDescriptions: Record<string, string> = {
   getCurrentUser:
     '根据当前有效会话返回用户资料，selectedRole=EXPERT；没有有效会话返回 401。完整多组织、实名和项目管理能力尚待迁移，当前占位字段见响应说明。',
   logout:
-    '撤销当前访问令牌对应的会话及其刷新令牌，Web 同时清除登录 Cookie；不影响其他客户端会话。没有会话也成功，data 为 null。',
+    '撤销当前访问令牌对应的会话及其刷新令牌，Web/Electron 页面同时清除登录 Cookie；不影响其他客户端会话。没有会话也成功，data 为 null。',
 };
 const errorDescriptions: Record<number, string> = {
   400: '请求字段/格式、验证码、密码确认或业务条件不正确。',
@@ -272,7 +272,7 @@ export function authSchema(
     operationId,
     summary,
     tags: ['Auth'],
-    description: `${operationDescriptions[operationId] ?? summary}\n\n沿用旧字段与 code/message/data 包装。role/roles 可省略；即使传入其他已知角色仍固定 EXPERT。Web 使用 HttpOnly Cookie，写请求 Origin 须在 WEB_ORIGINS 内。桌面使用 X-Tyde-Client: desktop 和 Bearer，禁止 Origin、Cookie、sec-fetch-*。无浏览器头、Cookie 和客户端声明的 API 调试请求自动按 Bearer 客户端处理。不要混用 Cookie 与 Authorization。`,
+    description: `${operationDescriptions[operationId] ?? summary}\n\n沿用旧字段与 code/message/data 包装。role/roles 可省略；即使传入其他已知角色仍固定 EXPERT。Web/Electron 页面使用 HttpOnly Cookie，写请求声明 X-Tyde-Client: web，Origin 须精确匹配 WEB_ORIGINS 或 DESKTOP_ORIGINS。普通 Web 使用 SameSite=Lax；桌面来源使用 SameSite=None、Secure，跨源 fetch 须使用 credentials: include。CORS 允许 Content-Type、X-Tyde-Client 并暴露 Retry-After。仅非浏览器 API 客户端使用 X-Tyde-Client: desktop 和 Bearer，禁止 Origin、Cookie、sec-fetch-*；无这些浏览器头、Cookie 和客户端声明的 API 调试请求自动按 Bearer 客户端处理。不要混用 Cookie 与 Authorization。`,
     security: protectedRoute ? [{ webSession: [] }, { desktopSession: [] }] : [],
     response: {
       200: response,

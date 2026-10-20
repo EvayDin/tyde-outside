@@ -140,7 +140,7 @@ export function fileSchema(
   return {
     operationId,
     summary,
-    description: `${description}\n\nWeb 使用 HttpOnly Cookie，写操作须携带可信 Origin；普通无浏览器头/Cookie 的 API 客户端使用 Bearer，桌面可声明 X-Tyde-Client: desktop。配置默认关闭存储，未配置时 HTTP 503。OSS 物理对象统一位于 bucket 的 tyde/ 主目录，接口 objectKey 为该目录内的相对业务键。`,
+    description: `${description}\n\nWeb/Electron 页面使用 HttpOnly Cookie，写操作须携带 WEB_ORIGINS 或 DESKTOP_ORIGINS 中的精确可信 Origin，客户端声明 X-Tyde-Client: web；桌面来源 Cookie 使用 SameSite=None、Secure，跨源 fetch 须携带 credentials: include。普通无 Origin、sec-fetch-* 或 Cookie 的 API 客户端使用 Bearer，可声明 X-Tyde-Client: desktop。配置默认关闭存储，未配置时 HTTP 503。OSS 物理对象统一位于 bucket 的 tyde/ 主目录，接口 objectKey 为该目录内的相对业务键。`,
     tags: ['Files'],
     security: authenticated ? [{ webSession: [] }, { desktopSession: [] }] : [],
     response: {

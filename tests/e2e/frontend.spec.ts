@@ -149,13 +149,17 @@ async function expectWelcome(page: Page) {
   await expect(
     page.getByRole('heading', { name: '欢迎，' + user.nickname, exact: true }),
   ).toBeVisible();
-  await expect(page.getByRole('button', { name: '退出登录', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '账户菜单', exact: true })).toBeVisible();
 }
 function expectNoLegacyRequests(requests: RequestRecord[]) {
   expect(requests.some(({ path }) => /\/health\/|\/auth\/(code|verify|me)$/.test(path))).toBe(
     false,
   );
-  expect(requests.every(({ client }) => client === 'web' || client === 'desktop')).toBe(true);
+  expect(
+    requests.every(({ method, client }) =>
+      method === 'GET' ? client === undefined : client === 'web',
+    ),
+  ).toBe(true);
 }
 
 async function pauseClock(page: Page) {
@@ -271,6 +275,7 @@ for (const [mode, origin] of [
     ]);
     await page.reload();
     await expectWelcome(page);
+    await page.getByRole('button', { name: '账户菜单', exact: true }).click();
     await page.getByRole('button', { name: '退出登录', exact: true }).click();
     await expect(page).toHaveURL(/#\/auth$/);
     await page.reload();
@@ -521,59 +526,73 @@ test('个人资料在1280与375视口保留字段、键盘操作和完整单页�
   }
 });
 
-async function desktopBackend() {
+async function desktopBackend(origin = 'http://127.0.0.1:5177') {
   const requests: RequestRecord[] = [];
+  const preflights: string[] = [];
   const state = { registered: false, signedIn: false, currentStatus: 200 };
+  const cookie = 'fixture_session=active; HttpOnly; SameSite=None; Secure; Path=/; Max-Age=1800';
   const server = createServer((request, response) => {
+    if (request.headers.origin !== origin) return void response.writeHead(403).end();
+    const headers = {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+      'Access-Control-Allow-Origin': origin,
+      'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Methods': 'GET, POST',
+      'Access-Control-Allow-Headers': 'Content-Type, X-Tyde-Client',
+      Vary: 'Origin',
+    };
+    if (request.method === 'OPTIONS') {
+      preflights.push(request.url ?? '');
+      return void response.writeHead(204, headers).end();
+    }
     const chunks: Buffer[] = [];
     request.on('data', (chunk: Buffer) => chunks.push(chunk));
     request.on('end', () => {
       const raw = Buffer.concat(chunks).toString('utf8');
-      const body = raw ? JSON.parse(raw) : null;
       const path = request.url ?? '';
       requests.push({
         path,
         method: request.method ?? '',
-        body,
-        client: String(request.headers['x-tyde-client'] ?? ''),
+        body: raw ? JSON.parse(raw) : null,
+        client: request.headers['x-tyde-client'] as string | undefined,
       });
-      const reply = (data: unknown) =>
-        response
-          .writeHead(200, { 'Content-Type': 'application/json' })
-          .end(JSON.stringify(success(data)));
+      const reply = (data: unknown, extra = {}) =>
+        response.writeHead(200, { ...headers, ...extra }).end(JSON.stringify(success(data)));
       const reject = () =>
-        response
-          .writeHead(401, { 'Content-Type': 'application/json' })
-          .end(JSON.stringify(failure(401, '请先登录')));
+        response.writeHead(401, headers).end(JSON.stringify(failure(401, '请先登录')));
       switch (path) {
         case '/api/v1/auth/sms/send':
           return reply(serverMessage);
-        case '/api/v1/auth/sms/login':
-          if (!state.registered) return reply(grant());
-          state.signedIn = true;
-          return reply(loginTokens);
         case '/api/v1/auth/register':
           state.registered = true;
           return reply(user);
+        case '/api/v1/auth/sms/login':
+          if (!state.registered) return reply(grant());
+          state.signedIn = true;
+          return reply(loginTokens, { 'Set-Cookie': cookie });
         case '/api/v1/auth/login':
           state.signedIn = true;
-          return reply(loginTokens);
+          return reply(loginTokens, { 'Set-Cookie': cookie });
         case '/api/v1/users/me':
           if (state.currentStatus !== 200)
             return response
-              .writeHead(state.currentStatus, { 'Content-Type': 'application/json' })
+              .writeHead(state.currentStatus, headers)
               .end(JSON.stringify(failure(state.currentStatus, '会话服务暂不可用')));
-          return state.signedIn &&
-            request.headers.authorization === 'Bearer ' + loginTokens.accessToken
+          return state.signedIn && request.headers.cookie?.includes('fixture_session=active')
             ? reply(user)
             : reject();
         case '/api/v1/auth/refresh':
-          return state.signedIn ? reply(loginTokens) : reject();
+          return state.signedIn ? reply(loginTokens, { 'Set-Cookie': cookie }) : reject();
         case '/api/v1/auth/logout':
           state.signedIn = false;
-          return reply(null);
+          return reply(null, {
+            'Set-Cookie': 'fixture_session=; Max-Age=0; HttpOnly; SameSite=None; Secure; Path=/',
+          });
         default:
-          response.writeHead(503).end(JSON.stringify(failure(503, '调用了未约定的接口')));
+          return response
+            .writeHead(503, headers)
+            .end(JSON.stringify(failure(503, '调用了未约定的接口')));
       }
     });
   });
@@ -583,6 +602,7 @@ async function desktopBackend() {
   return {
     state,
     requests,
+    preflights,
     url: 'http://127.0.0.1:' + address.port,
     close: () =>
       new Promise<void>((resolve, reject) =>
@@ -592,11 +612,13 @@ async function desktopBackend() {
 }
 
 for (const [mode, origin] of [
-  ['生产', 'http://127.0.0.1:5176/'],
+  ['本地资源', 'tyde-app://app/index.html'],
   ['DEV', 'http://127.0.0.1:5177/'],
 ] as const) {
-  test(`Electron ${mode} 通过真实bridge注册、登录、加密恢复及退出，令牌留在main`, async () => {
-    const backend = await desktopBackend();
+  test(`Electron ${mode} 页面HTTP注册登录、Cookie恢复与退出`, async () => {
+    const backend = await desktopBackend(
+      origin.startsWith('tyde-app:') ? 'tyde-app://app' : new URL(origin).origin,
+    );
     await mkdir('.local/frontend', { recursive: true });
     const profile = await mkdtemp(resolve('.local/frontend/session-'));
     const env = {
@@ -616,67 +638,27 @@ for (const [mode, origin] of [
     try {
       app = await launch();
       let page = await app.firstWindow();
-      const rendererRequests: string[] = [];
-      const rendererTraffic: Promise<{ headers: Record<string, string>; body: string }>[] = [];
-      page.on('request', (request) => {
-        if (request.url().includes('/api/')) rendererRequests.push(request.url());
-      });
-      page.on('response', (response) => {
-        if (response.url().startsWith('tyde-debug://desktop/api/'))
-          rendererTraffic.push(
-            Promise.all([response.request().allHeaders(), response.text()]).then(
-              ([headers, body]) => ({
-                headers,
-                body,
-              }),
-            ),
-          );
-      });
       await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
-      if (mode === 'DEV') {
-        const abandoned: { url?: string; body?: string } = {};
-        const inspection = await app.context().newCDPSession(page);
-        await inspection.send('Network.enable');
-        inspection.on('Network.requestWillBeSent', ({ request }) => {
-          if (request.url.startsWith('tyde-debug://desktop/api/v1/auth/sms/send?')) {
-            abandoned.url = request.url;
-            abandoned.body = request.postData ?? '';
-          }
-        });
-        await inspection.send('Network.setBlockedURLs', {
-          urls: ['tyde-debug://desktop/api/v1/auth/sms/send*'],
-        });
-        const aborted = await page.evaluate(
-          (phone) => window.tydeDesktop!.sendCode({ phone, scene: 'login' }),
-          phone,
-        );
-        expect(aborted.ok).toBe(false);
-        expect(backend.requests.filter(({ path }) => path.endsWith('/sms/send'))).toHaveLength(0);
-        if (!abandoned.url) throw new Error('未捕获开发代理请求');
-        const oldTicket = { url: abandoned.url, body: abandoned.body ?? '' };
-        await page.reload();
-        await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
-        await inspection.send('Network.setBlockedURLs', { urls: [] });
-        const replay = await page.evaluate(async ({ url, body }) => {
-          const response = await fetch(url, { method: 'POST', body, credentials: 'omit' });
-          await response.arrayBuffer();
-          return response.status;
-        }, oldTicket);
-        expect(replay).toBe(403);
-        expect(backend.requests.filter(({ path }) => path.endsWith('/sms/send'))).toHaveLength(0);
-        await inspection.detach();
-      }
+      expect(await page.evaluate(() => Object.keys(window.tydeDesktop!))).toEqual([
+        'getRuntimeConfig',
+      ]);
+      expect(await page.evaluate(() => window.tydeDesktop!.getRuntimeConfig())).toEqual({
+        ok: true,
+        data: { apiBaseUrl: backend.url },
+      });
       await page.getByLabel(/^手机号/).fill(phone);
-      const sending = page.waitForResponse((response) =>
-        response.url().startsWith('tyde-debug://desktop/api/v1/auth/sms/send?'),
+      const sending = page.waitForResponse(
+        (response) =>
+          response.url() === `${backend.url}/api/v1/auth/sms/send` &&
+          response.request().method() === 'POST',
       );
       await smsButton(page).click();
-      await expect(page.getByRole('status', { name: '操作提示' })).toHaveText(successNotice);
       const sent = await sending;
-      expect(sent.status()).toBe(200);
-      expect(sent.request().method()).toBe('POST');
-      expect(JSON.parse(sent.request().postData()!)).toEqual({ phone, scene: 'login' });
-      expect(await sent.json()).toEqual({ ok: true, data: serverMessage });
+      expect(sent.request().resourceType()).toBe('fetch');
+      expect(sent.request().headers()['x-tyde-client']).toBe('web');
+      expect(sent.request().headers().authorization).toBeUndefined();
+      expect(sent.request().postDataJSON()).toEqual({ phone, scene: 'login' });
+      await expect(page.getByRole('status', { name: '操作提示' })).toHaveText(successNotice);
       await smsLogin(page);
       await expect(page).toHaveURL(/#\/register$/);
       await fillRegistration(page);
@@ -684,22 +666,30 @@ for (const [mode, origin] of [
       await expect(page.getByRole('status', { name: '操作提示' })).toHaveText(
         '注册成功，请使用密码登录。',
       );
-      expect(backend.requests.filter(({ path }) => path.endsWith('/auth/login'))).toHaveLength(0);
       await page.getByLabel(/^密码\s*\*?\s*$/).fill(password);
       await page.getByRole('button', { name: '登录', exact: true }).click();
       await expectWelcome(page);
-      const login = await page.evaluate(
-        ({ phone, password }) => window.tydeDesktop!.login({ account: phone, password }),
-        { phone, password },
+      const cookies = await app.evaluate(
+        ({ BrowserWindow }, url) =>
+          BrowserWindow.getAllWindows()[0]!.webContents.session.cookies.get({ url }),
+        backend.url,
       );
-      expect(login.ok).toBe(true);
-      const verification = await page.evaluate(
-        ({ phone, code }) => window.tydeDesktop!.verifyCode({ phone, code }),
-        { phone, code: verificationCode },
+      expect(cookies.find(({ name }) => name === 'fixture_session')).toMatchObject({
+        httpOnly: true,
+        secure: true,
+        sameSite: 'no_restriction',
+        session: false,
+      });
+      const storage = await page.evaluate(() =>
+        JSON.stringify({
+          local: { ...localStorage },
+          session: { ...sessionStorage },
+          cookie: document.cookie,
+        }),
       );
-      expect(verification).toEqual({ ok: true, data: { status: 'authenticated' } });
-      expect(JSON.stringify({ login, verification })).not.toContain(loginTokens.accessToken);
-      expect(JSON.stringify({ login, verification })).not.toContain(loginTokens.refreshToken);
+      expect(storage).not.toContain(loginTokens.accessToken);
+      expect(storage).not.toContain(loginTokens.refreshToken);
+      expect(storage).not.toContain('fixture_session');
       const preferences = await app.evaluate(({ BrowserWindow }) => {
         const p = BrowserWindow.getAllWindows()[0]!.webContents.getLastWebPreferences();
         return {
@@ -713,14 +703,9 @@ for (const [mode, origin] of [
         sandbox: true,
         nodeIntegration: false,
       });
-      expect(rendererRequests.length).toBeGreaterThan(0);
-      expect(rendererRequests.every((url) => url.startsWith('tyde-debug://desktop/api/'))).toBe(
-        true,
-      );
-      const traffic = await Promise.all(rendererTraffic);
-      expect(traffic.every(({ headers }) => !headers.authorization && !headers.cookie)).toBe(true);
-      expect(JSON.stringify(traffic)).not.toContain(loginTokens.accessToken);
-      expect(JSON.stringify(traffic)).not.toContain(loginTokens.refreshToken);
+      await page.reload();
+      await expectWelcome(page);
+      await page.getByRole('button', { name: '账户菜单', exact: true }).click();
       await page.getByRole('button', { name: '退出登录', exact: true }).click();
       await expect(page).toHaveURL(/#\/auth$/);
       await smsLogin(page);
@@ -729,15 +714,20 @@ for (const [mode, origin] of [
       app = await launch();
       page = await app.firstWindow();
       await expectWelcome(page);
+      await page.getByRole('button', { name: '账户菜单', exact: true }).click();
       await page.getByRole('button', { name: '退出登录', exact: true }).click();
       await expect(page).toHaveURL(/#\/auth$/);
-      const cleared = await page.evaluate(() => window.tydeDesktop!.getCurrentUser());
-      expect(cleared.ok).toBe(false);
-      if (!cleared.ok) expect(cleared.status).toBe(401);
-      expect(
-        backend.requests.filter(({ path }) => path.endsWith('/sms/send')).map(({ body }) => body),
-      ).toEqual([{ phone, scene: 'login' }]);
+      const cleared = await page.evaluate(async () => {
+        const runtime = await window.tydeDesktop!.getRuntimeConfig();
+        if (!runtime.ok) throw new Error(runtime.error.message);
+        return (
+          await fetch(`${runtime.data.apiBaseUrl}/api/v1/users/me`, { credentials: 'include' })
+        ).status;
+      });
+      expect(cleared).toBe(401);
       expectNoLegacyRequests(backend.requests);
+      expect(backend.preflights).toContain('/api/v1/auth/sms/send');
+      expect(backend.preflights).not.toContain('/api/v1/users/me');
     } finally {
       await app?.close();
       await backend.close();
@@ -746,8 +736,9 @@ for (const [mode, origin] of [
   });
 }
 
-test('Electron DEV 已登录会话503无需点击自动恢复，成功后停止轮询且不重放写请求', async () => {
+test('Electron DEV 会话503自动恢复为401，进入登录页后停止轮询', async () => {
   const backend = await desktopBackend();
+  backend.state.currentStatus = 503;
   await mkdir('.local/frontend', { recursive: true });
   const profile = await mkdtemp(resolve('.local/frontend/recovery-'));
   const env = {
@@ -765,34 +756,18 @@ test('Electron DEV 已登录会话503无需点击自动恢复，成功后停止�
       env,
     });
     const page = await app.firstWindow();
-    await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
-    const login = await page.evaluate(
-      ({ phone, password }) => window.tydeDesktop!.login({ account: phone, password }),
-      { phone, password },
-    );
-    expect(login.ok).toBe(true);
-    backend.state.currentStatus = 503;
-    const beforeRecovery = backend.requests.length;
-    await page.reload();
     await expect(page.getByText('会话服务暂不可用', { exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: '重试', exact: true })).toBeEnabled();
-    expect(backend.requests.slice(beforeRecovery)).toHaveLength(1);
-
+    expect(backend.requests).toHaveLength(1);
     backend.state.currentStatus = 200;
-    await expectWelcome(page);
-    expect(backend.requests.slice(beforeRecovery)).toHaveLength(2);
-    await page.waitForTimeout(3_500);
-    const recoveryRequests = backend.requests.slice(beforeRecovery);
-    expect(recoveryRequests).toHaveLength(2);
-    expectSessionReads(recoveryRequests);
-    expect(recoveryRequests.every(({ client }) => client === 'desktop')).toBe(true);
+    await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
+    await page.waitForTimeout(3500);
+    expect(backend.requests).toHaveLength(2);
+    expectSessionReads(backend.requests);
+    expect(backend.preflights).toEqual([]);
   } finally {
-    try {
-      await app?.close();
-    } finally {
-      await backend.close();
-      await rm(profile, { recursive: true, force: true });
-    }
+    await app?.close();
+    await backend.close();
+    await rm(profile, { recursive: true, force: true });
   }
 });
 

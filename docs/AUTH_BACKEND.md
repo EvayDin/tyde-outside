@@ -81,7 +81,7 @@ UserDTO 使用 `id`、`uid`、`accountType`、`phone`、`nickname`、`realName`�
 
 令牌仍采用新项目的随机不透明值，数据库只存摘要，默认有效 30 天；并非旧项目 JWT。刷新后原访问/刷新令牌对失效；重置密码撤销全部会话；普通退出撤销当前会话。当前实现允许 Web/桌面及同客户端多个会话并存；单账号踢号、退出范围、刷新重放强制下线等兼容策略仍待用户确认，不能视为已验收。角色切换按固定 EXPERT 规则暂缓。
 
-Web 使用 HttpOnly Cookie；有 Origin 的写请求必须来自 `WEB_ORIGINS`。桌面使用 `X-Tyde-Client: desktop` 与 Bearer，禁止 Origin、Cookie 和浏览器 fetch 头。无浏览器头、Cookie 和客户端声明的 API 调试请求按 Bearer 客户端处理，因此旧式 API 客户端无需额外自定义头。
+Web 和 Electron 页面均使用 HttpOnly 会话 Cookie；浏览器来源须精确位于 `WEB_ORIGINS` 或 `DESKTOP_ORIGINS`。普通 Web 保持 SameSite=Lax，可信桌面来源使用 SameSite=None+Secure；服务端支持凭据 CORS、OPTIONS 预检并暴露 Retry-After。页面写请求声明 `X-Tyde-Client: web`，GET/HEAD 省略自定义头；刷新令牌仅保留在适配器内存，IPC 只返回公开 API 源。非浏览器 API 继续支持 `X-Tyde-Client: desktop` 与 Bearer，并禁止 Origin、Cookie 和 sec-fetch-*；无浏览器头、Cookie 和客户端声明的调试请求自动按 Bearer 处理。
 
 ## 联调与数据库
 

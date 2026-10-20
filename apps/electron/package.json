@@ -15,8 +15,7 @@
     "package:win": "node ../../scripts/prepare-electron.mjs win && electron-builder --win --x64 --publish never && node ../../scripts/checksums.mjs ../../release"
   },
   "dependencies": {
-    "@tyde/shared": "workspace:*",
-    "@sinclair/typebox": "0.34.52"
+    "@tyde/shared": "workspace:*"
   },
   "devDependencies": {
     "electron": "38.2.1",

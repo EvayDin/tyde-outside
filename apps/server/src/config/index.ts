@@ -9,6 +9,7 @@ export interface Config {
   codeSecret: string;
   smsProvider: 'mock';
   webOrigins: string[];
+  desktopOrigins: string[];
   cookieSecure: boolean;
   trustProxy: false | string[];
   logLevel: string;
@@ -52,6 +53,27 @@ export function readConfig(source: NodeJS.ProcessEnv = process.env): Config {
     throw new Error('非回环 Web 环境必须使用 HTTPS 和 Secure Cookie');
   if (secure && origins.some((x) => new URL(x).protocol !== 'https:'))
     throw new Error('Secure Cookie 环境必须使用 HTTPS');
+  const desktopOrigins = (source.DESKTOP_ORIGINS ?? 'tyde-app://app')
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean);
+  if (
+    !desktopOrigins.length ||
+    desktopOrigins.some((origin) => {
+      if (origin === 'tyde-app://app') return false;
+      try {
+        const url = new URL(origin);
+        return (
+          url.origin !== origin ||
+          !['http:', 'https:'].includes(url.protocol) ||
+          !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+        );
+      } catch {
+        return true;
+      }
+    })
+  )
+    throw new Error('DESKTOP_ORIGINS 仅允许 tyde-app://app 或完整的回环 HTTP(S) 源地址');
   const port = Number(source.PORT ?? 3000);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT 配置无效');
   const proxy = source.TRUST_PROXY;
@@ -65,6 +87,7 @@ export function readConfig(source: NodeJS.ProcessEnv = process.env): Config {
     codeSecret,
     smsProvider: 'mock',
     webOrigins: origins,
+    desktopOrigins,
     cookieSecure: secure,
     trustProxy: !proxy || proxy === 'false' ? false : proxy.split(',').map((x) => x.trim()),
     logLevel: source.LOG_LEVEL ?? 'info',

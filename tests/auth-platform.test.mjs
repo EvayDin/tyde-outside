@@ -99,8 +99,9 @@ test('Web adapter uses wrapped SMS/password/registration contracts and keeps tok
   assert.deepEqual(calls[2].body, registration);
   assert.ok(
     calls.every(
-      ({ credentials, headers }) =>
-        credentials === 'same-origin' && headers['X-Tyde-Client'] === 'web',
+      ({ method, credentials, headers }) =>
+        credentials === 'same-origin' &&
+        headers['X-Tyde-Client'] === (method === 'GET' ? undefined : 'web'),
     ),
   );
 });
@@ -271,4 +272,280 @@ test('Web adapter rejects a successful user response that arrives after logout',
   await api.logout();
   releaseUser.resolve();
   await pending;
+});
+
+test('Cookie mutations preserve late login, logout and subsequent failed login order', async (t) => {
+  const started = deferred();
+  const release = deferred();
+  let cookie;
+  let logins = 0;
+  const { api, calls } = await adapter(t, async ({ path }) => {
+    if (path.endsWith('/login')) {
+      if (++logins === 1) {
+        started.resolve();
+        await release.promise;
+        // Model the browser applying Set-Cookie before JS receives the response.
+        cookie = firstTokens.accessToken;
+        return result(firstTokens);
+      }
+      return result(null, 401);
+    }
+    if (path.endsWith('/logout')) {
+      cookie = undefined;
+      return result(null);
+    }
+    return result(cookie ? user : null, cookie ? 200 : 401);
+  });
+  const first = assert.rejects(
+    api.login({ account: phone, password: 'first' }),
+    (error) => error.code === 'SESSION_CHANGED',
+  );
+  await started.promise;
+  const logout = api.logout();
+  const next = assert.rejects(
+    api.login({ account: phone, password: 'wrong' }),
+    (error) => error.status === 401,
+  );
+  await Promise.resolve();
+  assert.equal(calls.length, 1);
+  release.resolve();
+  await Promise.all([first, logout, next]);
+  assert.deepEqual(
+    calls.map(({ path }) => path),
+    ['/api/v1/auth/login', '/api/v1/auth/logout', '/api/v1/auth/logout', '/api/v1/auth/login'],
+  );
+  assert.equal(cookie, undefined);
+  await assert.rejects(api.getCurrentUser(), (error) => error.status === 401);
+});
+
+test('An older successful login cannot overwrite a newer Cookie session', async (t) => {
+  const started = deferred();
+  const release = deferred();
+  let cookie;
+  let logins = 0;
+  const { api } = await adapter(t, async ({ path }) => {
+    if (path.endsWith('/logout')) {
+      cookie = undefined;
+      return result(null);
+    }
+    if (++logins === 1) {
+      started.resolve();
+      await release.promise;
+      cookie = firstTokens.accessToken;
+      return result(firstTokens);
+    }
+    cookie = nextTokens.accessToken;
+    return result(nextTokens);
+  });
+  const first = assert.rejects(
+    api.login({ account: phone, password: 'old' }),
+    (error) => error.code === 'SESSION_CHANGED',
+  );
+  await started.promise;
+  const next = api.login({ account: phone, password: 'new' });
+  release.resolve();
+  await Promise.all([first, next]);
+  assert.equal(cookie, nextTokens.accessToken);
+});
+
+test('Desktop sends business HTTP through renderer fetch and reads only public configuration from IPC', async (t) => {
+  const originalWindow = globalThis.window;
+  let configurationReads = 0;
+  globalThis.window = {
+    tydeDesktop: {
+      getRuntimeConfig: async () => {
+        configurationReads++;
+        return { ok: true, data: { apiBaseUrl: 'https://api.example.test' } };
+      },
+    },
+  };
+  t.after(() => {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  });
+  const { calls } = await adapter(t, ({ path }) => {
+    if (path.endsWith('/sms/send')) return result('后端发码结果');
+    if (path.endsWith('/login')) return result(firstTokens);
+    if (path.endsWith('/logout')) return result(null);
+    return result(user);
+  });
+  const { platform } = await import(`../packages/platform/src/index.ts?case=${++sequence}`);
+  assert.equal(platform.isElectron, true);
+  assert.deepEqual(platform.capabilities, {});
+  assert.equal(await platform.auth.sendCode({ phone, scene: 'login' }), '后端发码结果');
+  assert.equal(await platform.auth.login({ account: phone, password: 'Password123!' }), undefined);
+  assert.deepEqual(await platform.auth.getCurrentUser(), user);
+  await platform.auth.logout();
+  assert.equal(configurationReads, 1);
+  assert.deepEqual(
+    calls.map(({ path }) => path),
+    [
+      'https://api.example.test/api/v1/auth/sms/send',
+      'https://api.example.test/api/v1/auth/login',
+      'https://api.example.test/api/v1/users/me',
+      'https://api.example.test/api/v1/auth/logout',
+    ],
+  );
+  assert.ok(
+    calls.every(
+      ({ method, credentials, headers }) =>
+        credentials === 'include' &&
+        headers['X-Tyde-Client'] === (method === 'GET' ? undefined : 'web') &&
+        headers.Authorization === undefined &&
+        headers.Cookie === undefined,
+    ),
+  );
+});
+
+test('Desktop configuration denial is preserved and prevents business fetch', async (t) => {
+  const originalWindow = globalThis.window;
+  globalThis.window = {
+    tydeDesktop: {
+      getRuntimeConfig: async () => ({
+        ok: false,
+        status: 403,
+        error: { code: 'IPC_FORBIDDEN', message: '请求来源不可信' },
+      }),
+    },
+  };
+  t.after(() => {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  });
+  const { calls } = await adapter(t, () => {
+    throw new Error('unexpected business request');
+  });
+  const { platform } = await import(`../packages/platform/src/index.ts?case=${++sequence}`);
+  await assert.rejects(
+    platform.auth.getCurrentUser(),
+    (error) => error.status === 403 && error.code === 'IPC_FORBIDDEN',
+  );
+  assert.equal(calls.length, 0);
+});
+
+test('Desktop retries a failed runtime lookup and caches the successful configuration', async (t) => {
+  const originalWindow = globalThis.window;
+  let configurationReads = 0;
+  globalThis.window = {
+    tydeDesktop: {
+      getRuntimeConfig: async () => {
+        if (++configurationReads === 1) throw new Error('temporary IPC failure');
+        return { ok: true, data: { apiBaseUrl: 'https://api.example.test' } };
+      },
+    },
+  };
+  t.after(() => {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  });
+  const { calls } = await adapter(t, () => result(user));
+  const { platform } = await import(`../packages/platform/src/index.ts?case=${++sequence}`);
+  await assert.rejects(platform.auth.getCurrentUser(), (error) => error.code === 'NETWORK_ERROR');
+  assert.equal(calls.length, 0);
+  assert.deepEqual(await platform.auth.getCurrentUser(), user);
+  assert.deepEqual(await platform.auth.getCurrentUser(), user);
+  assert.equal(configurationReads, 2);
+  assert.equal(calls.length, 2);
+});
+
+test('A superseded successful login is revoked before a newer failed login', async (t) => {
+  const started = deferred();
+  const release = deferred();
+  let cookie;
+  let logins = 0;
+  const { api, calls } = await adapter(t, async ({ path }) => {
+    if (path.endsWith('/login')) {
+      if (++logins === 1) {
+        started.resolve();
+        await release.promise;
+        cookie = firstTokens.accessToken;
+        return result(firstTokens);
+      }
+      return result(null, 401);
+    }
+    if (path.endsWith('/logout')) {
+      cookie = undefined;
+      return result(null);
+    }
+    return result(cookie ? user : null, cookie ? 200 : 401);
+  });
+  const first = assert.rejects(
+    api.login({ account: phone, password: 'old' }),
+    (error) => error.code === 'SESSION_CHANGED',
+  );
+  await started.promise;
+  const next = assert.rejects(
+    api.login({ account: phone, password: 'wrong' }),
+    (error) => error.status === 401,
+  );
+  release.resolve();
+  await Promise.all([first, next]);
+  assert.equal(cookie, undefined);
+  await assert.rejects(api.getCurrentUser(), (error) => error.status === 401);
+  assert.deepEqual(
+    calls.map(({ path }) => path),
+    ['/api/v1/auth/login', '/api/v1/auth/logout', '/api/v1/auth/login', '/api/v1/users/me'],
+  );
+});
+
+test('A failed superseded-login cleanup surfaces its error without retrying the write', async (t) => {
+  const started = deferred();
+  const release = deferred();
+  let logins = 0;
+  const { api, calls } = await adapter(t, async ({ path }) => {
+    if (path.endsWith('/logout')) return result(null, 503);
+    if (++logins === 1) {
+      started.resolve();
+      await release.promise;
+      return result(firstTokens);
+    }
+    return result(null, 401);
+  });
+  const first = assert.rejects(
+    api.login({ account: phone, password: 'old' }),
+    (error) =>
+      error.code === 'SESSION_CLEANUP_FAILED' &&
+      error.status === 503 &&
+      error.message.includes('旧会话清理失败'),
+  );
+  await started.promise;
+  const next = assert.rejects(
+    api.login({ account: phone, password: 'wrong' }),
+    (error) => error.status === 401,
+  );
+  release.resolve();
+  await Promise.all([first, next]);
+  assert.equal(calls.filter(({ path }) => path.endsWith('/logout')).length, 1);
+});
+
+test('A superseded registration grant does not trigger session cleanup', async (t) => {
+  const started = deferred();
+  const release = deferred();
+  const { api, calls } = await adapter(t, async ({ path }) => {
+    if (path.endsWith('/sms/login')) {
+      started.resolve();
+      await release.promise;
+      return result({
+        status: 'registration_required',
+        registrationToken: 'g'.repeat(43),
+        expiresAt: '2099-01-01T00:00:00Z',
+      });
+    }
+    return result(null, 401);
+  });
+  const first = assert.rejects(
+    api.verifyCode({ phone, code: '731846' }),
+    (error) => error.code === 'SESSION_CHANGED',
+  );
+  await started.promise;
+  const next = assert.rejects(
+    api.login({ account: phone, password: 'wrong' }),
+    (error) => error.status === 401,
+  );
+  release.resolve();
+  await Promise.all([first, next]);
+  assert.deepEqual(
+    calls.map(({ path }) => path),
+    ['/api/v1/auth/sms/login', '/api/v1/auth/login'],
+  );
 });

@@ -6,7 +6,7 @@
 
 当前 Web/Electron 使用 Tailwind CSS、shadcn/ui 与 TanStack Router，开发和生产均通过平台适配调用下列真实认证接口。发码成功后保留后端 data 提示字符串，并展示与服务端 mock 共用的 `@tyde/shared` 常量 `MOCK_SMS_CODE`（当前为 `095270`）；页面不另行定义测试码，提示已含该验证码时不重复追加，失败或限流时不显示测试码，验证码有效期和校验仍由后端决定。后端发码成功只返回“验证码已发送，请注意查收”，响应不另设验证码或重发间隔字段，限流倒计时来自 HTTP 429 的 `Retry-After`。后端短信目前仍为开发/测试 mock，接入真实短信时须同步移除固定测试码提示。
 
-短信登录按后端返回区分已有账号和注册指引；注册凭证仅存内存，个人资料提交后返回密码登录。Web 使用 HttpOnly Cookie，刷新令牌只留在平台适配器内存；Electron main 加密保管访问/刷新令牌对并处理轮换，IPC 不向页面返回登录令牌。注册返回用户资料，不自动创建会话；退出 HTTP 200 后清除客户端会话状态。
+短信登录按后端返回区分已有账号和注册指引；注册凭证仅存内存，个人资料提交后返回密码登录。Web 与 Electron 均由页面通过平台适配器 fetch 真实接口，使用 HttpOnly Cookie；刷新令牌只留在适配器内存，不进入持久化存储。Electron IPC 仅返回已校验的公开 API 源，不转发业务 HTTP 或保管登录令牌。注册返回用户资料，不自动创建会话；退出 HTTP 200 后清除客户端会话状态。
 
 执行 `pnpm dev:web` 后可通过 `http://127.0.0.1:3001/api/v1/docs/` 访问同源文档；`API_PROXY_TARGET` 指向 HTTPS 后端时使用 `https://localhost:3001/api/v1/docs/`。部署包及 Vercel 由同一个 Fastify 服务托管 Web 与 API，数据库状态以 `/api/v1/health/ready` 为准。
 
@@ -25,9 +25,11 @@
 
 认证成功统一 HTTP 200，使用 `{code: 200, message: "操作成功", data: ...}`。登录 data 包含 `accessToken/refreshToken/tokenType/expiresIn`，注册返回 UserDTO，退出与重置返回 null。失败使用 `code/message/data`，限流 HTTP 429 携带 `Retry-After`。健康检查保留原 `status` 结构。
 
-Swagger 的 Try it out 会真实执行注册、登录、重置和退出。浏览器页面来源须加入 `WEB_ORIGINS`；Web 登录自动建立 HttpOnly Cookie。`COOKIE_SECURE=true` 时使用 HTTPS 与 `__Host-tyde_session`，否则使用 `tyde_session`。
+Swagger 的 Try it out 会真实执行注册、登录、重置和退出。Web 页面来源须加入 `WEB_ORIGINS`，Electron 安装包页面来源在 `DESKTOP_ORIGINS`（默认仅 `tyde-app://app`）；开发页面须按实际端口追加精确回环 HTTP(S) 源，例如 `http://127.0.0.1:5174`。桌面列表拒绝通配、`null`、路径和任意远程来源。Web/Electron 登录均自动建立 HttpOnly Cookie，`COOKIE_SECURE=true` 时 Cookie 名为 `__Host-tyde_session`，否则为 `tyde_session`。
 
-API 客户端可直接通过 Bearer 认证；Electron 使用 `X-Tyde-Client: desktop`。桌面传输不能带 Origin、Cookie 或 sec-fetch-*，Cookie 与 Authorization 也不能混用。
+普通 Web Cookie 保持 `SameSite=Lax` 与原 `COOKIE_SECURE` 配置；精确匹配 `DESKTOP_ORIGINS` 的页面使用 `SameSite=None; Secure`，正式后端须通过 HTTPS 访问。Electron 的 Chromium 按可信后端源使用独立持久 session 保存 Cookie，页面 fetch 使用 `credentials: include`。写请求使用 `X-Tyde-Client: web`；GET/HEAD 省略自定义客户端头，沿用 Cookie 认证，避免多余跨源预检。服务端仅对精确可信来源返回凭据 CORS，OPTIONS 允许 GET/HEAD/POST/DELETE 及 `Content-Type`、`X-Tyde-Client`，暴露 `Retry-After` 供限流处理，不放行任意请求头。
+
+非浏览器 API 客户端保留 Bearer 认证及可选的 `X-Tyde-Client: desktop`；此传输禁止 Origin、Cookie 或 sec-fetch-*。Electron 页面不使用这套 Bearer 传输，Cookie 与 Authorization 不能混用。
 
 ```sh
 curl http://127.0.0.1:3000/api/v1/users/me \

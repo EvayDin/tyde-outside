@@ -1,4 +1,4 @@
-import { BrowserWindow, app } from 'electron';
+import { BrowserWindow, app, type Session } from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
@@ -9,7 +9,8 @@ export const iconPath = join(
 export function trustedPage(raw: string): boolean {
   try {
     const url = new URL(raw);
-    if (app.isPackaged)
+    if (url.username || url.password) return false;
+    if (app.isPackaged || process.env.TYDE_WEB_URL === 'tyde-app://app/index.html')
       return (
         url.protocol === 'tyde-app:' &&
         url.host === 'app' &&
@@ -28,7 +29,7 @@ export function trustedPage(raw: string): boolean {
     return false;
   }
 }
-export async function createWindow(): Promise<BrowserWindow> {
+export async function createWindow(session: Session): Promise<BrowserWindow> {
   const window = new BrowserWindow({
     width: 1120,
     height: 780,
@@ -44,18 +45,17 @@ export async function createWindow(): Promise<BrowserWindow> {
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: true,
-      devTools: !app.isPackaged,
+      session,
+      devTools: true,
     },
   });
   window.setMenuBarVisibility(false);
-  if (!app.isPackaged) {
-    window.webContents.on('before-input-event', (event, input) => {
-      if (input.key === 'F12') {
-        event.preventDefault();
-        if (input.type === 'keyDown' && !input.isAutoRepeat) window.webContents.toggleDevTools();
-      }
-    });
-  }
+  window.webContents.on('before-input-event', (event, input) => {
+    if (input.key === 'F12') {
+      event.preventDefault();
+      if (input.type === 'keyDown' && !input.isAutoRepeat) window.webContents.toggleDevTools();
+    }
+  });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => {
     if (!trustedPage(url)) event.preventDefault();

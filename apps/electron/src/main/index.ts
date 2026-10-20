@@ -1,21 +1,15 @@
-import { app, protocol, net, dialog, BrowserWindow } from 'electron';
+import { app, protocol, net, dialog, BrowserWindow, session } from 'electron';
+import { createHash } from 'node:crypto';
 import { resolve, relative, isAbsolute, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadRuntime } from './config.js';
 import { registerIpc } from './ipc/index.js';
 import { createWindow, iconPath } from './windows.js';
-import { DESKTOP_NETWORK_SCHEME } from '@tyde/shared/ipc';
-
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'tyde-app', privileges: { standard: true, secure: true, supportFetchAPI: true } },
-  ...(!app.isPackaged
-    ? [
-        {
-          scheme: DESKTOP_NETWORK_SCHEME,
-          privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
-        },
-      ]
-    : []),
+  {
+    scheme: 'tyde-app',
+    privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
+  },
 ]);
 // 保留改名前的用户数据目录，升级后继续读取已有会话和浏览器数据。
 if (app.isPackaged) app.setPath('userData', resolve(app.getPath('appData'), 'tyde-outside'));
@@ -34,12 +28,17 @@ if (!app.requestSingleInstanceLock()) {
     .then(async () => {
       app.setAppUserModelId('app.tydeoutside.desktop');
       if (!app.isPackaged) app.dock?.setIcon(iconPath);
-      protocol.handle('tyde-app', async (request) => {
+      const config = await loadRuntime();
+      const partition = `persist:tyde-${createHash('sha256').update(config.apiBaseUrl).digest('hex').slice(0, 16)}`;
+      const browserSession = session.fromPartition(partition);
+      browserSession.protocol.handle('tyde-app', async (request) => {
         try {
           const url = new URL(request.url);
-          if (url.host !== 'app' || request.method !== 'GET')
+          if (url.host !== 'app' || url.username || url.password || request.method !== 'GET')
             return new Response('Forbidden', { status: 403 });
-          const root = resolve(process.resourcesPath, 'web');
+          const root = app.isPackaged
+            ? resolve(process.resourcesPath, 'web')
+            : resolve(import.meta.dirname, '../../../web/dist');
           const path = resolve(root, `.${decodeURIComponent(url.pathname)}`);
           const rel = relative(root, path);
           if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel))
@@ -48,19 +47,19 @@ if (!app.requestSingleInstanceLock()) {
           const headers = new Headers(response.headers);
           headers.set(
             'Content-Security-Policy',
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-src 'none'",
+            `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src ${config.apiBaseUrl}; object-src 'none'; base-uri 'none'; frame-src 'none'`,
           );
           return new Response(response.body, { status: response.status, headers });
         } catch {
           return new Response('Not found', { status: 404 });
         }
       });
-      registerIpc(await loadRuntime());
+      registerIpc(config);
       let creatingWindow: Promise<BrowserWindow> | undefined;
       async function showMainWindow() {
         let window = BrowserWindow.getAllWindows()[0];
         if (creatingWindow || !window) {
-          creatingWindow ??= createWindow().finally(() => {
+          creatingWindow ??= createWindow(browserSession).finally(() => {
             creatingWindow = undefined;
           });
           window = await creatingWindow;

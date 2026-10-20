@@ -19,6 +19,7 @@ export default defineConfig({
         PORT: '3100',
         HOST: '127.0.0.1',
         WEB_ORIGINS: 'http://127.0.0.1:5175',
+        DESKTOP_ORIGINS: 'tyde-app://app,http://127.0.0.1:5178',
         LOG_LEVEL: 'warn',
       },
       reuseExistingServer: false,
@@ -27,7 +28,14 @@ export default defineConfig({
     {
       command: 'pnpm --filter @tyde/web exec vite --host 127.0.0.1 --port 5175 --strictPort',
       url: 'http://127.0.0.1:5175',
-      env: { API_PROXY_TARGET: 'http://127.0.0.1:3100' },
+      env: { API_PROXY_TARGET: 'http://127.0.0.1:3100', VITE_MOCK_CURRENT_USER: 'false' },
+      reuseExistingServer: false,
+      timeout: 30_000,
+    },
+    {
+      command: 'pnpm --filter @tyde/web exec vite --host 127.0.0.1 --port 5178 --strictPort',
+      url: 'http://127.0.0.1:5178',
+      env: { API_PROXY_TARGET: 'http://127.0.0.1:3100', VITE_MOCK_CURRENT_USER: 'false' },
       reuseExistingServer: false,
       timeout: 30_000,
     },

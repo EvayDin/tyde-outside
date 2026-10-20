@@ -13,7 +13,7 @@ const apiBaseUrl =
   process.env.API_PROXY_TARGET ??
   webEnv.API_PROXY_TARGET ??
   'http://127.0.0.1:3000';
-// 桌面通过 main 请求后端，页面服务使用独立 HTTP 端口，避免与 Web HTTPS 冲突。
+// 桌面页面直接请求可信后端，独立 HTTP 页面服务不承担 API 代理。
 const url = 'http://127.0.0.1:5174/';
 const children = new Set();
 let stopping = false;
