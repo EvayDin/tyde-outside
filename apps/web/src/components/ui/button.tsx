@@ -22,8 +22,8 @@ import { cn } from '@/lib/utils';
  * - `ghost`：弱化背景的次级按钮；
  * - `link`：链接式按钮；
  * - `unstyled`：除全站统一的 12px 圆角外，不注入或合并其他视觉类。
- * 尺寸统一使用 `xs`、`sm`、`default`、`lg`、`mobileTouch`、`account`、`formControl` 和图标尺寸变体。
- * `account` 用于始终保留 44px 点击区域的账户菜单。
+ * 尺寸统一使用 `xs`、`sm`、`default`、`lg`、`mobileTouch`、`settings`、`account`、`formControl` 和图标尺寸变体。
+ * `settings` 对齐个人中心表单，`account` 用于始终保留 44px 点击区域的账户菜单。
  * `formControl` 用于与表单输入框并排的操作，桌面端保持相同高度，移动端保留触控区域。
  * `formCompact` 统一 32px 表单操作，其他密集操作直接复用基础尺寸。
  * `formCompactMobileTouch` 用于桌面 32px、680px 以下移动布局 44px 的紧凑表单操作。
@@ -75,6 +75,7 @@ const buttonVariants = cva(
         authInline: 'h-6 px-1 text-[12px]',
         authSubmit: 'h-[52px] px-4',
         mobileTouch: 'h-[44px] px-4 text-[12px] sm:h-[36px]',
+        settings: 'h-[40px] px-[16px] text-[13px] max-[640px]:h-[44px]',
         account: 'h-[44px] px-[12px] text-[13px]',
         formControl: 'h-11 px-5 text-[12px] sm:h-[38px]',
         compactMobileTouch: 'h-11 px-3.5 text-[12px] sm:h-7 sm:px-2.5 sm:text-[11px]',
@@ -120,7 +121,7 @@ export function Button({
       ? cn('rounded-[12px]', className)
       : cn(
           buttonVariants({ variant, size }),
-          size === 'account' ? 'rounded-[8px]' : 'rounded-[12px]',
+          size === 'settings' || size === 'account' ? 'rounded-[8px]' : 'rounded-[12px]',
           className,
         );
 

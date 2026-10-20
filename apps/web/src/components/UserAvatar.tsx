@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
 
-/** 账户头像加载失败时使用姓名首字。 */
+/** 头像加载失败时使用姓名首字，顶栏和个人中心共用。 */
 export function UserAvatar({
   url,
   name,

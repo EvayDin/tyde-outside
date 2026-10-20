@@ -15,6 +15,7 @@ import { WorkspaceLayout } from '../layouts/WorkspaceLayout';
 import { LoginPage } from '../modules/auth/LoginPage';
 import { RegisterPage } from '../modules/auth/RegisterPage';
 import { WelcomePage } from '../modules/auth/WelcomePage';
+import { ProfilePage } from '../modules/profile/ProfilePage';
 import { AuthFlowProvider, useAuthFlow } from '../modules/auth/AuthFlow';
 import { useSession } from '../hooks/useSession';
 import { ErrorNotice } from '../components/ErrorNotice';
@@ -94,6 +95,11 @@ function HomePage() {
   return session.data && <WelcomePage user={session.data} />;
 }
 
+function CurrentProfilePage() {
+  const session = useSession();
+  return session.data && <ProfilePage user={session.data} />;
+}
+
 const rootRoute = createRootRoute({
   component: RootLayout,
   notFoundComponent: () => <Navigate to="/" replace />,
@@ -109,6 +115,11 @@ const homeRoute = createRoute({
   path: '/',
   component: HomePage,
 });
+const profileRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/profile',
+  component: CurrentProfilePage,
+});
 const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/auth',
@@ -120,7 +131,7 @@ const registrationRoute = createRoute({
   component: RegisterPage,
 });
 const router = createRouter({
-  routeTree: rootRoute.addChildren([homeRoute, loginRoute, registrationRoute]),
+  routeTree: rootRoute.addChildren([homeRoute, profileRoute, loginRoute, registrationRoute]),
   history: createHashHistory(),
 });
 

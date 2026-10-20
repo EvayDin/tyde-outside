@@ -12,6 +12,6 @@ export const inputSizeClassNames: Record<InputSize, string> = {
   formControl: 'h-[38px] px-3 text-[13px]',
   authRegister: 'h-[32px] px-3 text-[13px]',
   auth: 'h-[40px] px-3 text-[13px]',
-  profile: 'h-[42px] px-3.5 text-[13px]',
+  profile: 'h-[40px] px-[12px] text-[13px] max-[640px]:h-[44px]',
   lg: 'h-11 px-3.5 text-[13px]',
 };
