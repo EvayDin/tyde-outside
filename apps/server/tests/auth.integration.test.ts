@@ -4053,7 +4053,7 @@ test('published detail rejects missing, draft and deleted projects and validates
     ).toBe(400);
   expect((await app.inject({ url: `/api/v1/projects/${id}` })).statusCode).toBe(401);
 });
-test('active expert project detail does not bypass attachment acceptance and admission requirements pending later migrations', async () => {
+test('expert project attachments require real acceptance and admission while ACTIVE project membership alone never grants access', async () => {
   const f = await projectCreationFixture();
   const expert = await projectManagerAccount(1, 100, false);
   const upload = await uploaded('PROJECT_ATTACHMENT', f.user.uid);
@@ -4080,15 +4080,80 @@ test('active expert project detail does not bypass attachment acceptance and adm
     headers: expert.headers,
   });
   expect(file.statusCode).toBe(403);
+  const getFile = () =>
+    app.inject({
+      url: `/api/v1/files/view?objectKey=${encodeURIComponent(upload.record.objectKey)}`,
+      headers: expert.headers,
+    });
+  await db.projectExpertAssignment.create({
+    data: {
+      assignmentNo: 'ATTACHMENT-ACCEPTED',
+      projectId,
+      subjectType: 'INDIVIDUAL',
+      expertUserId: expert.user.id,
+      status: 'ACCEPTED',
+      createdBy: f.user.uid,
+    },
+  });
+  expect((await getFile()).statusCode).toBe(200); // 无计划免试，已接单即可读。
+  await db.projectProductionPlan.create({
+    data: {
+      projectId,
+      operatorHeadcount: 1,
+      operatorCpd: 1,
+      totalExpectedOutput: 1,
+      needWrittenExam: true,
+      confirmedBy: f.user.uid,
+      confirmedAt: new Date(),
+      createdBy: f.user.uid,
+      updatedBy: f.user.uid,
+    },
+  });
+  expect((await getFile()).statusCode).toBe(403);
+  const exam = await db.projectEntranceExam.create({
+    data: { examNo: 'FILE-EXAM', projectId, examName: '附件准入', createdBy: f.user.uid },
+  });
+  await db.entranceExamAttempt.create({
+    data: {
+      attemptNo: 'FILE-ATTEMPT',
+      examId: exam.id,
+      candidateUserId: expert.user.id,
+      candidateUid: expert.user.uid,
+      candidateName: expert.user.displayName,
+      finalResult: 'ADMITTED',
+      createdBy: f.user.uid,
+    },
+  });
+  expect((await getFile()).statusCode).toBe(200);
+  await db.projectEntranceExam.update({ where: { id: exam.id }, data: { deleted: true } });
+  expect((await getFile()).statusCode).toBe(403);
 });
 test('member foundations preserve history and source idempotency without creating memberships from an authenticated detail query', async () => {
   const f = await projectManagerFixture();
   const expert = await projectManagerAccount(1, 100, false);
+  const exam = await db.projectEntranceExam.create({
+    data: {
+      examNo: 'MEMBER-SOURCE-EXAM',
+      projectId: f.projectId,
+      examName: '来源考试',
+      createdBy: f.user.uid,
+    },
+  });
+  const attempt = await db.entranceExamAttempt.create({
+    data: {
+      attemptNo: 'MEMBER-SOURCE-ATTEMPT',
+      examId: exam.id,
+      candidateUserId: expert.user.id,
+      candidateUid: expert.user.uid,
+      candidateName: expert.user.displayName,
+      createdBy: f.user.uid,
+    },
+  });
   const original = await db.projectMember.create({
     data: {
       projectId: f.projectId,
       userId: expert.user.id,
-      admissionAttemptId: 77,
+      admissionAttemptId: attempt.id,
       status: 'LEFT',
       createdBy: f.user.uid,
     },
@@ -4107,7 +4172,7 @@ test('member foundations preserve history and source idempotency without creatin
       data: {
         projectId: f.projectId,
         userId: expert.user.id,
-        admissionAttemptId: 77,
+        admissionAttemptId: attempt.id,
         createdBy: f.user.uid,
       },
     }),
@@ -4594,4 +4659,803 @@ test('historical null card nodes fall back without writes, and cross-role snapsh
   expect(
     (await db.project.findUniqueOrThrow({ where: { id: f.projectId } })).currentNodeCode,
   ).toBeNull();
+});
+
+test('avatar upload requires login and profile claim enforces ownership, rollback, replacement and cleanup', async () => {
+  const anonymous = await uploadHttp([imagePart(), { name: 'bizType', content: 'AVATAR' }]);
+  expect(anonymous.statusCode).toBe(401);
+  const f = await memberFixture(),
+    member = await f.add();
+  const upload = async () => {
+    const result = await uploadHttp(
+      [imagePart(), { name: 'bizType', content: 'AVATAR' }],
+      f.headers,
+    );
+    expect(result.statusCode, result.body).toBe(200);
+    return result.json().data;
+  };
+  const first = await upload();
+  expect(
+    (
+      await post(
+        '/users/me/update',
+        { avatarUrl: first.objectKey, avatarUploadToken: first.uploadToken },
+        member.headers,
+      )
+    ).statusCode,
+  ).toBe(403);
+  // 头像先认领、后证件校验失败，整个事务仍必须回滚。
+  expect(
+    (
+      await post(
+        '/users/me/update',
+        { avatarUrl: first.objectKey, avatarUploadToken: first.uploadToken, idCardNo: 'invalid' },
+        f.headers,
+      )
+    ).statusCode,
+  ).toBe(400);
+  expect(
+    (await db.uploadedFile.findUniqueOrThrow({ where: { objectKey: first.objectKey } })).status,
+  ).toBe('UPLOADED');
+  const saved = await post(
+    '/users/me/update',
+    { avatarUrl: first.objectKey, avatarUploadToken: first.uploadToken },
+    f.headers,
+  );
+  expect(saved.statusCode, saved.body).toBe(200);
+  expect(saved.json().data.avatarUrl).toBe(first.url);
+  expect(
+    await db.uploadedFile.findUniqueOrThrow({ where: { objectKey: first.objectKey } }),
+  ).toMatchObject({
+    status: 'CLAIMED',
+    claimedBizType: 'USER_AVATAR',
+    claimedBizId: f.owner.id,
+    expiresAt: null,
+  });
+  expect((await post('/users/me/update', { avatarUrl: first.url }, f.headers)).statusCode).toBe(
+    200,
+  );
+  expect(
+    (await post('/users/me/update', { avatarUrl: first.url }, member.headers)).statusCode,
+  ).toBe(409);
+  const second = await upload();
+  expect(
+    (
+      await post(
+        '/users/me/update',
+        { avatarUrl: second.objectKey, avatarUploadToken: second.uploadToken },
+        f.headers,
+      )
+    ).statusCode,
+  ).toBe(200);
+  expect(
+    (await db.uploadedFile.findUniqueOrThrow({ where: { objectKey: first.objectKey } })).status,
+  ).toBe('RELEASED');
+  expect(
+    (await post('/users/me/update', { avatarUrl: '' }, f.headers)).json().data.avatarUrl,
+  ).toBeNull();
+  await db.uploadedFile.updateMany({
+    where: { claimedBizType: 'USER_AVATAR', status: 'RELEASED' },
+    data: { expiresAt: new Date(0) },
+  });
+  expect(await registry.cleanupExpired()).toMatchObject({ deleted: 2, failed: 0 });
+  expect(objects.has(first.objectKey)).toBe(false);
+  expect(objects.has(second.objectKey)).toBe(false);
+});
+
+test('personal applications list only authenticated applicant with default/all types, states and Shanghai inclusive boundaries', async () => {
+  const f = await memberFixture(),
+    member = await f.add(),
+    other = await f.add();
+  const data = {
+    processCode: 'TEST',
+    processVersion: 1,
+    businessType: 'ORG_MEMBER_EXIT',
+    businessId: member.rel.id,
+    title: '退出申请',
+    applicantId: member.user.id,
+    applicantName: '成员',
+    applicantOrgId: f.orgId,
+    applicantOrgName: '组织',
+    appliedAt: new Date('2026-09-30T16:00:00Z'),
+  };
+  await db.approvalFlow.createMany({
+    data: [
+      {
+        ...data,
+        flowNo: 'PERSONAL-1',
+        formData: {
+          targetMemberId: member.rel.id,
+          targetMemberName: '历史名字',
+          plannedLeaveDate: '2026-11-01',
+        },
+      },
+      {
+        ...data,
+        flowNo: 'PERSONAL-2',
+        businessType: 'ATTENDANCE_LEAVE',
+        status: 'REJECTED',
+        appliedAt: new Date('2026-10-01T01:00:00Z'),
+      },
+      { ...data, flowNo: 'OTHER', applicantId: other.user.id },
+    ],
+  });
+  const own = await post('/users/me/applications', {}, member.headers);
+  expect(own.statusCode, own.body).toBe(200);
+  expect(own.json().data.total).toBe(1);
+  expect(own.json().data.records[0]).toMatchObject({
+    flowNo: 'PERSONAL-1',
+    targetMemberName: `${member.user.displayName}(${member.user.realName})`,
+    appliedAt: '2026-10-01 00:00:00',
+    flowVersionNo: 0,
+  });
+  const all = await post(
+    '/users/me/applications',
+    { businessType: null, current: 1, size: 1 },
+    member.headers,
+  );
+  expect(all.json().data).toMatchObject({
+    total: 2,
+    pages: 2,
+    records: [{ flowNo: 'PERSONAL-2' }],
+  });
+  const boundary = await post(
+    '/users/me/applications',
+    { startAt: '2026-10-01 00:00:00', endAt: '2026-10-01 00:00:00' },
+    member.headers,
+  );
+  expect(boundary.json().data.total).toBe(1);
+  expect(
+    (await post('/users/me/applications', { applicantId: other.user.id }, member.headers))
+      .statusCode,
+  ).toBe(400);
+  expect((await post('/users/me/applications', {}, f.headers)).json().data.total).toBe(0);
+});
+
+test('independent batch schedule is atomic, canonical-idempotent under concurrency, versioned and disallowed after joining organization', async () => {
+  await register();
+  const headers = bearer((await login(desktop)).json().data.accessToken);
+  const input = {
+    schedules: [
+      { scheduleDate: '2020-01-01', dayType: 'WORK', startTime: '09:00', endTime: '18:00' },
+    ],
+    overwrite: false,
+  };
+  const put = (body = input, key = 'schedule-one') =>
+    app.inject({
+      method: 'PUT',
+      url: '/api/v1/users/me/schedules/batch',
+      payload: body,
+      headers: { ...headers, 'idempotency-key': key },
+    });
+  const results = await Promise.all([put(), put()]);
+  expect(results.map((r) => r.statusCode)).toEqual([200, 200]);
+  expect(results[0]!.json().data).toEqual(results[1]!.json().data);
+  expect(await db.orgMemberSchedule.count()).toBe(1);
+  expect(await db.personalScheduleReceipt.count()).toBe(1);
+  expect((await put({ ...input, overwrite: true })).statusCode).toBe(409);
+  const skipped = await put(input, 'schedule-two');
+  expect(skipped.json().data).toMatchObject({
+    createdCount: 0,
+    skippedCount: 1,
+    conflicts: [{ versionNo: 0 }],
+  });
+  const replaced = await put({ ...input, overwrite: true }, 'schedule-three');
+  expect(replaced.json().data.updatedCount).toBe(1);
+  expect((await db.orgMemberSchedule.findFirstOrThrow()).versionNo).toBe(1);
+  expect(
+    (
+      await put(
+        {
+          ...input,
+          schedules: [...input.schedules, { ...input.schedules[0]!, scheduleDate: '2020-02-30' }],
+        },
+        'bad-date',
+      )
+    ).statusCode,
+  ).toBe(400);
+  expect(await db.personalScheduleReceipt.count()).toBe(3);
+  const org = await db.organization.create({ data: { name: '新组织', expertiseTags: [] } });
+  const user = await db.user.findFirstOrThrow();
+  await db.userOrgRel.create({ data: { userId: user.id, uid: user.uid, orgId: org.id } });
+  expect((await put(input, 'now-in-org')).statusCode).toBe(403);
+  expect(
+    (await app.inject({ url: '/api/v1/organizations/attendance?month=2020-01', headers }))
+      .statusCode,
+  ).toBe(403);
+});
+
+test('monthly attendance joins own scope, fills full month and only displays historical absences without creating daily rows', async () => {
+  const f = await memberFixture(),
+    member = await f.add(),
+    other = await f.add();
+  await db.orgMemberSchedule.createMany({
+    data: [
+      {
+        scopeKey: f.orgId,
+        orgId: f.orgId,
+        userOrgRelId: member.rel.id,
+        userId: member.user.id,
+        scheduleDate: new Date('2020-01-01'),
+        dayType: 'WORK',
+        shiftStartAt: new Date('2020-01-01T09:00:00Z'),
+        shiftEndAt: new Date('2020-01-01T18:00:00Z'),
+        createdBy: f.owner.uid,
+        updatedBy: f.owner.uid,
+      },
+      {
+        scopeKey: f.orgId,
+        orgId: f.orgId,
+        userOrgRelId: other.rel.id,
+        userId: other.user.id,
+        scheduleDate: new Date('2020-01-02'),
+        dayType: 'REST',
+        createdBy: f.owner.uid,
+        updatedBy: f.owner.uid,
+      },
+    ],
+  });
+  const response = await app.inject({
+    url: `/api/v1/organizations/attendance?month=2020-01&orgId=${f.orgId}`,
+    headers: member.headers,
+  });
+  expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data).toMatchObject({
+    memberId: member.rel.id,
+    summary: { absentCount: 1 },
+    permissions: { canBatchSchedule: false, canDirectUpdate: false },
+  });
+  expect(response.json().data.days).toHaveLength(31);
+  expect(response.json().data.days[0]).toMatchObject({
+    calendarStatus: 'ABSENT',
+    dailyId: null,
+    shiftStartAt: '2020-01-01 09:00:00',
+  });
+  expect(response.json().data.days[1].calendarStatus).toBe('UNSCHEDULED');
+  expect(await db.orgAttendanceDaily.count()).toBe(0);
+  expect(
+    (
+      await app.inject({
+        url: `/api/v1/organizations/attendance?month=2020-01&orgId=${f.orgId}&userId=${other.user.id}`,
+        headers: member.headers,
+      })
+    ).statusCode,
+  ).toBe(400);
+});
+
+test('direct attendance correction denies members and future dates, serializes versions and appends a single audit', async () => {
+  const f = await memberFixture(),
+    member = await f.add();
+  const daily = await db.orgAttendanceDaily.create({
+    data: {
+      scopeKey: f.orgId,
+      orgId: f.orgId,
+      userOrgRelId: member.rel.id,
+      userId: member.user.id,
+      attendanceDate: new Date('2020-01-01'),
+      autoStatus: 'ABSENT',
+      finalStatus: 'ABSENT',
+      createdBy: f.owner.uid,
+      updatedBy: f.owner.uid,
+    },
+  });
+  const input = {
+    orgId: f.orgId,
+    dailyId: daily.id,
+    finalStatus: 'PRESENT',
+    manualRemark: '核实正常',
+    versionNo: 0,
+  };
+  expect((await post('/organizations/attendance/update', input, member.headers)).statusCode).toBe(
+    403,
+  );
+  const concurrent = await Promise.all([
+    post('/organizations/attendance/update', input, f.headers),
+    post('/organizations/attendance/update', input, f.headers),
+  ]);
+  expect(concurrent.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+  expect(await db.orgAttendanceAdjustment.count()).toBe(1);
+  expect(await db.orgAttendanceDaily.findUniqueOrThrow({ where: { id: daily.id } })).toMatchObject({
+    autoStatus: 'ABSENT',
+    finalStatus: 'PRESENT',
+    manualOverride: true,
+    versionNo: 1,
+  });
+  await db.orgAttendanceDaily.update({
+    where: { id: daily.id },
+    data: { attendanceDate: new Date('2099-01-01') },
+  });
+  expect(
+    (await post('/organizations/attendance/update', { ...input, versionNo: 1 }, f.headers))
+      .statusCode,
+  ).toBe(400);
+  expect(await db.orgAttendanceAdjustment.count()).toBe(1);
+});
+
+test('my projects require own acceptance, honor organization preference and use actual admission/membership progress', async () => {
+  const f = await memberFixture(),
+    member = await f.add();
+  const project = await memberCountProject(f.owner, 'MY-PROJECT');
+  const personal = await db.projectExpertAssignment.create({
+    data: {
+      assignmentNo: 'MY-PERSONAL',
+      projectId: project.id,
+      subjectType: 'INDIVIDUAL',
+      expertUserId: member.user.id,
+      status: 'ACCEPTED',
+      createdBy: f.owner.uid,
+    },
+  });
+  const get = () =>
+    app.inject({ url: '/api/v1/expert-assignments/my-projects', headers: member.headers });
+  const result = await get();
+  expect(result.statusCode, result.body).toBe(200);
+  expect(result.json().data).toMatchObject([
+    {
+      assignmentId: personal.id,
+      admissionStatus: 'NOT_EXAMINED',
+      currentNodeCode: 'STANDARD_TRAINING',
+    },
+  ]);
+  const org = await db.projectExpertAssignment.create({
+    data: {
+      assignmentNo: 'MY-ORG',
+      projectId: project.id,
+      subjectType: 'ORGANIZATION',
+      organizationId: f.orgId,
+      status: 'ACCEPTED',
+      createdBy: f.owner.uid,
+    },
+  });
+  expect((await get()).json().data).toEqual([]); // 有效组织成员尚未响应，个人身份暂不列出。
+  await db.projectExpertAssignmentMember.create({
+    data: {
+      assignmentId: org.id,
+      userId: member.user.id,
+      userOrgRelId: member.rel.id,
+      status: 'ACCEPTED',
+      createdBy: member.user.uid,
+    },
+  });
+  expect((await get()).json().data[0].assignmentId).toBe(org.id);
+  await db.projectMember.create({
+    data: {
+      projectId: project.id,
+      userId: member.user.id,
+      userOrgRelId: member.rel.id,
+      organizationId: f.orgId,
+      expertAssignmentId: org.id,
+      joinedAt: new Date(),
+      standardTrainingConfirmedAt: new Date(),
+      createdBy: f.owner.uid,
+    },
+  });
+  expect((await get()).json().data[0].currentNodeCode).toBe('PRODUCTION_TASK');
+  await db.projectExpertAssignmentOwner.create({
+    data: { assignmentId: org.id, userId: member.user.id, createdBy: f.owner.uid },
+  });
+  expect((await get()).json().data).toEqual([]); // 负责人不是普通成员口径。
+  await db.userOrgRel.update({ where: { id: member.rel.id }, data: { joinStatus: 'LEFT' } });
+  expect((await get()).json().data[0].assignmentId).toBe(personal.id);
+});
+
+test('expert detail preserves readonly project/production shape and prevents unrelated/ordinary pre-acceptance access', async () => {
+  const f = await memberFixture(),
+    member = await f.add(),
+    other = await f.add();
+  const project = await memberCountProject(f.owner, 'ASSIGNMENT-DETAIL');
+  const assignment = await db.projectExpertAssignment.create({
+    data: {
+      assignmentNo: 'DETAIL-ORG',
+      projectId: project.id,
+      subjectType: 'ORGANIZATION',
+      organizationId: f.orgId,
+      productionRequirement: 123.5,
+      operatorHeadcount: 2,
+      inspectorHeadcount: 1,
+      createdBy: f.owner.uid,
+    },
+  });
+  const get = (headers: Record<string, string>) =>
+    app.inject({ url: `/api/v1/expert-assignments/detail?assignmentId=${assignment.id}`, headers });
+  expect((await get(member.headers)).statusCode).toBe(403);
+  const ownerDetail = await get(f.headers);
+  expect(ownerDetail.statusCode, ownerDetail.body).toBe(200);
+  expect(ownerDetail.json().data).toMatchObject({
+    assignmentId: assignment.id,
+    availableOperations: ['VIEW_DETAIL'],
+    productionPlan: {
+      hasPlan: false,
+      operatorHeadcount: 2,
+      inspectorHeadcount: 1,
+      totalExpectedOutput: 123.5,
+      crowds: [],
+      stages: [],
+    },
+  });
+  expect(ownerDetail.json().data.productionPlan).not.toHaveProperty('confirmedBy');
+  await db.projectExpertAssignment.update({
+    where: { id: assignment.id },
+    data: { status: 'ACCEPTED' },
+  });
+  expect((await get(member.headers)).statusCode).toBe(200);
+  await db.userOrgRel.update({ where: { id: other.rel.id }, data: { joinStatus: 'REMOVED' } });
+  expect((await get(other.headers)).statusCode).toBe(403);
+});
+
+async function attendanceApplicationFixture(date = '2020-01-01', existingDaily = false) {
+  const columns = await db.$queryRaw<
+    { column_name: string; is_nullable: string }[]
+  >`SELECT column_name,is_nullable FROM information_schema.columns WHERE table_schema = current_schema() AND table_name='OrgAttendanceDaily' AND column_name IN ('autoStatus','finalStatus')`;
+  if (columns.length !== 2 || columns.some((column) => column.is_nullable !== 'YES'))
+    throw new Error(
+      '专用测试库尚未应用第16迁移20261021020000_attendance_applications，请先migrate deploy再运行新增考勤申请集成',
+    );
+  const f = await memberFixture(),
+    member = await f.add();
+  const schedule = await db.orgMemberSchedule.create({
+    data: {
+      scopeKey: f.orgId,
+      orgId: f.orgId,
+      userOrgRelId: member.rel.id,
+      userId: member.user.id,
+      scheduleDate: new Date(date),
+      dayType: 'WORK',
+      shiftStartAt: new Date(`${date}T09:00:00Z`),
+      shiftEndAt: new Date(`${date}T18:00:00Z`),
+      createdBy: f.owner.uid,
+      updatedBy: f.owner.uid,
+    },
+  });
+  const daily = existingDaily
+    ? await db.orgAttendanceDaily.create({
+        data: {
+          scopeKey: f.orgId,
+          orgId: f.orgId,
+          userOrgRelId: member.rel.id,
+          userId: member.user.id,
+          attendanceDate: new Date(date),
+          scheduleId: schedule.id,
+          autoStatus: 'ABSENT',
+          finalStatus: 'ABSENT',
+          createdBy: f.owner.uid,
+          updatedBy: f.owner.uid,
+        },
+      })
+    : null;
+  const input = {
+    orgId: f.orgId,
+    attendanceDate: date,
+    applicationType: 'CORRECTION',
+    finalStatus: 'PRESENT',
+    reason: '补充出勤记录',
+    versionNo: daily?.versionNo ?? null,
+  };
+  const apply = (payload: unknown = input, headers = member.headers) =>
+    post('/organizations/attendance/apply', payload, headers);
+  const leave = {
+    ...input,
+    applicationType: 'LEAVE',
+    finalStatus: 'LEAVE',
+    reason: '个人事务请假',
+    leaveStartAt: `${date} 09:00:00`,
+    leaveEndAt: `${date} 12:00:00`,
+  };
+  const processInput = async (applicationId: string, action = 'APPROVE') => {
+    const flow = await db.approvalFlow.findUniqueOrThrow({ where: { id: applicationId } });
+    const node = await db.approvalNode.findFirstOrThrow({ where: { flowId: flow.id } });
+    return {
+      orgId: f.orgId,
+      flowNo: flow.flowNo,
+      nodeId: node.id,
+      flowVersionNo: flow.versionNo,
+      nodeVersionNo: node.versionNo,
+      action,
+      actionComment: action === 'REJECT' ? '说明不充分' : '核实通过',
+    };
+  };
+  const month = () =>
+    app.inject({
+      url: `/api/v1/organizations/attendance?month=${date.slice(0, 7)}&orgId=${f.orgId}`,
+      headers: member.headers,
+    });
+  return { ...f, member, schedule, daily, input, leave, apply, processInput, month };
+}
+test('attendance correction creates pending owner flow without attendance mutations; approval creates daily and audit atomically', async () => {
+  const f = await attendanceApplicationFixture();
+  const submitted = await f.apply();
+  expect(submitted.statusCode, submitted.body).toBe(200);
+  const result = submitted.json().data;
+  expect(result).toMatchObject({
+    status: 'PENDING',
+    businessType: 'ATTENDANCE_CORRECTION',
+    versionNo: null,
+    flowVersionNo: 0,
+  });
+  expect(await db.orgAttendanceDaily.count()).toBe(0);
+  const list = await post(
+    '/users/me/applications',
+    { businessType: 'ATTENDANCE_CORRECTION' },
+    f.member.headers,
+  );
+  expect(list.json().data.records).toMatchObject([
+    { applicationId: result.applicationId, status: 'PENDING', flowVersionNo: 0 },
+  ]);
+  const pending = await post(
+    '/organizations/approvals/pending',
+    { orgId: f.orgId, businessType: 'ATTENDANCE_CORRECTION' },
+    f.headers,
+  );
+  expect(pending.statusCode, pending.body).toBe(200);
+  expect(pending.json().data.total).toBe(1);
+  expect(pending.json().data.records[0].formData.attendanceDate).toBe('2020-01-01');
+  const processed = await post(
+    '/organizations/approvals/process',
+    await f.processInput(result.applicationId),
+    f.headers,
+  );
+  expect(processed.statusCode, processed.body).toBe(200);
+  expect(processed.json().data).toMatchObject({
+    applicationId: result.applicationId,
+    flowStatus: 'APPROVED',
+    flowVersionNo: 1,
+    dailyVersionNo: 0,
+    finalStatus: 'PRESENT',
+    joinStatus: null,
+    plannedLeaveDate: null,
+  });
+  const daily = await db.orgAttendanceDaily.findFirstOrThrow();
+  expect(daily).toMatchObject({
+    userId: f.member.user.id,
+    autoStatus: 'ABSENT',
+    finalStatus: 'PRESENT',
+    manualOverride: true,
+  });
+  expect(await db.orgAttendanceAdjustment.count()).toBe(1);
+  const flow = await db.approvalFlow.findUniqueOrThrow({ where: { id: result.applicationId } });
+  expect(flow).toMatchObject({
+    status: 'APPROVED',
+    versionNo: 1,
+    afterData: { dailyId: daily.id, finalStatus: 'PRESENT' },
+  });
+  expect((await f.month()).json().data.summary.presentCount).toBe(1);
+  const records = await post(
+    '/organizations/approvals/records',
+    { orgId: f.orgId, businessType: 'ATTENDANCE_CORRECTION' },
+    f.headers,
+  );
+  expect(records.json().data.total).toBe(1);
+});
+test('future leave requires valid shift period and stays pending until approval; no fabricated auto attendance', async () => {
+  const f = await attendanceApplicationFixture('2099-01-01');
+  expect((await f.apply()).statusCode).toBe(400); // future CORRECTION
+  for (const extra of [
+    { leaveStartAt: '2099-01-01 08:00:00' },
+    { leaveEndAt: '2099-01-02 12:00:00' },
+    { finalStatus: 'PRESENT' },
+  ])
+    expect((await f.apply({ ...f.leave, ...extra })).statusCode).toBe(400);
+  const submitted = await f.apply(f.leave);
+  expect(submitted.statusCode, submitted.body).toBe(200);
+  const id = submitted.json().data.applicationId;
+  let month = (await f.month()).json().data;
+  expect(month.days[0]).toMatchObject({
+    calendarStatus: 'PENDING_ATTENDANCE',
+    application: { applicationId: id, canWithdraw: true },
+    permissions: { canApplyLeave: false, canWithdraw: true },
+  });
+  expect(await db.orgAttendanceDaily.count()).toBe(0);
+  const processed = await post(
+    '/organizations/approvals/process',
+    await f.processInput(id),
+    f.headers,
+  );
+  expect(processed.statusCode, processed.body).toBe(200);
+  expect(await db.orgAttendanceDaily.findFirstOrThrow()).toMatchObject({
+    finalStatus: 'LEAVE',
+    autoStatus: null,
+    firstClockInAt: null,
+    lastClockOutAt: null,
+  });
+  expect(await db.orgAttendanceAdjustment.findFirstOrThrow()).toMatchObject({
+    beforeStatus: null,
+    afterStatus: 'LEAVE',
+  });
+  month = (await f.month()).json().data;
+  expect(month.summary.leaveCount).toBe(1);
+  expect(month.days[0]).toMatchObject({
+    calendarStatus: 'LEAVE',
+    autoStatus: null,
+    application: { status: 'APPROVED', canWithdraw: false },
+    permissions: { canApplyLeave: false },
+  });
+  expect((await f.apply({ ...f.leave, versionNo: 0 })).statusCode).toBe(409);
+});
+test('same-day leave/correction pending applications are mutually exclusive under concurrent submission', async () => {
+  const f = await attendanceApplicationFixture();
+  const results = await Promise.all([f.apply(), f.apply(f.leave)]);
+  expect(results.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+  expect(await db.approvalFlow.count()).toBe(1);
+  expect(await db.approvalNode.count()).toBe(1);
+  expect(await db.orgAttendanceDaily.count()).toBe(0);
+});
+test('withdraw enforces applicant/version/business and cancels node without writing attendance; ended flows reject reuse', async () => {
+  const f = await attendanceApplicationFixture();
+  const other = await f.add();
+  const submitted = await f.apply();
+  const { applicationId, flowVersionNo } = submitted.json().data;
+  const body = { applicationId, flowVersionNo };
+  expect((await post('/organizations/attendance/withdraw', body, other.headers)).statusCode).toBe(
+    403,
+  );
+  expect(
+    (
+      await post(
+        '/organizations/attendance/withdraw',
+        { ...body, flowVersionNo: 99 },
+        f.member.headers,
+      )
+    ).statusCode,
+  ).toBe(409);
+  const response = await post('/organizations/attendance/withdraw', body, f.member.headers);
+  expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data).toMatchObject({ status: 'WITHDRAWN', flowVersionNo: 1 });
+  expect(await db.approvalNode.findFirstOrThrow()).toMatchObject({
+    nodeStatus: 'CANCELED',
+    versionNo: 1,
+    approvedAt: null,
+  });
+  expect(await db.approvalActionLog.count({ where: { actionType: 'WITHDRAW' } })).toBe(1);
+  expect(await db.orgAttendanceDaily.count()).toBe(0);
+  expect(
+    (await post('/organizations/attendance/withdraw', body, f.member.headers)).statusCode,
+  ).toBe(409);
+  expect((await f.month()).json().data.days[0].permissions.canApplyCorrection).toBe(true);
+  expect((await f.apply()).statusCode).toBe(200); // resubmit after withdrawal allowed
+});
+test('withdraw and owner approval serialize to exactly one outcome with no partial state or double audit', async () => {
+  const f = await attendanceApplicationFixture();
+  const submitted = await f.apply();
+  const { applicationId, flowVersionNo } = submitted.json().data;
+  const processInput = await f.processInput(applicationId);
+  const results = await Promise.all([
+    post('/organizations/approvals/process', processInput, f.headers),
+    post('/organizations/attendance/withdraw', { applicationId, flowVersionNo }, f.member.headers),
+  ]);
+  expect(results.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+  const flow = await db.approvalFlow.findUniqueOrThrow({ where: { id: applicationId } });
+  expect(flow.versionNo).toBe(1);
+  expect(await db.orgAttendanceDaily.count()).toBe(flow.status === 'APPROVED' ? 1 : 0);
+  expect(await db.orgAttendanceAdjustment.count()).toBe(flow.status === 'APPROVED' ? 1 : 0);
+  expect(await db.approvalActionLog.count({ where: { flowId: applicationId } })).toBe(2);
+});
+test('approval refuses stale day/shift snapshots while rejection remains possible and never writes target attendance', async () => {
+  const f = await attendanceApplicationFixture('2020-01-01', true);
+  const submitted = await f.apply();
+  const id = submitted.json().data.applicationId;
+  expect(
+    (
+      await post(
+        '/organizations/attendance/update',
+        { orgId: f.orgId, dailyId: f.daily!.id, finalStatus: 'REST', versionNo: 0 },
+        f.headers,
+      )
+    ).statusCode,
+  ).toBe(200);
+  const processInput = await f.processInput(id);
+  expect((await post('/organizations/approvals/process', processInput, f.headers)).statusCode).toBe(
+    409,
+  );
+  expect(await db.approvalFlow.findUniqueOrThrow({ where: { id } })).toMatchObject({
+    status: 'PENDING',
+    versionNo: 0,
+  });
+  expect(await db.approvalNode.findFirstOrThrow({ where: { flowId: id } })).toMatchObject({
+    nodeStatus: 'PENDING',
+    versionNo: 0,
+  });
+  expect(await db.orgAttendanceAdjustment.count()).toBe(1); // only direct correction, no failed approval audit
+  const rejected = await post(
+    '/organizations/approvals/process',
+    { ...processInput, action: 'REJECT', actionComment: '重新提交当前版本' },
+    f.headers,
+  );
+  expect(rejected.statusCode, rejected.body).toBe(200);
+  expect(rejected.json().data).toMatchObject({
+    flowStatus: 'REJECTED',
+    dailyId: null,
+    finalStatus: null,
+  });
+  expect(
+    (await db.orgAttendanceDaily.findUniqueOrThrow({ where: { id: f.daily!.id } })).finalStatus,
+  ).toBe('REST');
+  const next = await f.apply({ ...f.input, versionNo: 1 });
+  expect(next.statusCode).toBe(200);
+  await db.orgMemberSchedule.update({
+    where: { id: f.schedule.id },
+    data: { versionNo: { increment: 1 } },
+  });
+  expect(
+    (
+      await post(
+        '/organizations/approvals/process',
+        await f.processInput(next.json().data.applicationId),
+        f.headers,
+      )
+    ).statusCode,
+  ).toBe(409);
+});
+test('attendance application permission cannot be replaced by target IDs, admin reviewer status, organization exit or another business flow', async () => {
+  const f = await attendanceApplicationFixture();
+  const admin = await f.add('ADMIN');
+  expect((await f.apply(f.input, f.headers)).statusCode).toBe(403); // supervisor self
+  expect((await f.apply({ ...f.input, userId: admin.user.id })).statusCode).toBe(400);
+  const submitted = await f.apply();
+  const id = submitted.json().data.applicationId;
+  expect(
+    (await post('/organizations/approvals/process', await f.processInput(id), admin.headers))
+      .statusCode,
+  ).toBe(403);
+  await db.userOrgRel.update({ where: { id: f.member.rel.id }, data: { joinStatus: 'LEFT' } });
+  expect(
+    (await post('/organizations/approvals/process', await f.processInput(id), f.headers))
+      .statusCode,
+  ).toBe(403);
+  expect(
+    (
+      await post(
+        '/organizations/attendance/withdraw',
+        { applicationId: id, flowVersionNo: 0 },
+        f.member.headers,
+      )
+    ).statusCode,
+  ).toBe(200);
+  expect(
+    (await db.userOrgRel.findUniqueOrThrow({ where: { id: f.member.rel.id } })).joinStatus,
+  ).toBe('LEFT');
+  const other = await f.add();
+  const exit = await post(
+    '/organizations/members/exit-requests',
+    { orgId: f.orgId, reason: '个人发展', plannedLeaveDate: '2099-01-01' },
+    { ...other.headers, 'idempotency-key': 'exit-not-attendance' },
+  );
+  expect(exit.statusCode).toBe(200);
+  const flow = await db.approvalFlow.findUniqueOrThrow({
+    where: { flowNo: exit.json().data.flowNo },
+  });
+  expect(
+    (
+      await post(
+        '/organizations/attendance/withdraw',
+        { applicationId: flow.id, flowVersionNo: 0 },
+        other.headers,
+      )
+    ).statusCode,
+  ).toBe(400);
+});
+test('approved existing-day correction increments its version, keeps raw auto status and blocks old workflow snapshots', async () => {
+  const f = await attendanceApplicationFixture('2020-01-01', true);
+  const response = await f.apply();
+  const id = response.json().data.applicationId;
+  const processInput = await f.processInput(id);
+  const approved = await post('/organizations/approvals/process', processInput, f.headers);
+  expect(approved.statusCode, approved.body).toBe(200);
+  expect(approved.json().data).toMatchObject({
+    dailyId: f.daily!.id,
+    dailyVersionNo: 1,
+    finalStatus: 'PRESENT',
+  });
+  expect(
+    await db.orgAttendanceDaily.findUniqueOrThrow({ where: { id: f.daily!.id } }),
+  ).toMatchObject({
+    autoStatus: 'ABSENT',
+    finalStatus: 'PRESENT',
+    versionNo: 1,
+    manualOverride: true,
+  });
+  expect(await db.orgAttendanceAdjustment.count()).toBe(1);
+  expect((await post('/organizations/approvals/process', processInput, f.headers)).statusCode).toBe(
+    409,
+  );
+  expect(await db.orgAttendanceAdjustment.count()).toBe(1);
 });

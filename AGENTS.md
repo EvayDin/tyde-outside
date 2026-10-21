@@ -46,6 +46,8 @@ Web 与 Electron 共用一份 React 前端，连接 Fastify 后端；后端是�
 
 04策略官入口：路由由现有`project-foundation.routes.ts`统一注册，`project-manager.service/schema.ts`接候选/招募，`project-task-rounds.ts`采集管理主线并在项目锁事务中结算轮次、记录ProjectEventOutbox PENDING事实。第11迁移`20261019080000_project_managers`新增ProjectManagerRecruitment/ProjectTaskRound/ProjectEventOutbox及User.creditScore，所需专用库结构已就绪，用户2026-10-20回传102项集成全部通过（总41.38秒），迁移历史未另查；248项单测已通过。本批也接回API-011的独立PM授权+当前主策略官/协作负责人读取。项目卡片聚合/成员清退、支线采集及真实投递仍待后续接入，见[策略官与任务基础](docs/PROJECT_MANAGERS.md)。
 
+插队模块（2026-10-21）：`modules/users/personal-application.*`接本人申请分页；`modules/attendance/`接本人月历、公开节假日源及内存缓存、无组织本人幂等排班和组织管理直接修正；`modules/expert/expert-assignment.*`接本人已接单项目/分配详情、准入与成员履约节点读取，并提供专家项目附件资格查询。由`application.ts`装配，第15迁移`20261021010000_personal_workbench`新增排班/日考勤/修正审计/幂等回执/成员接单响应/应试事实，补准入来源外键；所需专用库结构已由用户137项集成通过验证，迁移历史未另查。请假/修正申请及撤回已由`attendance-application.*`接入，复用组织单主管审批；月历返回申请与逐日权限。第16迁移将尚无结论的日考勤/审计前状态改为可空（Agent应用专用库报P1001，尚未应用），311项单测及类型/ESLint通过；用户145项集成已全部通过（15:17:51启动，总69.67秒），137项仍为前批证据；接单/考试写流程仍由06/07/08接入。契约及迁移步骤见[个人中心与工作台后端](docs/PERSONAL_WORKBENCH.md)。本批299项单测通过，服务端类型/ESLint通过；用户2026-10-21回传14:12:47启动的137项集成全部通过（1文件，总77.59秒，测试66.39秒）；第15迁移所需专用库结构及本批业务已验证，原数据库连接阻塞解除，迁移历史未另查。开发/部署库迁移及真实OSS/日历源联调仍待验收。
+
 ## 请求与会话链路
 
 ```text
@@ -55,7 +57,7 @@ React 页面 → services/api → packages/platform
 ```
 
 - API 前缀 `/api/v1`。当前后端认证接口：POST `/auth/sms/send`、`/auth/register`、`/auth/login`、`/auth/sms/login`、`/auth/refresh`、`/auth/password/reset`、`/auth/logout`；GET `/users/me`、`/users/nickname/check`；POST `/users/me/update`。健康检查：GET `/health/live`、`/health/ready`。
-- main 已提供本人资料更新，注册昵称全局唯一；个人中心已接真实资料/改密写入。头像地址、简介与身份证按后端契约提交；头像上传台账认领、旧头像释放和读取授权尚未具备，因此当前仅提供 HTTPS 地址设置/清除。改密撤销全部会话，不保留当前设备。
+- main 已提供本人资料更新，注册昵称全局唯一；头像 URL、简介、实名状态与更新人持久化，更新密码会撤销全部会话。个人中心暂未接入这些真实写操作，仍使用上文客户端内存演示。资料接口已补头像台账：AVATAR须登录上传，avatarUrl=objectKey配合avatarUploadToken认领，保存展示URL、替换/清空释放旧头像均与资料同事务；历史外部URL兼容保留，头像字段不授予敏感文件读取权限；登录态改密后保留当前会话的语义仍不具备。
 - 后端认证使用 `code/message/data` 包装；注册返回用户资料，已注册登录返回 `accessToken/refreshToken/tokenType/expiresIn`；未注册手机号短信登录返回 `status=registration_required/registrationToken/expiresAt`，填写资料后使用凭证注册（10 分钟有效，与注册验证码二选一），不提前创建用户或会话。`role/roles` 可省略，服务端固定为 EXPERT；个人/组织账号类型使用 `accountType`。
 - 后端会话使用随机不透明令牌，数据库仅存摘要，默认 30 天。刷新令牌轮换；Web 与桌面会话独立，退出撤销当前会话，重置密码撤销全部会话。
 - Web 使用 HttpOnly、SameSite=Lax Cookie 与来源校验；远程环境要求 HTTPS + Secure Cookie。可信桌面来源使用 SameSite=None+Secure Cookie、精确凭据 CORS 与 OPTIONS，DESKTOP_ORIGINS 默认 tyde-app://app，开发回环源须显式配置。Chromium 按 API 源隔离持久 Cookie；非浏览器客户端继续使用原有 Bearer 契约及来源限制。
@@ -140,3 +142,13 @@ Git 的 `pre-commit` 先通过 `scripts/check-commit-policy.mjs` 检查整个暂
 - 部署与安装：`docs/DEPLOY_TEST.md`、`docs/INSTALL_TRIAL.md`；历史验证结果：`docs/VERIFICATION.md`。
 - Web / 后端产物在 `artifacts/`，桌面安装包在 `release/`；这些目录及 `dist/`、`out/`、`.local/`、`node_modules/` 不是业务源码入口。
 - 打包阶段通过 `scripts/lib/package-artifacts.mjs` 按平台/类型清理旧产物，保留其他交付类型和测试报告；桌面打包成功后自动生成校验与交付清单。不要将清理改为整体删除 `release/` 或 `artifacts/`。
+
+2026-10-21最新验收安排：暂不开始05，先完成插队13项功能测试。311项单测已于15:14:38全量复验通过；用户15:17:51启动的145项数据库集成已全部通过（总69.67秒），第16迁移所需专用库结构已验证。待办表单序列化失败已修复，后续专用库检查明确缺第16迁移。执行步骤与逐项功能验收见[工作台说明](docs/PERSONAL_WORKBENCH.md#全功能验收顺序)。
+
+- 最新验证更新：用户2026-10-21回传15:17:51启动的145项集成全部通过（1文件，总69.67秒，测试60.48秒）；第16迁移所需专用测试库结构及新增8项申请/审批/撤回数据库验证已通过，迁移历史未另查。开发/部署库与真实HTTP、OSS、节假日源仍待验收；暂不开始05。 本次仅同步用户结果，未重跑测试或操作数据库。
+
+- 2026-10-21真实HTTP续验：用户启动后端，health/ready 200。已完成48项记录检查，47项符合预期（资料/脱敏/改密全会话撤销、个人排班及幂等、真实OSS头像生命周期/展示、组织与申请权限等），真实节假日查询503尚未验收。Agent不能直连开发库，已准备仅本批账号的排班/项目接单夹具脚本，待用户本机执行后续验申请/审批/撤回/直接变更及非空项目详情；第16开发库迁移历史尚未核对。详细结果见tyde/docs/PERSONAL_WORKBENCH_ACCEPTANCE.md，暂不开始05。
+
+- 2026-10-21最新真实验收：用户prepare-data.mjs执行成功，同事务准备5天排班及1个独立验收项目/组织接单/成员响应，脚本已核对开发库第16迁移完成。累计104项HTTP/OSS检查，103项符合预期；修正提交/主管批准、未来请假批准(autoStatus=null)、直接变更/旧版本409、撤回/重提/拒绝/过期快照、并发撤回与审批一方200另一方409、退出幂等与批准PENDING_LEAVE、本人申请分页/时间/状态/权限、非空本人项目列表/详情/keyword均通过。唯一未通过为真实节假日源503，用户本机Node fetch诊断明确10秒超时，待运行check-calendar.mjs比较源连通性。测试账号/组织数据保留，未改已有用户；暂不交接或开始05。
+
+- 2026-10-21插队交接：本次13项接口实现及本机功能验收完成，保留原接口部署/兼容及跨任务部分迁移状态。用户诊断默认CDN/备用节点/GitHub均8秒超时、未配置代理；已按国办发明电〔2025〕7号及政府转载核对，新增编译随包2026年度日历基线（33个放假日、6个调休上班日），远程失败优先旧缓存、其次该年基线，无可靠年份仍503。运行后端国庆8条、春节11条、三月无安排及2099无可靠数据503四项复验通过，原日历功能阻塞解除；外网连通性本身未恢复。年度首次远程失败回退约10秒，之后24小时缓存；公告调整或新增年份须更新基线。累计108项HTTP/OSS记录（含原1项已修复失败及4项修复复验），最终313项单测通过（25文件，15:48:49启动，总12.90秒），类型/变更ESLint通过；用户此前145项集成通过，本轮无数据库改动、不重复跑集成。默认入口交回05但本轮不执行05；开发库16迁移已核对，部署库与完整兼容、07项目完整动作/11核验真值及03完整项目清退仍原归属。

@@ -1,3 +1,4 @@
+import { canReadExpertProjectFile } from '../expert/expert-assignment.service.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { participatingStatuses } from '../organizations/organization.service.js';
 import { AuthError } from '../auth/auth.error.js';
@@ -17,8 +18,11 @@ export class FileService {
     ownerUid: string | null = null,
   ): Promise<FileUploadResponse> {
     const policy = uploadPolicy(bizType, category);
-    if (['PROJECT_ATTACHMENT', 'ENTRANCE_EXAM_ATTACHMENT'].includes(policy.bizType) && !ownerUid)
-      throw new AuthError(401, 'UNAUTHORIZED', '业务附件必须登录后上传');
+    if (
+      ['AVATAR', 'PROJECT_ATTACHMENT', 'ENTRANCE_EXAM_ATTACHMENT'].includes(policy.bizType) &&
+      !ownerUid
+    )
+      throw new AuthError(401, 'UNAUTHORIZED', '头像及业务附件必须登录后上传');
     const metadata = validateUpload(file, policy.category, this.registry.config.maxSize);
     const dateParts = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Asia/Shanghai',
@@ -137,7 +141,15 @@ export class FileService {
         });
         if (assigned) return this.registry.storage.open(record.objectKey);
       }
-      // 专家接单/准入与考试附件读取仍由后续所属任务接入，上传者身份不代替业务权限。
+      if (
+        await canReadExpertProjectFile(
+          this.registry.db,
+          Number(record.claimedBizId),
+          principal.userId,
+        )
+      )
+        return this.registry.storage.open(record.objectKey);
+      // 考试附件读取仍由05/08接入；不凭ACTIVE项目成员或上传者身份放行。
       throw new AuthError(403, 'FORBIDDEN', '无权访问该项目附件');
     }
     if (record.sensitiveFlag || businessAttachment) {

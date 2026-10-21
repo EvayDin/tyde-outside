@@ -446,6 +446,7 @@ test('manager HTTP and generated OpenAPI preserve strict IDs, field descriptions
 
 test('claimed project attachments allow only independently authorized current PM or handler and lose access after replacement', async () => {
   const db = {
+    $queryRaw: vi.fn().mockResolvedValue([{ allowed: false }]),
     uploadedFile: {
       findUnique: vi.fn().mockResolvedValue({
         status: 'CLAIMED',

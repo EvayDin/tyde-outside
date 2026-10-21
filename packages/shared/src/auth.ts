@@ -312,7 +312,11 @@ export const userProfileUpdateSchema = Type.Object(
   {
     avatarUrl: optionalText(
       512,
-      '头像地址或文件 objectKey，最多512字符；省略/null保持，空白清空，保存前trim。沿用旧字符串字段，不进行远程抓取或文件认领，也不授予文件读取权限。',
+      '头像地址或文件 objectKey，最多512字符；省略/null保持，空白清空。新上传头像请传上传响应objectKey并同时传avatarUploadToken，服务端认领后保存可展示URL；本人的已认领头像可重复保存。旧外部URL兼容保留，不远程抓取。替换或清空会释放旧头像台账。',
+    ),
+    avatarUploadToken: optionalText(
+      128,
+      '头像一次性上传凭证，关联新AVATAR文件时条件必填，使用/files/upload响应的uploadToken；必须本人登录上传。省略/null仅允许保持、清空、旧外部URL或重复保存本人已认领头像。不得单独提交凭证。',
     ),
     bio: optionalText(1000, '个人简介，最多1000字符；省略/null保持，空白清空，保存前trim。'),
     idCardNo: optionalText(
@@ -354,6 +358,7 @@ export const userProfileUpdateSchema = Type.Object(
         roles: ['EXPERT'],
       },
       { newPassword: 'Changed123!', confirmNewPassword: 'Changed123!' },
+      { avatarUrl: 'avatar/2026/10/21/example.png', avatarUploadToken: 'a'.repeat(43) },
       { avatarUrl: '', bio: '', idCardNo: '' },
     ],
   },

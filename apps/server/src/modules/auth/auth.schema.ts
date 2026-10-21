@@ -103,7 +103,7 @@ export const userResponse = {
       examples: [0],
     },
     avatarUrl: text(
-      '头像地址或objectKey，未填写/清空时为null；只存字符串，不代表拥有文件读取权限。',
+      '头像展示URL，未填写/清空为null；新上传AVATAR经本人一次性认领后返回签名URL；历史外部URL/objectKey兼容保留，不代表敏感文件读取权限。',
       null,
       true,
     ),
@@ -267,7 +267,7 @@ const operationDescriptions: Record<string, string> = {
   checkNickname:
     '可匿名调用，无请求体，必填查询参数nickname；trim后检查唯一性，按数字后缀给出建议。不预留昵称，注册冲突仍返回409。新库按大小写敏感精确匹配，旧MySQL排序规则兼容性待验收。',
   updateCurrentUser:
-    '仅更新当前有效会话本人，无目标用户参数；未传/null保持，头像/简介/未认证身份证空白可清空。姓名、邮箱及昵称不在旧更新字段中。已认证证件更改403、重复证件409。密码必须成对一致，更新与全部会话撤销同事务；成功清除Web/Electron Cookie并须重新登录。roles沿用固定EXPERT兼容策略，忽略已知角色选择。响应selectedRole=null、hasExpertManagementRole=false，与旧更新服务返回资料语义一致。多组织资料已按有效关系选取；在线状态/实时通知及完整项目管理能力待后续回补。',
+    '仅更新当前有效会话本人，无目标用户参数；AVATAR须登录上传，新关联传avatarUrl=objectKey和avatarUploadToken=uploadToken，认领、替换/清空释放旧头像与资料同事务；重复保存本人已认领头像无需再次消费凭证。未传/null保持，头像/简介/未认证身份证空白可清空。姓名、邮箱及昵称不在旧更新字段中。已认证证件更改403、重复证件409。密码必须成对一致，更新与全部会话撤销同事务；成功清除Web/Electron Cookie并须重新登录。roles沿用固定EXPERT兼容策略，忽略已知角色选择。响应selectedRole=null、hasExpertManagementRole=false，与旧更新服务返回资料语义一致。多组织资料已按有效关系选取；在线状态/实时通知及完整项目管理能力待后续回补。',
   sendCode:
     '按 scene 发送验证码。不同场景独立验证，手机号跨场景共用 60 秒发送冷却；验证码 5 分钟有效，错误尝试最多 5 次。当前开发/测试仅 mock，不实际发短信，验证码为字符串 095270。',
   register:

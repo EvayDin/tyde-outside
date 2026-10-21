@@ -527,6 +527,8 @@ export class AuthService {
   ) {
     const session = await this.requireSession(token, client);
     const hasPassword = input.newPassword != null;
+    if (input.avatarUploadToken != null && input.avatarUrl == null)
+      throw invalid('avatarUploadToken必须与avatarUrl一起提交');
     if (hasPassword || input.confirmNewPassword != null) {
       if (
         !hasPassword ||
@@ -552,7 +554,14 @@ export class AuthService {
         )
           throw unauthorized();
         const data: Prisma.UserUpdateInput = { updatedBy: session.user.uid, updatedAt: new Date() };
-        if (input.avatarUrl != null) data.avatarUrl = input.avatarUrl.trim() || null;
+        if (input.avatarUrl != null)
+          data.avatarUrl = await this.files.syncAvatar(
+            tx,
+            session.userId,
+            session.user.uid,
+            input.avatarUrl.trim(),
+            input.avatarUploadToken,
+          );
         if (input.bio != null) data.bio = input.bio.trim() || null;
         if (input.idCardNo != null) {
           const idCardNo = input.idCardNo.trim().toUpperCase() || null;

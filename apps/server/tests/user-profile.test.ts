@@ -67,6 +67,7 @@ function profileService(verified = false, revokedInside = false) {
       updateMany: revoke,
     },
     user: { update },
+    uploadedFile: { updateMany: vi.fn() },
   };
   const db = {
     session: { findUnique: vi.fn(async () => session) },
