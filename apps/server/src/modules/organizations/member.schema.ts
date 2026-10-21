@@ -79,12 +79,13 @@ export const memberQueryBody = {
     },
     joinStatus,
     projectId: {
-      ...text(
-        '可选项目ID；新项目UUID。项目成员关系尚未迁移，提交非null值当前返回503，不忽略此筛选。',
-        '00000000-0000-4000-8000-000000000004',
-        true,
-      ),
-      format: 'uuid',
+      type: 'integer',
+      nullable: true,
+      minimum: -2147483648,
+      maximum: 2147483647,
+      description:
+        '可选项目ID，JSON整数，沿已迁移Project模型使用32位数值ID而非UUID；省略/null不筛选。按本组织每条userOrgRelId下status=ACTIVE的项目成员记录精确筛选，0或负数沿旧SQL返回无匹配；不要求项目未删除/已发布，不按项目角色过滤。超出新库32位范围400；旧64位ID兼容待验收。',
+      examples: [3001, null],
     },
     current: { ...number('页码，从1开始；省略默认为1。', 1, 1), maximum: 2147483647 },
     size: { ...number('每页条数，1—100；省略默认为20。', 20, 1), maximum: 100 },
@@ -101,6 +102,8 @@ export const memberQueryBody = {
       position: 'MEMBER',
       joinStatus: 'ACTIVE',
     },
+    { orgId, projectId: 3001, current: 1, size: 20 },
+    { orgId, projectId: null },
   ],
 };
 export const memberUpdateBody = {
@@ -157,10 +160,11 @@ const memberProperties = {
   plannedLeaveDate: text('拟离职日期，yyyy-MM-dd；未确定为null。', null, true),
   leftAt: outputTime('实际离职时间'),
   activeProjectCount: {
-    type: ['integer', 'null'],
+    type: 'integer',
+    minimum: 0,
     description:
-      '当前有效项目数；项目成员关系未迁移，当前固定null表示未知，不能视为0；后续回补真实统计。',
-    examples: [null],
+      '本条组织成员关系userOrgRelId关联的ACTIVE项目成员记录数，未关联返回0；COUNT(*)不按项目去重，不过滤项目角色/项目状态/删除。统计不受请求projectId影响，不汇总同用户其他组织或个人项目；不是未知占位值。',
+    examples: [0, 2],
   },
   versionNo: version,
 };
@@ -179,13 +183,13 @@ const memberExample = {
   joinedAt: '2026-10-19T00:00:00.000Z',
   plannedLeaveDate: null,
   leftAt: null,
-  activeProjectCount: null,
+  activeProjectCount: 0,
   versionNo: 0,
 };
 export const memberListResponse = {
   type: 'object',
   description:
-    '成员分页结果；未传状态按旧SQL包含所有状态，LEFT/REMOVED可显式筛选。项目统计未接入。',
+    '成员分页结果；未传状态按旧SQL包含所有状态，LEFT/REMOVED可显式筛选。项目筛选与在项数按真实组织关系关联记录统计。',
   additionalProperties: false,
   required: ['total', 'pages', 'current', 'size', 'records'],
   properties: {
@@ -198,7 +202,7 @@ export const memberListResponse = {
       description: '当前页记录；无匹配或超出页数为空数组。',
       items: {
         type: 'object',
-        description: '单个组织成员，手机号脱敏；项目数当前未知。',
+        description: '单个组织成员，手机号脱敏；项目数为真实ACTIVE关联记录数。',
         additionalProperties: false,
         required: Object.keys(memberProperties),
         properties: memberProperties,

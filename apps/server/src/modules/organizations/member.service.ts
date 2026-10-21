@@ -13,7 +13,7 @@ export interface MemberQuery {
   employmentType?: string | null;
   position?: string | null;
   joinStatus?: string | null;
-  projectId?: string | null;
+  projectId?: number | null;
   current?: number;
   size?: number;
 }
@@ -68,13 +68,21 @@ export class MemberService {
         await this.organization(tx, input.orgId);
         const joinedAt = dateFilter(input.joinedStartDate, input.joinedEndDate);
         const leftAt = dateFilter(input.leftStartDate, input.leftEndDate);
-        if (input.projectId != null)
-          throw new AuthError(503, 'NOT_IMPLEMENTED', '项目成员关系尚未迁移，暂不支持按项目筛选');
+        if (
+          input.projectId != null &&
+          (!Number.isInteger(input.projectId) ||
+            input.projectId < -2147483648 ||
+            input.projectId > 2147483647)
+        )
+          throw invalid('projectId必须为32位整数');
         const current = input.current ?? 1,
           size = input.size ?? 20;
         const keyword = input.keyword?.trim();
         const where: Prisma.UserOrgRelWhereInput = {
           orgId: input.orgId,
+          ...(input.projectId != null
+            ? { projectMembers: { some: { projectId: input.projectId, status: 'ACTIVE' } } }
+            : {}),
           ...(input.employmentType ? { employmentType: input.employmentType } : {}),
           ...(input.position ? { position: input.position } : {}),
           ...(input.joinStatus ? { joinStatus: input.joinStatus } : {}),
@@ -104,6 +112,18 @@ export class MemberService {
                 skip: offset,
                 take: size,
               });
+        // 只统计当前页关系，保持固定查询次数；不把项目筛选带入全量在项数统计。
+        // 沿旧SQL COUNT(*)口径，不按projectId去重，不过滤projectRole/项目状态/删除。
+        const projectCounts = rows.length
+          ? await tx.projectMember.groupBy({
+              by: ['userOrgRelId'],
+              where: { userOrgRelId: { in: rows.map((rel) => rel.id) }, status: 'ACTIVE' },
+              _count: { _all: true },
+            })
+          : [];
+        const countByRelation = new Map(
+          projectCounts.map((group) => [group.userOrgRelId, group._count._all]),
+        );
         return {
           total,
           pages: Math.ceil(total / size),
@@ -126,7 +146,7 @@ export class MemberService {
             joinedAt: rel.joinedAt?.toISOString() ?? null,
             plannedLeaveDate: rel.plannedLeaveDate?.toISOString().slice(0, 10) ?? null,
             leftAt: rel.leftAt?.toISOString() ?? null,
-            activeProjectCount: null, // 项目关系未迁移，不能把未知数量伪造为0。
+            activeProjectCount: countByRelation.get(rel.id) ?? 0,
             versionNo: rel.versionNo,
           })),
         };

@@ -1,3 +1,8 @@
+import {
+  ProjectProductionPlanService,
+  type ProductionPlanInput,
+} from '../src/modules/projects/project-production-plan.service.js';
+import { productionPlanExample } from '../src/modules/projects/project-production-plan.schema.js';
 import * as XLSX from 'xlsx';
 import { AuthService } from '../src/modules/auth/auth.service.js';
 import { MemberImportService } from '../src/modules/organizations/member-import.service.js';
@@ -13,6 +18,9 @@ import type { ObjectStorage } from '../src/modules/files/object-storage.js';
 import { createApp } from '../src/application.js';
 import { readConfig } from '../src/config/index.js';
 import { digest } from '../src/modules/auth/security.js';
+import { ManagementService } from '../src/modules/management/management.service.js';
+import { ProjectManagerService } from '../src/modules/projects/project-manager.service.js';
+import { ProjectCreationService } from '../src/modules/projects/project-creation.service.js';
 const testEnv = parseEnv(readFileSync(new URL('../.env.test', import.meta.url), 'utf8'));
 const config = readConfig(testEnv);
 if (
@@ -50,7 +58,7 @@ const desktop = { 'x-tyde-client': 'desktop' };
 beforeEach(async () => {
   objects.clear();
   await db.$executeRawUnsafe(
-    'TRUNCATE "MemberImportReceipt", "ApprovalActionLog", "ApprovalNode", "ApprovalFlow", "OrganizationDeparture", "UploadedFile", "AuthRateLimit", "Session", "RegistrationGrant", "VerificationChallenge", "User", "Organization" CASCADE',
+    'TRUNCATE "EntranceExamGradingRound", "ProjectCategory", "MemberImportReceipt", "ApprovalActionLog", "ApprovalNode", "ApprovalFlow", "OrganizationDeparture", "UploadedFile", "AuthRateLimit", "Session", "RegistrationGrant", "VerificationChallenge", "User", "Organization" CASCADE',
   );
 });
 afterAll(async () => app.close());
@@ -1297,7 +1305,7 @@ test('member pagination, full-phone search, enum filters and Shanghai date bound
   expect(list.json().data.records[0]).toMatchObject({
     memberId: last.rel.id,
     joinStatus: 'LEFT',
-    activeProjectCount: null,
+    activeProjectCount: 0,
     phoneMasked: '139****0002',
     versionNo: 0,
   });
@@ -1345,7 +1353,7 @@ test('member pagination, full-phone search, enum filters and Shanghai date bound
   expect(
     (await post('/organizations/members', { orgId: f.orgId, projectId: f.orgId }, f.headers))
       .statusCode,
-  ).toBe(503);
+  ).toBe(400);
   expect(
     (
       await post(
@@ -2446,4 +2454,2144 @@ test('failure after first account creation rolls back the whole batch and its id
   expect(await db.userOrgRel.count()).toBe(1);
   expect(await db.memberImportReceipt.count()).toBe(0);
   expect((await importHttp(f.orgId, f.headers, body, 'rollback')).statusCode).toBe(200);
+});
+
+test('independent management grants authorize existing EXPERT sessions and revoke without relogin', async () => {
+  const created = (await register({ roles: ['NAVIGATOR', 'PM'] })).json().data;
+  const headers = bearer((await login(desktop)).json().data.accessToken);
+  const get = () => app.inject({ url: '/api/v1/project-categories', headers });
+  expect((await get()).statusCode).toBe(403);
+  await db.user.update({ where: { id: created.id }, data: { role: 'NAVIGATOR' } });
+  expect((await get()).statusCode).toBe(403);
+  await db.user.update({ where: { id: created.id }, data: { role: 'EXPERT' } });
+  const grants = new ManagementService(db);
+  const input = {
+    uid: created.uid,
+    role: 'NAVIGATOR' as const,
+    action: 'GRANT' as const,
+    actor: 'integration-operator',
+    reason: '独立授权集成验证',
+  };
+  expect(await grants.change(input)).toEqual({ changed: true });
+  expect(await grants.change(input)).toEqual({ changed: false });
+  expect((await get()).json()).toEqual({ code: 200, message: '操作成功', data: [] });
+  const profile = (await app.inject({ url: '/api/v1/users/me', headers })).json().data;
+  expect(profile.role).toBe('EXPERT');
+  expect(profile.roles).toEqual(['EXPERT']);
+  expect(await grants.change({ ...input, action: 'REVOKE' })).toEqual({ changed: true });
+  expect((await get()).statusCode).toBe(403);
+  expect(await grants.change({ ...input, action: 'REVOKE' })).toEqual({ changed: false });
+  expect(
+    await db.managementGrantAudit.findMany({
+      where: { userId: created.id },
+      orderBy: { createdAt: 'asc' },
+      select: { action: true },
+    }),
+  ).toEqual([{ action: 'GRANT' }, { action: 'REVOKE' }]);
+});
+
+test('management grant mutation rolls back when its audit write fails', async () => {
+  const user = (await register()).json().data;
+  const failing = new Proxy(db, {
+    get(target, key) {
+      if (key === '$transaction')
+        return (callback: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+          db.$transaction((tx) =>
+            callback(
+              new Proxy(tx, {
+                get(transaction, property) {
+                  if (property === 'managementGrantAudit')
+                    return {
+                      ...transaction.managementGrantAudit,
+                      create: async (args: Prisma.ManagementGrantAuditCreateArgs) => {
+                        await transaction.managementGrantAudit.create(args);
+                        throw new Error('injected management audit failure');
+                      },
+                    };
+                  return Reflect.get(transaction, property);
+                },
+              }),
+            ),
+          );
+      const value = Reflect.get(target, key);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  await expect(
+    new ManagementService(failing).change({
+      uid: user.uid,
+      role: 'NAVIGATOR',
+      action: 'GRANT',
+      actor: 'integration-operator',
+      reason: '事务回滚验证',
+    }),
+  ).rejects.toThrow('injected management audit failure');
+  expect(await db.managementGrant.count({ where: { userId: user.id } })).toBe(0);
+  expect(await db.managementGrantAudit.count({ where: { userId: user.id } })).toBe(0);
+});
+
+test('project category dictionary filters enabled levels and aliases with deterministic sorting', async () => {
+  const user = (await register()).json().data;
+  const headers = bearer((await login(desktop)).json().data.accessToken);
+  await new ManagementService(db).change({
+    uid: user.uid,
+    role: 'NAVIGATOR',
+    action: 'GRANT',
+    actor: 'integration-operator',
+    reason: '分类查询验证',
+  });
+  const base = {
+    categoryLevel: 1,
+    sortNo: 10,
+    createdBy: 'integration-operator',
+    updatedBy: 'integration-operator',
+  };
+  const first = await db.projectCategory.create({
+    data: { ...base, categoryCode: 'IMAGE', categoryName: '图片分类', searchKeywords: 'tupian' },
+  });
+  const second = await db.projectCategory.create({
+    data: { ...base, categoryCode: 'TEXT', categoryName: '文本分类' },
+  });
+  const level2 = await db.projectCategory.create({
+    data: { ...base, categoryLevel: 2, categoryCode: 'AUDIO', categoryName: '音频分类' },
+  });
+  await db.projectCategory.create({
+    data: { ...base, categoryCode: 'DISABLED', categoryName: '停用分类', status: 'DISABLED' },
+  });
+  const get = async (query = '') =>
+    (await app.inject({ url: `/api/v1/project-categories${query}`, headers })).json().data;
+  expect((await get()).map((row: { id: number }) => row.id)).toEqual([
+    first.id,
+    second.id,
+    level2.id,
+  ]);
+  expect((await get('?categoryLevel=2')).map((row: { id: number }) => row.id)).toEqual([level2.id]);
+  expect(await get('?keyword=%20tupian%20')).toEqual([
+    { id: first.id, categoryCode: 'IMAGE', categoryName: '图片分类', categoryLevel: 1, sortNo: 10 },
+  ]);
+  expect(await get('?keyword=missing')).toEqual([]);
+});
+
+test('requester backfill enforces NAVIGATOR, self ownership and actual account type', async () => {
+  const user = (await register()).json().data;
+  const headers = bearer((await login(desktop)).json().data.accessToken);
+  const path = `/api/v1/project-requesters/INDIVIDUAL/${user.id}/backfill`;
+  expect((await app.inject({ url: path, headers })).statusCode).toBe(403);
+  await new ManagementService(db).change({
+    uid: user.uid,
+    role: 'NAVIGATOR',
+    action: 'GRANT',
+    actor: 'integration-operator',
+    reason: '本人需求方验证',
+  });
+  expect((await app.inject({ url: path, headers })).json()).toEqual({
+    code: 200,
+    message: '操作成功',
+    data: {
+      requesterType: 'INDIVIDUAL',
+      requesterId: user.id,
+      requesterName: '小明(小明)',
+      orgId: null,
+      orgVerifyStatus: null,
+    },
+  });
+  expect(
+    (await app.inject({ url: path.replace('INDIVIDUAL', 'ORGANIZATION'), headers })).statusCode,
+  ).toBe(400);
+  expect(
+    (
+      await app.inject({
+        url: '/api/v1/project-requesters/INDIVIDUAL/00000000-0000-4000-8000-000000000099/backfill',
+        headers,
+      })
+    ).statusCode,
+  ).toBe(403);
+});
+
+test('concurrent grants serialize on the user and preserve one active grant with one audit', async () => {
+  const user = (await register()).json().data;
+  const service = new ManagementService(db);
+  const input = {
+    uid: user.uid,
+    role: 'PM' as const,
+    action: 'GRANT' as const,
+    actor: 'integration-operator',
+    reason: '并发授权验证',
+  };
+  const results = await Promise.all([service.change(input), service.change(input)]);
+  expect(results.filter((r) => r.changed)).toHaveLength(1);
+  expect(
+    await db.managementGrant.count({ where: { userId: user.id, role: 'PM', revokedAt: null } }),
+  ).toBe(1);
+  expect(await db.managementGrantAudit.count({ where: { userId: user.id, role: 'PM' } })).toBe(1);
+  const headers = bearer((await login(desktop)).json().data.accessToken);
+  expect((await app.inject({ url: '/api/v1/project-categories', headers })).statusCode).toBe(403);
+});
+
+test('organization requester backfill uses actual membership and retains organization verification status', async () => {
+  const user = (
+    await register({ accountType: 'ORGANIZATION', organization: { name: '示例需求方团队' } })
+  ).json().data;
+  const headers = bearer((await login(desktop)).json().data.accessToken);
+  await new ManagementService(db).change({
+    uid: user.uid,
+    role: 'NAVIGATOR',
+    action: 'GRANT',
+    actor: 'integration-operator',
+    reason: '组织需求方验证',
+  });
+  const url = `/api/v1/project-requesters/ORGANIZATION/${user.id}/backfill`;
+  const response = await app.inject({ url, headers });
+  expect(response.json().data).toEqual({
+    requesterType: 'ORGANIZATION',
+    requesterId: user.id,
+    requesterName: '示例需求方团队',
+    orgId: user.organization.id,
+    orgVerifyStatus: 'PENDING',
+  });
+  await db.userOrgRel.updateMany({ where: { userId: user.id }, data: { joinStatus: 'LEFT' } });
+  expect((await app.inject({ url, headers })).statusCode).toBe(400);
+});
+
+async function projectTestAccount(phoneValue: string) {
+  const user = await db.user.create({
+    data: {
+      phoneE164: `+86${phoneValue}`,
+      phoneRegion: 'CN',
+      username: `other${phoneValue}`,
+      displayName: `其他${phoneValue}`,
+    },
+  });
+  const token = 'p'.repeat(43);
+  await db.session.create({
+    data: {
+      userId: user.id,
+      tokenDigest: digest(token),
+      clientType: 'desktop',
+      expiresAt: new Date(Date.now() + 600_000),
+    },
+  });
+  return { user, headers: bearer(token) };
+}
+
+async function projectCreationFixture() {
+  const user = (await register()).json().data;
+  const headers = bearer((await login(desktop)).json().data.accessToken);
+  const categories = [];
+  for (const [index, level] of [1, 2, 3, 3].entries())
+    categories.push(
+      await db.projectCategory.create({
+        data: {
+          categoryCode: `PROJECT_${index}`,
+          categoryName: `项目分类${index}`,
+          categoryLevel: level,
+          createdBy: 'test-operator',
+          updatedBy: 'test-operator',
+        },
+      }),
+    );
+  const payload = {
+    operation: 'CREATE_PROJECT',
+    projectName: '图片分类项目',
+    categoryLevel1Id: categories[0]!.id,
+    categoryLevel2Id: categories[1]!.id,
+    categoryLevel3Ids: [categories[3]!.id, categories[2]!.id],
+    difficultyLevel: 'MEDIUM',
+    projectQuantity: 10000.1234,
+    quantityUnit: '张',
+    deadline: '2099-12-31 18:00:00',
+    requiredHeadcount: 20,
+    employmentType: 'PART_TIME',
+    standardContent: '按照商品主体分类',
+    mandatoryRequirement: '遵守作业规范',
+  };
+  const save = (data: unknown) => post('/projects/create', data, headers);
+  const draft = () => app.inject({ url: '/api/v1/projects/draft/current', headers });
+  return { user, headers, payload, save, draft, categories };
+}
+
+test('EXPERT without management grant saves one isolated draft, clears snapshot fields and preserves education default', async () => {
+  expect(await db.project.count()).toBe(0);
+  const f = await projectCreationFixture();
+  expect((await f.draft()).json().data).toEqual({ hasDraft: false, draft: null });
+  const first = await f.save({
+    ...f.payload,
+    operation: 'SAVE_DRAFT',
+    educationRequirement: 'MASTER',
+  });
+  expect(first.statusCode).toBe(200);
+  expect(first.json().data).toMatchObject({
+    operation: 'SAVE_DRAFT',
+    status: 'DRAFT',
+    versionNo: 0,
+    currentNodeCode: null,
+    publishedAt: null,
+  });
+  const data = (await f.draft()).json().data.draft;
+  expect(data.categoryLevel3Ids).toEqual(f.payload.categoryLevel3Ids);
+  expect(data.categoryLevel3Names).toEqual(['项目分类3', '项目分类2']);
+  expect(data.projectQuantity).toBe(10000.1234);
+  expect(data.attachments).toEqual([]);
+  expect(data.creatorName).toBeNull();
+  expect(data).not.toHaveProperty('productionRequirements');
+  const cleared = await f.save({ operation: 'SAVE_DRAFT', versionNo: data.versionNo });
+  expect(cleared.json().data.versionNo).toBe(1);
+  const after = (await f.draft()).json().data.draft;
+  expect(after).toMatchObject({
+    projectName: null,
+    projectDescription: null,
+    educationRequirement: 'BACHELOR',
+    deadline: null,
+    categoryLevel1Id: null,
+    categoryLevel1Name: null,
+    categoryLevel3Ids: [],
+    categoryLevel3Names: [],
+  });
+  expect(await db.project.count({ where: { createdBy: f.user.uid, status: 'DRAFT' } })).toBe(1);
+  const outsider = await projectTestAccount('13900000009');
+  expect(
+    (await app.inject({ url: '/api/v1/projects/draft/current', headers: outsider.headers })).json()
+      .data,
+  ).toEqual({ hasDraft: false, draft: null });
+});
+
+test('concurrent draft creation and version updates have exactly one winner', async () => {
+  const f = await projectCreationFixture();
+  const created = await Promise.all([
+    f.save({ operation: 'SAVE_DRAFT', projectName: '草稿一' }),
+    f.save({ operation: 'SAVE_DRAFT', projectName: '草稿二' }),
+  ]);
+  expect(created.map((r) => r.statusCode).sort()).toEqual([200, 400]);
+  expect(await db.project.count()).toBe(1);
+  const updated = await Promise.all([
+    f.save({ operation: 'SAVE_DRAFT', versionNo: 0, projectName: '更新一' }),
+    f.save({ operation: 'SAVE_DRAFT', versionNo: 0, projectName: '更新二' }),
+  ]);
+  expect(updated.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+  expect((await f.draft()).json().data.draft.versionNo).toBe(1);
+});
+
+test('publish requires actual old service fields, advances the node and leaves the next draft independent', async () => {
+  const f = await projectCreationFixture();
+  expect(
+    (
+      await f.save({
+        ...f.payload,
+        standardContent: null,
+        standardLink: 'https://example.com/standard',
+      })
+    ).statusCode,
+  ).toBe(400);
+  expect((await f.save({ ...f.payload, mandatoryRequirement: null })).statusCode).toBe(400);
+  const saved = await f.save({ ...f.payload, operation: 'SAVE_DRAFT' });
+  const result = await f.save({ ...f.payload, versionNo: saved.json().data.versionNo });
+  expect(result.statusCode).toBe(200);
+  expect(result.json().data).toMatchObject({
+    id: saved.json().data.id,
+    status: 'PUBLISHED',
+    currentNodeCode: 'RECRUIT_PROJECT_MANAGER',
+    versionNo: 1,
+  });
+  expect(result.json().data.publishedAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  expect((await f.draft()).json().data).toEqual({ hasDraft: false, draft: null });
+  const next = await f.save({ operation: 'SAVE_DRAFT' });
+  expect(next.statusCode).toBe(200);
+  expect(next.json().data.id).not.toBe(result.json().data.id);
+  expect(next.json().data.versionNo).toBe(0);
+});
+
+test('concurrent publishing prevents duplicate names and a failed publication preserves its prior draft', async () => {
+  const f = await projectCreationFixture();
+  const results = await Promise.all([f.save(f.payload), f.save(f.payload)]);
+  expect(results.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+  expect(await db.project.count({ where: { status: 'PUBLISHED' } })).toBe(1);
+  const saved = await f.save({ operation: 'SAVE_DRAFT', projectName: '原草稿' });
+  const conflict = await f.save({ ...f.payload, versionNo: saved.json().data.versionNo });
+  expect(conflict.statusCode).toBe(409);
+  expect((await f.draft()).json().data.draft).toMatchObject({
+    projectName: '原草稿',
+    versionNo: 0,
+  });
+});
+
+test('category level and status validation preserves original snapshots and selection order', async () => {
+  const f = await projectCreationFixture();
+  expect((await f.save({ ...f.payload, categoryLevel1Id: f.categories[1]!.id })).statusCode).toBe(
+    400,
+  );
+  expect(
+    (await f.save({ ...f.payload, categoryLevel3Ids: [f.categories[2]!.id, f.categories[2]!.id] }))
+      .statusCode,
+  ).toBe(400);
+  await db.projectCategory.update({
+    where: { id: f.categories[0]!.id },
+    data: { status: 'DISABLED' },
+  });
+  expect((await f.save(f.payload)).statusCode).toBe(400);
+  await db.projectCategory.update({
+    where: { id: f.categories[0]!.id },
+    data: { status: 'ENABLED' },
+  });
+  expect((await f.save({ ...f.payload, operation: 'SAVE_DRAFT' })).statusCode).toBe(200);
+  await db.projectCategory.update({
+    where: { id: f.categories[0]!.id },
+    data: { categoryName: '改名分类' },
+  });
+  expect((await f.draft()).json().data.draft.categoryLevel1Name).toBe('项目分类0');
+});
+
+test('draft ownership, invalid dates and nonpositive values cannot write projects', async () => {
+  const f = await projectCreationFixture();
+  const other = await projectTestAccount('13900000009');
+  expect((await f.save({ operation: 'SAVE_DRAFT', requesterId: other.user.id })).statusCode).toBe(
+    403,
+  );
+  for (const extra of [
+    { requesterType: 'ORGANIZATION' },
+    { projectQuantity: 0 },
+    { projectQuantity: -1 },
+    { requiredHeadcount: 0 },
+    { deadline: '2026-02-30 18:00:00' },
+    { deadline: '2000-01-01 00:00:00' },
+  ])
+    expect((await f.save({ operation: 'SAVE_DRAFT', ...extra })).statusCode).toBe(400);
+  expect(await db.project.count()).toBe(0);
+});
+
+test('project attachment claim, retain, release and creator grant access share actual business relationships', async () => {
+  const f = await projectCreationFixture();
+  const upload = await uploaded('PROJECT_ATTACHMENT', f.user.uid);
+  const attached = await f.save({
+    operation: 'SAVE_DRAFT',
+    attachments: [
+      {
+        attachmentType: 'STANDARD_REFERENCE',
+        objectKey: upload.record.objectKey,
+        uploadToken: upload.uploadToken,
+      },
+    ],
+  });
+  expect(attached.statusCode).toBe(200);
+  const version = attached.json().data.versionNo;
+  const detail = (await f.draft()).json().data.draft;
+  expect(detail.attachments).toHaveLength(1);
+  expect(detail.attachments[0]).toMatchObject({
+    fileName: 'test.png',
+    objectKey: upload.record.objectKey,
+    fileSize: 10,
+    status: 'ACTIVE',
+  });
+  expect(JSON.stringify(detail)).not.toContain(upload.uploadToken);
+  expect(
+    (await db.uploadedFile.findUniqueOrThrow({ where: { id: upload.record.id } })).claimedBizId,
+  ).toBe(String(detail.id));
+  const url = `/api/v1/files/view?objectKey=${encodeURIComponent(upload.record.objectKey)}`;
+  // EXPERT上传者身份不替代旧NAVIGATOR创建人授权。
+  expect((await app.inject({ url, headers: f.headers })).statusCode).toBe(403);
+  const grants = new ManagementService(db);
+  const grant = {
+    uid: f.user.uid,
+    role: 'NAVIGATOR' as const,
+    action: 'GRANT' as const,
+    actor: 'test-operator',
+    reason: '创建人附件权限验证',
+  };
+  await grants.change(grant);
+  expect((await app.inject({ url, headers: f.headers })).statusCode).toBe(200);
+  const other = await projectTestAccount('13900000009');
+  await grants.change({ ...grant, uid: other.user.uid });
+  expect((await app.inject({ url, headers: other.headers })).statusCode).toBe(403);
+  await grants.change({ ...grant, action: 'REVOKE' });
+  expect((await app.inject({ url, headers: f.headers })).statusCode).toBe(403);
+  const keep = await f.save({
+    operation: 'SAVE_DRAFT',
+    versionNo: version,
+    attachments: [{ id: detail.attachments[0].id, sortNo: 2 }],
+  });
+  expect(keep.statusCode).toBe(200);
+  expect((await f.draft()).json().data.draft.attachments[0].sortNo).toBe(2);
+  expect(
+    (
+      await f.save({
+        operation: 'SAVE_DRAFT',
+        versionNo: keep.json().data.versionNo,
+        attachments: [],
+      })
+    ).statusCode,
+  ).toBe(200);
+  expect((await f.draft()).json().data.draft.attachments).toEqual([]);
+  expect(
+    (await db.uploadedFile.findUniqueOrThrow({ where: { id: upload.record.id } })).status,
+  ).toBe('RELEASED');
+  expect(
+    await db.projectAttachment.findUniqueOrThrow({ where: { id: detail.attachments[0].id } }),
+  ).toMatchObject({ status: 'DELETED' });
+});
+
+test('invalid attachment token rolls back the new project, category snapshots and claim', async () => {
+  const f = await projectCreationFixture();
+  const upload = await uploaded('PROJECT_ATTACHMENT', f.user.uid);
+  const failed = await f.save({
+    ...f.payload,
+    attachments: [
+      { attachmentType: 'CASE', objectKey: upload.record.objectKey, uploadToken: 'wrong-token' },
+    ],
+  });
+  expect(failed.statusCode).toBe(403);
+  expect(await db.project.count()).toBe(0);
+  expect(await db.projectCategoryRelation.count()).toBe(0);
+  expect(await db.projectAttachment.count()).toBe(0);
+  expect(
+    (await db.uploadedFile.findUniqueOrThrow({ where: { id: upload.record.id } })).status,
+  ).toBe('UPLOADED');
+});
+
+test('foreign upload ownership, duplicate attachments and invalid retained IDs cannot partially mutate a draft', async () => {
+  const f = await projectCreationFixture();
+  const upload = await uploaded('PROJECT_ATTACHMENT', 'other-uid');
+  expect(
+    (
+      await f.save({
+        operation: 'SAVE_DRAFT',
+        attachments: [
+          {
+            attachmentType: 'CASE',
+            objectKey: upload.record.objectKey,
+            uploadToken: upload.uploadToken,
+          },
+        ],
+      })
+    ).statusCode,
+  ).toBe(403);
+  await db.uploadedFile.update({ where: { id: upload.record.id }, data: { ownerUid: f.user.uid } });
+  const attachment = {
+    attachmentType: 'CASE',
+    objectKey: upload.record.objectKey,
+    uploadToken: upload.uploadToken,
+  };
+  expect(
+    (await f.save({ operation: 'SAVE_DRAFT', attachments: [attachment, attachment] })).statusCode,
+  ).toBe(400);
+  expect(await db.project.count()).toBe(0);
+  expect(
+    (await db.uploadedFile.findUniqueOrThrow({ where: { id: upload.record.id } })).status,
+  ).toBe('UPLOADED');
+  const saved = await f.save({
+    operation: 'SAVE_DRAFT',
+    projectName: '原草稿',
+    attachments: [attachment],
+  });
+  expect(saved.statusCode).toBe(200);
+  const old = (await f.draft()).json().data.draft;
+  const failed = await f.save({
+    operation: 'SAVE_DRAFT',
+    projectName: '新名称',
+    versionNo: 0,
+    attachments: [{ id: old.attachments[0].id }, { id: 2147483647 }],
+  });
+  expect(failed.statusCode).toBe(400);
+  expect((await f.draft()).json().data.draft).toMatchObject({
+    projectName: '原草稿',
+    versionNo: 0,
+  });
+  expect(await db.projectAttachment.count({ where: { status: 'ACTIVE' } })).toBe(1);
+});
+
+test('attachment release failure rolls back project version, attachment removal and file release together', async () => {
+  const f = await projectCreationFixture();
+  const upload = await uploaded('PROJECT_ATTACHMENT', f.user.uid);
+  const saved = await f.save({
+    operation: 'SAVE_DRAFT',
+    projectName: '原草稿',
+    attachments: [
+      {
+        attachmentType: 'CASE',
+        objectKey: upload.record.objectKey,
+        uploadToken: upload.uploadToken,
+      },
+    ],
+  });
+  expect(saved.statusCode).toBe(200);
+  class FailingRegistry extends FileRegistryService {
+    override async releaseProjectAttachment(
+      tx: Prisma.TransactionClient,
+      key: string,
+      projectId: string,
+    ) {
+      await super.releaseProjectAttachment(tx, key, projectId);
+      throw new Error('injected project release failure');
+    }
+  }
+  const files = new FailingRegistry(db, storage, config.files);
+  await expect(
+    new ProjectCreationService(db, files).save(
+      { operation: 'SAVE_DRAFT', versionNo: 0, projectName: '新名称', attachments: [] },
+      {
+        userId: f.user.id,
+        uid: f.user.uid,
+        sessionId: 'test',
+        role: 'EXPERT',
+        clientType: 'desktop',
+      },
+    ),
+  ).rejects.toThrow('injected project release failure');
+  expect((await f.draft()).json().data.draft).toMatchObject({
+    projectName: '原草稿',
+    versionNo: 0,
+  });
+  expect(await db.projectAttachment.count({ where: { status: 'ACTIVE' } })).toBe(1);
+  expect(
+    (await db.uploadedFile.findUniqueOrThrow({ where: { id: upload.record.id } })).status,
+  ).toBe('CLAIMED');
+});
+
+test('organization project requester snapshots the selected organization and rejects mismatched self type', async () => {
+  const user = (
+    await register({ accountType: 'ORGANIZATION', organization: { name: '项目需求方组织' } })
+  ).json().data;
+  const headers = bearer((await login(desktop)).json().data.accessToken);
+  expect(
+    (
+      await post(
+        '/projects/create',
+        { operation: 'SAVE_DRAFT', requesterType: 'INDIVIDUAL' },
+        headers,
+      )
+    ).statusCode,
+  ).toBe(400);
+  expect(
+    (
+      await post(
+        '/projects/create',
+        { operation: 'SAVE_DRAFT', requesterType: 'ORGANIZATION', requesterId: user.id },
+        headers,
+      )
+    ).statusCode,
+  ).toBe(200);
+  await db.organization.update({
+    where: { id: user.organization.id },
+    data: { name: '改名需求方组织' },
+  });
+  const draft = (await app.inject({ url: '/api/v1/projects/draft/current', headers })).json().data
+    .draft;
+  expect(draft).toMatchObject({
+    requesterType: 'ORGANIZATION',
+    requesterId: user.id,
+    requesterName: '项目需求方组织',
+  });
+});
+
+test('business identifier migration preserves UUID claims and supports numeric project claim and release without persisting preview DDL', async () => {
+  const license = await uploaded('BUSINESS_LICENSE');
+  const project = await uploaded('PROJECT_ATTACHMENT', 'test-owner');
+  const organizationId = '00000000-0000-4000-8000-000000000002';
+  const columnType = () => db.$queryRaw<{ data_type: string }[]>`
+    SELECT data_type FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'UploadedFile' AND column_name = 'claimedBizId'`;
+  const before = await columnType();
+  const migration = readFileSync(
+    new URL(
+      '../prisma/migrations/20261019070000_file_business_identifiers/migration.sql',
+      import.meta.url,
+    ),
+    'utf8',
+  );
+  // 使用新连接执行DDL预演，避免复用主客户端已缓存的UUID返回类型计划。
+  const previewDb = new PrismaClient({ datasources: { db: { url: config.databaseUrl } } });
+  try {
+    await expect(
+      previewDb.$transaction(async (tx) => {
+        await tx.$executeRaw`UPDATE "UploadedFile" SET "claimedBizId" = ${organizationId}::uuid, "claimedBizType" = 'ORGANIZATION_BUSINESS_LICENSE', "status" = 'CLAIMED' WHERE "id" = ${license.record.id}::uuid`;
+        await tx.$executeRawUnsafe(migration);
+        expect(
+          (await tx.uploadedFile.findUniqueOrThrow({ where: { id: license.record.id } }))
+            .claimedBizId,
+        ).toBe(organizationId);
+        await registry.claimForProject(
+          tx,
+          project.record.objectKey,
+          project.uploadToken,
+          'test-owner',
+          '3001',
+        );
+        expect(
+          (await tx.uploadedFile.findUniqueOrThrow({ where: { id: project.record.id } }))
+            .claimedBizId,
+        ).toBe('3001');
+        expect(
+          (await registry.releaseProjectAttachment(tx, project.record.objectKey, '3001')).count,
+        ).toBe(1);
+        expect(
+          (await tx.uploadedFile.findUniqueOrThrow({ where: { id: project.record.id } })).status,
+        ).toBe('RELEASED');
+        throw new Error('rollback migration preview');
+      }),
+    ).rejects.toThrow('rollback migration preview');
+  } finally {
+    await previewDb.$disconnect();
+  }
+  expect(await columnType()).toEqual(before);
+  expect(
+    (await db.uploadedFile.findUniqueOrThrow({ where: { id: license.record.id } })).claimedBizId,
+  ).toBeNull();
+  expect(
+    (await db.uploadedFile.findUniqueOrThrow({ where: { id: project.record.id } })).status,
+  ).toBe('UPLOADED');
+});
+
+async function projectManagerAccount(
+  sequence: number,
+  creditScore: number | null = 100,
+  grant = true,
+) {
+  const user = await db.user.create({
+    data: {
+      phoneE164: `+86137${String(sequence).padStart(8, '0')}`,
+      phoneRegion: 'CN',
+      username: `manager${sequence}`,
+      displayName: `策略官${sequence}`,
+      realName: `姓名${sequence}`,
+      creditScore,
+    },
+  });
+  const token = `z${String(sequence).padStart(42, '0')}`;
+  await db.session.create({
+    data: {
+      userId: user.id,
+      tokenDigest: digest(token),
+      clientType: 'desktop',
+      expiresAt: new Date(Date.now() + 600_000),
+    },
+  });
+  if (grant)
+    await new ManagementService(db).change({
+      uid: user.uid,
+      role: 'PM',
+      action: 'GRANT',
+      actor: 'integration-operator',
+      reason: '策略官集成验证',
+    });
+  return { user, headers: bearer(token) };
+}
+async function projectManagerFixture() {
+  const f = await projectCreationFixture();
+  await new ManagementService(db).change({
+    uid: f.user.uid,
+    role: 'NAVIGATOR',
+    action: 'GRANT',
+    actor: 'integration-operator',
+    reason: '项目管理集成验证',
+  });
+  const published = await f.save(f.payload);
+  expect(published.statusCode).toBe(200);
+  const projectId: number = published.json().data.id;
+  const recruit = (candidateUserId: string) =>
+    post('/projects/manager-recruitments', { projectId, candidateUserId }, f.headers);
+  const candidates = (keyword = '') =>
+    app.inject({
+      url: `/api/v1/projects/manager-candidates?projectId=${projectId}${keyword ? `&keyword=${encodeURIComponent(keyword)}` : ''}`,
+      headers: f.headers,
+    });
+  return { ...f, projectId, recruit, candidates };
+}
+
+test('manager candidate order uses real assigned load then credit and excludes legacy roles without grants', async () => {
+  const f = await projectManagerFixture();
+  const low = await projectManagerAccount(1, 50),
+    high = await projectManagerAccount(2, 90),
+    unknown = await projectManagerAccount(3, null);
+  const legacy = await projectManagerAccount(4, 100, false);
+  await db.user.update({ where: { id: legacy.user.id }, data: { role: 'PM' } });
+  expect((await f.candidates()).json().data.map((r: { userId: string }) => r.userId)).toEqual([
+    high.user.id,
+    low.user.id,
+    unknown.user.id,
+  ]);
+  expect((await f.recruit(low.user.id)).statusCode).toBe(200);
+  const nextProject = await f.save({ ...f.payload, projectName: '另一个项目' });
+  expect(nextProject.statusCode).toBe(200);
+  expect(
+    (
+      await post(
+        '/projects/manager-recruitments',
+        { projectId: nextProject.json().data.id, candidateUserId: high.user.id },
+        f.headers,
+      )
+    ).statusCode,
+  ).toBe(200);
+  const rows = (await f.candidates()).json().data;
+  expect(rows.map((r: { userId: string }) => r.userId)).toEqual([
+    low.user.id,
+    unknown.user.id,
+    high.user.id,
+  ]);
+  expect(rows[0]).toMatchObject({
+    status: 'CURRENT',
+    currentProjectCount: 1,
+    name: '策略官1(姓名1)',
+  });
+  expect(rows[2].currentProjectCount).toBe(1);
+  expect(
+    (await f.candidates('策略官2')).json().data.map((r: { userId: string }) => r.userId),
+  ).toEqual([high.user.id]);
+  expect((await f.candidates('no-match')).json().data).toEqual([]);
+  expect(JSON.stringify(rows)).not.toContain('creditScore');
+});
+
+test('manager candidates and recruit enforce independent NAVIGATOR plus own published project', async () => {
+  const f = await projectManagerFixture(),
+    manager = await projectManagerAccount(1);
+  const outsider = await projectTestAccount('13900000009');
+  await new ManagementService(db).change({
+    uid: outsider.user.uid,
+    role: 'NAVIGATOR',
+    action: 'GRANT',
+    actor: 'integration-operator',
+    reason: '跨项目拒绝验证',
+  });
+  expect(
+    (
+      await post(
+        '/projects/manager-recruitments',
+        { projectId: f.projectId, candidateUserId: manager.user.id },
+        outsider.headers,
+      )
+    ).statusCode,
+  ).toBe(403);
+  expect(
+    (
+      await app.inject({
+        url: `/api/v1/projects/manager-candidates?projectId=${f.projectId}`,
+        headers: outsider.headers,
+      })
+    ).statusCode,
+  ).toBe(403);
+  const draft = await f.save({ operation: 'SAVE_DRAFT' });
+  expect(
+    (
+      await post(
+        '/projects/manager-recruitments',
+        { projectId: draft.json().data.id, candidateUserId: manager.user.id },
+        f.headers,
+      )
+    ).statusCode,
+  ).toBe(400);
+  await new ManagementService(db).change({
+    uid: f.user.uid,
+    role: 'NAVIGATOR',
+    action: 'REVOKE',
+    actor: 'integration-operator',
+    reason: '撤销管理授权',
+  });
+  expect((await f.candidates()).statusCode).toBe(403);
+  expect((await f.recruit(manager.user.id)).statusCode).toBe(403);
+  expect(await db.projectManagerRecruitment.count()).toBe(0);
+  expect(await db.projectEventOutbox.count()).toBe(0);
+});
+
+test('initial manager assignment advances only the node and commits task rounds and pending event facts', async () => {
+  const f = await projectManagerFixture(),
+    manager = await projectManagerAccount(1);
+  const before = await db.project.findUniqueOrThrow({ where: { id: f.projectId } });
+  const result = await f.recruit(manager.user.id);
+  expect(result.statusCode).toBe(200);
+  expect(result.json().data).toMatchObject({
+    projectId: f.projectId,
+    recruitmentType: 'INITIAL',
+    status: 'ASSIGNED',
+    assignmentMode: 'DIRECT',
+    currentNodeCode: 'PRODUCTION_PLAN',
+    primaryAction: 'CHANGE_PROJECT_MANAGER',
+    manager: { userId: manager.user.id, status: 'CURRENT', currentProjectCount: 1 },
+  });
+  const after = await db.project.findUniqueOrThrow({ where: { id: f.projectId } });
+  expect(after).toMatchObject({
+    projectName: before.projectName,
+    standardContent: before.standardContent,
+    requiredHeadcount: before.requiredHeadcount,
+    versionNo: before.versionNo,
+    currentNodeCode: 'PRODUCTION_PLAN',
+  });
+  expect(after.projectQuantity?.toString()).toBe(before.projectQuantity?.toString());
+  expect(
+    await db.projectTaskRound.findMany({
+      where: { projectId: f.projectId },
+      select: { userId: true, role: true, taskType: true, status: true, participated: true },
+    }),
+  ).toEqual(
+    expect.arrayContaining([
+      {
+        userId: f.user.id,
+        role: 'NAVIGATOR',
+        taskType: 'MAIN_RECRUIT_PROJECT_MANAGER',
+        status: 'COMPLETED',
+        participated: true,
+      },
+      {
+        userId: manager.user.id,
+        role: 'PM',
+        taskType: 'MAIN_PRODUCTION_PLAN',
+        status: 'OPEN',
+        participated: false,
+      },
+    ]),
+  );
+  const event = await db.projectEventOutbox.findFirstOrThrow({ where: { projectId: f.projectId } });
+  expect(event).toMatchObject({
+    eventType: 'PROJECT_TASKS_RECONCILED',
+    operation: 'project.manager.recruit',
+    actorUserId: f.user.id,
+    status: 'PENDING',
+    attempts: 0,
+    deliveredAt: null,
+  });
+  expect(event.payload).toMatchObject({
+    schemaVersion: 1,
+    projectId: f.projectId,
+    actorUserId: f.user.id,
+    projectAudience: expect.arrayContaining([
+      { userId: manager.user.id, role: 'PM' },
+      { userId: f.user.id, role: 'NAVIGATOR' },
+    ]),
+  });
+});
+
+test('manager replacement preserves later nodes and cancels lost tasks instead of completing the old manager work', async () => {
+  const f = await projectManagerFixture(),
+    first = await projectManagerAccount(1),
+    second = await projectManagerAccount(2);
+  expect((await f.recruit(first.user.id)).statusCode).toBe(200);
+  await db.project.update({
+    where: { id: f.projectId },
+    data: { currentNodeCode: 'ENTRANCE_EXAM' },
+  });
+  const result = await f.recruit(second.user.id);
+  expect(result.statusCode).toBe(200);
+  expect(result.json().data).toMatchObject({
+    recruitmentType: 'REPLACEMENT',
+    currentNodeCode: 'ENTRANCE_EXAM',
+    nextStage: 'ENTRANCE_EXAM',
+    manager: { userId: second.user.id },
+  });
+  expect(
+    await db.projectManagerRecruitment.findFirstOrThrow({
+      where: { candidateUserId: first.user.id },
+    }),
+  ).toMatchObject({ status: 'REPLACED', replacedAt: expect.any(Date) });
+  expect(
+    await db.projectManagerRecruitment.findFirstOrThrow({ where: { status: 'ASSIGNED' } }),
+  ).toMatchObject({ candidateUserId: second.user.id, previousManagerUserId: first.user.id });
+  expect(
+    await db.projectTaskRound.count({ where: { userId: first.user.id, status: 'OPEN' } }),
+  ).toBe(0);
+  expect(
+    await db.projectTaskRound.count({ where: { userId: first.user.id, status: 'COMPLETED' } }),
+  ).toBe(0);
+  expect(
+    await db.projectTaskRound.count({
+      where: { userId: second.user.id, taskType: 'MAIN_ENTRANCE_EXAM', status: 'OPEN' },
+    }),
+  ).toBe(1);
+  const events = await db.projectEventOutbox.findMany({ orderBy: { createdAt: 'asc' } });
+  expect(events.at(-1)!.payload).toMatchObject({
+    projectAudience: expect.arrayContaining([
+      { userId: first.user.id, role: 'PM' },
+      { userId: second.user.id, role: 'PM' },
+    ]),
+    taskChangedRecipients: expect.arrayContaining([
+      { userId: first.user.id, role: 'PM' },
+      { userId: second.user.id, role: 'PM' },
+    ]),
+  });
+});
+
+test('reselecting the same manager is rejected, distinct concurrent candidates serialize and keep one assigned manager', async () => {
+  const f = await projectManagerFixture(),
+    first = await projectManagerAccount(1),
+    second = await projectManagerAccount(2);
+  const parallel = await Promise.all([f.recruit(first.user.id), f.recruit(first.user.id)]);
+  expect(parallel.map((r) => r.statusCode).sort()).toEqual([200, 400]);
+  expect(await db.projectManagerRecruitment.count()).toBe(1);
+  const replacement = await Promise.all([f.recruit(second.user.id), f.recruit(first.user.id)]);
+  expect(replacement.every((r) => [200, 400].includes(r.statusCode))).toBe(true);
+  expect(
+    await db.projectManagerRecruitment.count({
+      where: { projectId: f.projectId, status: 'ASSIGNED' },
+    }),
+  ).toBe(1);
+  const assigned = await db.projectManagerRecruitment.findFirstOrThrow({
+    where: { projectId: f.projectId, status: 'ASSIGNED' },
+  });
+  expect(
+    await db.projectTaskRound.findMany({
+      where: { projectId: f.projectId, role: 'PM', status: 'OPEN' },
+      select: { userId: true },
+    }),
+  ).toEqual([{ userId: assigned.candidateUserId }]);
+});
+
+test('revoked or disabled recommended manager is rejected but current manager remains visible under old query semantics', async () => {
+  const f = await projectManagerFixture(),
+    first = await projectManagerAccount(1),
+    second = await projectManagerAccount(2);
+  expect((await f.recruit(first.user.id)).statusCode).toBe(200);
+  await db.user.update({ where: { id: first.user.id }, data: { status: 'FROZEN' } });
+  expect((await f.candidates()).json().data[0]).toMatchObject({
+    userId: first.user.id,
+    status: 'CURRENT',
+  });
+  await new ManagementService(db).change({
+    uid: second.user.uid,
+    role: 'PM',
+    action: 'REVOKE',
+    actor: 'integration-operator',
+    reason: '候选失效验证',
+  });
+  expect((await f.recruit(second.user.id)).statusCode).toBe(400);
+  expect(await db.projectManagerRecruitment.count()).toBe(1);
+});
+
+test('first manager assignment with a later node rolls back the new relation and never moves backwards', async () => {
+  const f = await projectManagerFixture(),
+    manager = await projectManagerAccount(1);
+  await db.project.update({
+    where: { id: f.projectId },
+    data: { currentNodeCode: 'STANDARD_TRAINING' },
+  });
+  expect((await f.recruit(manager.user.id)).statusCode).toBe(409);
+  expect(await db.projectManagerRecruitment.count()).toBe(0);
+  expect(await db.projectTaskRound.count()).toBe(0);
+  expect(await db.projectEventOutbox.count()).toBe(0);
+  expect((await db.project.findUniqueOrThrow({ where: { id: f.projectId } })).currentNodeCode).toBe(
+    'STANDARD_TRAINING',
+  );
+});
+
+test('pending event write failure rolls back manager assignment, project node, task rounds and the event itself', async () => {
+  const f = await projectManagerFixture(),
+    manager = await projectManagerAccount(1);
+  const failing = new Proxy(db, {
+    get(target, key) {
+      if (key === '$transaction')
+        return (callback: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+          db.$transaction((tx) =>
+            callback(
+              new Proxy(tx, {
+                get(transaction, property) {
+                  if (property === 'projectEventOutbox')
+                    return {
+                      ...transaction.projectEventOutbox,
+                      create: async (args: Prisma.ProjectEventOutboxCreateArgs) => {
+                        await transaction.projectEventOutbox.create(args);
+                        throw new Error('injected manager event failure');
+                      },
+                    };
+                  return Reflect.get(transaction, property);
+                },
+              }),
+            ),
+          );
+      const value = Reflect.get(target, key);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  await expect(
+    new ProjectManagerService(failing).recruit(
+      { projectId: f.projectId, candidateUserId: manager.user.id },
+      {
+        userId: f.user.id,
+        uid: f.user.uid,
+        sessionId: 'test',
+        role: 'EXPERT',
+        clientType: 'desktop',
+      },
+    ),
+  ).rejects.toThrow('injected manager event failure');
+  expect(await db.projectManagerRecruitment.count()).toBe(0);
+  expect(await db.projectTaskRound.count()).toBe(0);
+  expect(await db.projectEventOutbox.count()).toBe(0);
+  expect((await db.project.findUniqueOrThrow({ where: { id: f.projectId } })).currentNodeCode).toBe(
+    'RECRUIT_PROJECT_MANAGER',
+  );
+});
+
+test('manager replacement leaves uncaptured branch rounds untouched and never reports an event as delivered', async () => {
+  const f = await projectManagerFixture(),
+    first = await projectManagerAccount(1),
+    second = await projectManagerAccount(2);
+  expect((await f.recruit(first.user.id)).statusCode).toBe(200);
+  const branch = await db.projectTaskRound.create({
+    data: {
+      projectId: f.projectId,
+      userId: first.user.id,
+      role: 'PM',
+      taskType: 'SUBTASK_ACCEPTANCE',
+      status: 'OPEN',
+    },
+  });
+  expect((await f.recruit(second.user.id)).statusCode).toBe(200);
+  expect((await db.projectTaskRound.findUniqueOrThrow({ where: { id: branch.id } })).status).toBe(
+    'OPEN',
+  );
+  expect(await db.projectEventOutbox.count({ where: { status: 'DELIVERED' } })).toBe(0);
+});
+
+test('project attachment PM and handler access follows current assigned relationship and independent grants', async () => {
+  const f = await projectManagerFixture(),
+    first = await projectManagerAccount(1),
+    second = await projectManagerAccount(2),
+    handler = await projectManagerAccount(3);
+  const upload = await uploaded('PROJECT_ATTACHMENT', f.user.uid);
+  // 第三方材料编辑入口不在本批，测试通过既有草稿/发布事务准备真实附件。
+  const next = await f.save({
+    ...f.payload,
+    projectName: '含附件项目',
+    attachments: [
+      {
+        attachmentType: 'CASE',
+        objectKey: upload.record.objectKey,
+        uploadToken: upload.uploadToken,
+      },
+    ],
+  });
+  expect(next.statusCode).toBe(200);
+  const projectId = next.json().data.id;
+  const assign = (candidateUserId: string) =>
+    post('/projects/manager-recruitments', { projectId, candidateUserId }, f.headers);
+  expect((await assign(first.user.id)).statusCode).toBe(200);
+  const url = `/api/v1/files/view?objectKey=${encodeURIComponent(upload.record.objectKey)}`;
+  expect((await app.inject({ url, headers: first.headers })).statusCode).toBe(200);
+  expect((await app.inject({ url, headers: second.headers })).statusCode).toBe(403);
+  await db.projectManagerRecruitment.updateMany({
+    where: { projectId, status: 'ASSIGNED' },
+    data: { expertRecruitmentHandlerUserId: handler.user.id },
+  });
+  expect((await app.inject({ url, headers: handler.headers })).statusCode).toBe(200);
+  expect((await assign(second.user.id)).statusCode).toBe(200);
+  expect((await app.inject({ url, headers: first.headers })).statusCode).toBe(403);
+  expect((await app.inject({ url, headers: handler.headers })).statusCode).toBe(403);
+  expect((await app.inject({ url, headers: second.headers })).statusCode).toBe(200);
+  await new ManagementService(db).change({
+    uid: second.user.uid,
+    role: 'PM',
+    action: 'REVOKE',
+    actor: 'integration-operator',
+    reason: '读取权限撤销',
+  });
+  expect((await app.inject({ url, headers: second.headers })).statusCode).toBe(403);
+});
+
+async function productionPlanFixture() {
+  const f = await projectManagerFixture();
+  const manager = await projectManagerAccount(1),
+    handler = await projectManagerAccount(2);
+  expect((await f.recruit(manager.user.id)).statusCode).toBe(200);
+  await db.projectManagerRecruitment.updateMany({
+    where: { projectId: f.projectId, status: 'ASSIGNED' },
+    data: { expertRecruitmentHandlerUserId: handler.user.id },
+  });
+  const query = (headers = manager.headers) =>
+    app.inject({ url: `/api/v1/projects/production-plan?projectId=${f.projectId}`, headers });
+  const confirm = (payload: unknown = productionPlanExample, headers = manager.headers) =>
+    post(`/projects/production-plan/confirm?projectId=${f.projectId}`, payload, headers);
+  return { ...f, manager, handler, query, confirm };
+}
+test('production plan initial defaults, primary editability, handler read-only and live project references', async () => {
+  const f = await productionPlanFixture();
+  const initial = await f.query();
+  expect(initial.statusCode).toBe(200);
+  expect(initial.json().data).toMatchObject({
+    hasPlan: false,
+    editable: true,
+    id: null,
+    operatorCpd: null,
+    needWrittenExam: true,
+    maxActiveExamCount: 1,
+    needInterview: false,
+    crowds: [{ id: null, sequenceNo: 1, crowdName: null, profileRequirement: null }],
+    stages: [
+      { sequenceNo: 1, stageName: '爬坡期', workdayCountSource: 'AUTO' },
+      { sequenceNo: 2, stageName: '稳定生产期', workdayCountSource: 'AUTO' },
+    ],
+  });
+  expect((await f.query(f.handler.headers)).json().data.editable).toBe(false);
+  await db.project.update({ where: { id: f.projectId }, data: { workSummary: '实时新内容' } });
+  expect((await f.query()).json().data.projectReference.workSummary).toBe('实时新内容');
+  expect(await db.projectProductionPlan.count()).toBe(0);
+});
+test('production plan confirmation persists ordered details, decimal output and completed main round atomically without a realtime event', async () => {
+  const f = await productionPlanFixture();
+  const previous = await db.project.findUniqueOrThrow({ where: { id: f.projectId } });
+  const events = await db.projectEventOutbox.count();
+  const body = {
+    ...productionPlanExample,
+    operatorCpd: 0.1,
+    stages: [
+      { stageName: ' 自动 ', startDate: '2099-01-05', endDate: '2099-01-11', operatorHeadcount: 3 },
+      {
+        stageName: ' 手工 ',
+        startDate: '2099-01-05',
+        endDate: '2099-01-05',
+        operatorHeadcount: 2,
+        operatorCpd: 0.2,
+        workdayCountSource: 'MANUAL',
+        workdayCount: 10,
+      },
+    ],
+  };
+  const result = await f.confirm(body);
+  expect(result.statusCode, result.body).toBe(200);
+  expect(result.json().data).toMatchObject({
+    hasPlan: true,
+    editable: false,
+    operatorCpd: 0.1,
+    totalExpectedOutput: 5.5,
+    currentNodeCode: 'ENTRANCE_EXAM',
+    nextStage: 'ENTRANCE_EXAM',
+    confirmedBy: f.manager.user.uid,
+    stages: [
+      {
+        sequenceNo: 1,
+        stageName: '自动',
+        naturalDayCount: 7,
+        workdayCount: 5,
+        operatorCpd: 0.1,
+        expectedOutput: 1.5,
+      },
+      { sequenceNo: 2, stageName: '手工', naturalDayCount: 1, workdayCount: 10, expectedOutput: 4 },
+    ],
+  });
+  const plan = await db.projectProductionPlan.findUniqueOrThrow({
+    where: { projectId: f.projectId },
+    include: { stages: true, crowds: true },
+  });
+  expect(plan.totalExpectedOutput.toString()).toBe('5.5');
+  expect(plan.crowds).toHaveLength(1);
+  expect(plan.stages).toHaveLength(2);
+  expect(
+    await db.projectTaskRound.findFirst({
+      where: {
+        projectId: f.projectId,
+        userId: f.manager.user.id,
+        taskType: 'MAIN_PRODUCTION_PLAN',
+        status: 'COMPLETED',
+      },
+    }),
+  ).toMatchObject({ participated: true });
+  expect(
+    await db.projectTaskRound.count({
+      where: { projectId: f.projectId, taskType: 'MAIN_ENTRANCE_EXAM', status: 'OPEN' },
+    }),
+  ).toBe(1);
+  expect(await db.projectEventOutbox.count()).toBe(events);
+  const after = await db.project.findUniqueOrThrow({ where: { id: f.projectId } });
+  expect(after.projectName).toBe(previous.projectName);
+  expect(after.versionNo).toBe(previous.versionNo);
+  expect(after.mandatoryRequirement).toBe(previous.mandatoryRequirement);
+  expect((await f.query()).json().data).toEqual(result.json().data);
+  expect((await f.confirm()).statusCode).toBe(400);
+});
+test('production plan enforces independent PM grant and current primary relationship on every call', async () => {
+  const f = await productionPlanFixture();
+  const other = await projectManagerAccount(3);
+  for (const headers of [f.headers, other.headers]) {
+    expect((await f.query(headers)).statusCode).toBe(403);
+    expect((await f.confirm(productionPlanExample, headers)).statusCode).toBe(403);
+  }
+  expect((await f.confirm(productionPlanExample, f.handler.headers)).statusCode).toBe(403);
+  await new ManagementService(db).change({
+    uid: f.manager.user.uid,
+    role: 'PM',
+    action: 'REVOKE',
+    actor: 'integration-operator',
+    reason: '撤销验证',
+  });
+  expect((await f.query()).statusCode).toBe(403);
+  expect((await f.confirm()).statusCode).toBe(403);
+  expect(await db.projectProductionPlan.count()).toBe(0);
+});
+test('production plan rejects invalid numbers, incomplete crowds, dates and supplied output without persisting partial data', async () => {
+  const f = await productionPlanFixture();
+  for (const patch of [
+    { inspectorCpd: null },
+    { operatorCpd: 0.00001 },
+    { crowds: [] },
+    { crowds: [null] },
+    { crowds: [{ crowdName: ' ', profileRequirement: '要求' }] },
+    { stages: [null] },
+    { stages: [{ ...productionPlanExample.stages[0], startDate: '2099-02-30' }] },
+    { stages: [{ ...productionPlanExample.stages[0], startDate: '2020-01-01' }] },
+    {
+      stages: [
+        { ...productionPlanExample.stages[0], workdayCountSource: 'MANUAL', workdayCount: null },
+      ],
+    },
+    { stages: [{ ...productionPlanExample.stages[0], accuracyRate: 101 }] },
+    { totalExpectedOutput: 1 },
+  ]) {
+    const result = await f.confirm({ ...productionPlanExample, ...patch });
+    expect(result.statusCode, result.body).toBe(400);
+    expect(await db.projectProductionPlan.count()).toBe(0);
+    expect(await db.projectProductionCrowd.count()).toBe(0);
+    expect(await db.projectProductionStage.count()).toBe(0);
+  }
+  expect((await db.project.findUniqueOrThrow({ where: { id: f.projectId } })).currentNodeCode).toBe(
+    'PRODUCTION_PLAN',
+  );
+});
+test('concurrent production plan confirmations have one winner and never overwrite confirmed data', async () => {
+  const f = await productionPlanFixture();
+  const results = await Promise.all([
+    f.confirm(),
+    f.confirm({ ...productionPlanExample, operatorHeadcount: 99 }),
+  ]);
+  expect(results.map((r) => r.statusCode).sort()).toEqual([200, 400]);
+  expect(await db.projectProductionPlan.count()).toBe(1);
+  expect(await db.projectProductionStage.count()).toBe(1);
+  expect((await f.query()).json().data.operatorHeadcount).toBe(
+    results.find((r) => r.statusCode === 200)!.json().data.operatorHeadcount,
+  );
+});
+test('late production plan backfill preserves later project node and records source-less completion, while no-written plan advances to training', async () => {
+  const f = await productionPlanFixture();
+  await db.project.update({
+    where: { id: f.projectId },
+    data: { currentNodeCode: 'PRODUCTION_TASK' },
+  });
+  const result = await f.confirm({ ...productionPlanExample, needWrittenExam: false });
+  expect(result.statusCode, result.body).toBe(200);
+  expect(result.json().data).toMatchObject({
+    currentNodeCode: 'PRODUCTION_TASK',
+    nextStage: 'STANDARD_TRAINING',
+  });
+  expect(
+    await db.projectTaskRound.findFirst({
+      where: {
+        projectId: f.projectId,
+        userId: f.manager.user.id,
+        taskType: 'MAIN_PRODUCTION_PLAN',
+        status: 'COMPLETED',
+      },
+    }),
+  ).toMatchObject({ participated: true });
+  const second = await f.save({ ...f.payload, projectName: '免笔试项目' });
+  const projectId = second.json().data.id;
+  expect(
+    (
+      await post(
+        '/projects/manager-recruitments',
+        { projectId, candidateUserId: f.manager.user.id },
+        f.headers,
+      )
+    ).statusCode,
+  ).toBe(200);
+  const response = await post(
+    `/projects/production-plan/confirm?projectId=${projectId}`,
+    { ...productionPlanExample, needWrittenExam: false },
+    f.manager.headers,
+  );
+  expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data.currentNodeCode).toBe('STANDARD_TRAINING');
+});
+test('task round failure after nested plan writes rolls back plan, crowds, stages and project node together', async () => {
+  const f = await productionPlanFixture();
+  const failing = new Proxy(db, {
+    get(target, key) {
+      if (key === '$transaction')
+        return (callback: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+          db.$transaction((tx) =>
+            callback(
+              new Proxy(tx, {
+                get(transaction, property) {
+                  if (property === 'projectTaskRound')
+                    return {
+                      ...transaction.projectTaskRound,
+                      update: async (args: Prisma.ProjectTaskRoundUpdateArgs) => {
+                        await transaction.projectTaskRound.update(args);
+                        throw new Error('injected plan round failure');
+                      },
+                    };
+                  return Reflect.get(transaction, property);
+                },
+              }),
+            ),
+          );
+      const value = Reflect.get(target, key);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  await expect(
+    new ProjectProductionPlanService(failing).confirm(
+      f.projectId,
+      productionPlanExample as ProductionPlanInput,
+      {
+        userId: f.manager.user.id,
+        uid: f.manager.user.uid,
+        sessionId: 'test',
+        role: 'EXPERT',
+        clientType: 'desktop',
+      },
+    ),
+  ).rejects.toThrow('injected plan round failure');
+  expect(await db.projectProductionPlan.count()).toBe(0);
+  expect(await db.projectProductionCrowd.count()).toBe(0);
+  expect(await db.projectProductionStage.count()).toBe(0);
+  expect((await db.project.findUniqueOrThrow({ where: { id: f.projectId } })).currentNodeCode).toBe(
+    'PRODUCTION_PLAN',
+  );
+  expect(
+    await db.projectTaskRound.count({
+      where: { projectId: f.projectId, taskType: 'MAIN_PRODUCTION_PLAN', status: 'OPEN' },
+    }),
+  ).toBe(1);
+});
+test('production plan access follows manager replacement and rejects missing, draft and deleted projects', async () => {
+  const f = await productionPlanFixture();
+  const replacement = await projectManagerAccount(3);
+  expect((await f.recruit(replacement.user.id)).statusCode).toBe(200);
+  expect((await f.query()).statusCode).toBe(403);
+  expect((await f.query(f.handler.headers)).statusCode).toBe(403);
+  expect((await f.query(replacement.headers)).statusCode).toBe(200);
+  await db.project.update({ where: { id: f.projectId }, data: { status: 'DRAFT' } });
+  expect((await f.query(replacement.headers)).statusCode).toBe(404);
+  expect((await f.confirm(productionPlanExample, replacement.headers)).statusCode).toBe(400);
+  await db.project.update({ where: { id: f.projectId }, data: { deleted: true } });
+  expect((await f.query(replacement.headers)).statusCode).toBe(404);
+  expect((await f.confirm(productionPlanExample, replacement.headers)).statusCode).toBe(404);
+  expect(
+    (
+      await app.inject({
+        url: '/api/v1/projects/production-plan?projectId=2147483647',
+        headers: replacement.headers,
+      })
+    ).statusCode,
+  ).toBe(404);
+});
+
+const projectDetailHttp = (projectId: number, headers: Record<string, string>) =>
+  app.inject({ url: `/api/v1/projects/${projectId}`, headers });
+test('published detail preserves category snapshots and live personal names while management responses omit production requirements', async () => {
+  const f = await projectManagerFixture();
+  await db.user.update({
+    where: { id: f.user.id },
+    data: { displayName: '新昵称', realName: '新姓名' },
+  });
+  await db.projectCategory.update({
+    where: { id: f.categories[0]!.id },
+    data: { categoryName: '字典新名' },
+  });
+  const before = await db.project.findUniqueOrThrow({ where: { id: f.projectId } });
+  const result = await projectDetailHttp(f.projectId, f.headers);
+  expect(result.statusCode, result.body).toBe(200);
+  expect(result.json().data).toMatchObject({
+    id: f.projectId,
+    status: 'PUBLISHED',
+    requesterName: '新昵称(新姓名)',
+    creatorName: '新昵称(新姓名)',
+    categoryLevel1Name: '项目分类0',
+    currentNodeCode: 'RECRUIT_PROJECT_MANAGER',
+  });
+  expect(result.json().data).not.toHaveProperty('productionRequirements');
+  expect(await db.project.findUniqueOrThrow({ where: { id: f.projectId } })).toEqual(before);
+  expect(await db.projectTaskRound.count()).toBe(0);
+  expect(await db.projectEventOutbox.count()).toBe(0);
+  await new ManagementService(db).change({
+    uid: f.user.uid,
+    role: 'NAVIGATOR',
+    action: 'REVOKE',
+    actor: 'integration-operator',
+    reason: '撤销详情权限',
+  });
+  expect((await projectDetailHttp(f.projectId, f.headers)).statusCode).toBe(403);
+});
+test('project detail PM and handler access follows independent authorization, active assignment and replacement', async () => {
+  const f = await productionPlanFixture();
+  for (const headers of [f.manager.headers, f.handler.headers]) {
+    const response = await projectDetailHttp(f.projectId, headers);
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().data).not.toHaveProperty('productionRequirements');
+  }
+  const other = await projectManagerAccount(3);
+  expect((await projectDetailHttp(f.projectId, other.headers)).statusCode).toBe(403);
+  expect((await f.recruit(other.user.id)).statusCode).toBe(200);
+  expect((await projectDetailHttp(f.projectId, f.manager.headers)).statusCode).toBe(403);
+  expect((await projectDetailHttp(f.projectId, f.handler.headers)).statusCode).toBe(403);
+  expect((await projectDetailHttp(f.projectId, other.headers)).statusCode).toBe(200);
+  await new ManagementService(db).change({
+    uid: other.user.uid,
+    role: 'PM',
+    action: 'REVOKE',
+    actor: 'integration-operator',
+    reason: '撤销详情PM',
+  });
+  expect((await projectDetailHttp(f.projectId, other.headers)).statusCode).toBe(403);
+});
+test('only real ACTIVE MEMBER grants expert project detail access, never organization membership or other project roles and statuses', async () => {
+  const f = await projectManagerFixture();
+  const expert = await projectManagerAccount(1, 100, false);
+  expect((await projectDetailHttp(f.projectId, expert.headers)).statusCode).toBe(403);
+  const member = await db.projectMember.create({
+    data: {
+      projectId: f.projectId,
+      userId: expert.user.id,
+      projectRole: 'MEMBER',
+      status: 'PENDING_CONFIRM',
+      createdBy: f.user.uid,
+    },
+  });
+  for (const status of [
+    'PENDING_CONFIRM',
+    'PENDING_ENTRY',
+    'ENTRY_DECLINED',
+    'PENDING_EXIT',
+    'PENDING_TRANSFER',
+    'LEFT',
+    'REMOVED',
+  ]) {
+    await db.projectMember.update({ where: { id: member.id }, data: { status } });
+    expect((await projectDetailHttp(f.projectId, expert.headers)).statusCode).toBe(403);
+  }
+  await db.projectMember.update({
+    where: { id: member.id },
+    data: { status: 'ACTIVE', projectRole: 'PROJECT_MANAGER' },
+  });
+  expect((await projectDetailHttp(f.projectId, expert.headers)).statusCode).toBe(403);
+  await db.projectMember.update({ where: { id: member.id }, data: { projectRole: 'MEMBER' } });
+  const result = await projectDetailHttp(f.projectId, expert.headers);
+  expect(result.statusCode, result.body).toBe(200);
+  expect(result.json().data.productionRequirements).toEqual({
+    hasPlan: false,
+    planId: null,
+    operatorHeadcount: null,
+    operatorCpd: null,
+    inspectorHeadcount: null,
+    inspectorCpd: null,
+    totalExpectedOutput: null,
+    crowds: null,
+    stages: [],
+  });
+  expect(
+    (
+      await app.inject({
+        url: `/api/v1/projects/production-plan?projectId=${f.projectId}`,
+        headers: expert.headers,
+      })
+    ).statusCode,
+  ).toBe(403);
+});
+test('expert project details return confirmed totals and ordered stages without administrative fields or assignment-detail crowds', async () => {
+  const f = await productionPlanFixture();
+  expect((await f.confirm()).statusCode).toBe(200);
+  const expert = await projectManagerAccount(3, 100, false);
+  await db.projectMember.create({
+    data: { projectId: f.projectId, userId: expert.user.id, createdBy: f.user.uid },
+  });
+  const result = await projectDetailHttp(f.projectId, expert.headers);
+  expect(result.statusCode, result.body).toBe(200);
+  const requirements = result.json().data.productionRequirements;
+  expect(requirements).toMatchObject({
+    hasPlan: true,
+    operatorHeadcount: 20,
+    operatorCpd: 500.25,
+    totalExpectedOutput: 50025,
+    crowds: null,
+    stages: [
+      {
+        sequenceNo: 1,
+        operatorCpd: 500.25,
+        expectedOutput: 50025,
+        startDate: '2099-01-05',
+        endDate: '2099-01-09',
+      },
+    ],
+  });
+  for (const key of [
+    'extJson',
+    'confirmedBy',
+    'confirmedAt',
+    'needWrittenExam',
+    'needInterview',
+    'maxActiveExamCount',
+  ])
+    expect(requirements).not.toHaveProperty(key);
+  expect((await projectDetailHttp(f.projectId, f.headers)).json().data).not.toHaveProperty(
+    'productionRequirements',
+  );
+});
+test('detail uses management scope first for users with both grants and active membership, then falls back to true expert scope after revocation', async () => {
+  const f = await projectManagerFixture();
+  await db.projectMember.create({
+    data: { projectId: f.projectId, userId: f.user.id, createdBy: f.user.uid },
+  });
+  expect((await projectDetailHttp(f.projectId, f.headers)).json().data).not.toHaveProperty(
+    'productionRequirements',
+  );
+  await new ManagementService(db).change({
+    uid: f.user.uid,
+    role: 'NAVIGATOR',
+    action: 'REVOKE',
+    actor: 'integration-operator',
+    reason: '管理与成员范围验证',
+  });
+  const result = await projectDetailHttp(f.projectId, f.headers);
+  expect(result.statusCode, result.body).toBe(200);
+  expect(result.json().data).toHaveProperty('productionRequirements');
+});
+test('published detail rejects missing, draft and deleted projects and validates path IDs with existing transport isolation', async () => {
+  const f = await projectCreationFixture();
+  const draft = await f.save({ operation: 'SAVE_DRAFT' });
+  const id = draft.json().data.id;
+  expect((await projectDetailHttp(id, f.headers)).statusCode).toBe(404);
+  expect((await projectDetailHttp(2147483647, f.headers)).statusCode).toBe(404);
+  const published = await f.save({ ...f.payload, versionNo: 0 });
+  expect(published.statusCode).toBe(200);
+  await db.project.update({ where: { id }, data: { deleted: true } });
+  expect((await projectDetailHttp(id, f.headers)).statusCode).toBe(404);
+  for (const value of ['0', '-1', '1.5', '2147483648', 'abc'])
+    expect(
+      (await app.inject({ url: `/api/v1/projects/${value}`, headers: f.headers })).statusCode,
+    ).toBe(400);
+  expect((await app.inject({ url: `/api/v1/projects/${id}` })).statusCode).toBe(401);
+});
+test('active expert project detail does not bypass attachment acceptance and admission requirements pending later migrations', async () => {
+  const f = await projectCreationFixture();
+  const expert = await projectManagerAccount(1, 100, false);
+  const upload = await uploaded('PROJECT_ATTACHMENT', f.user.uid);
+  const published = await f.save({
+    ...f.payload,
+    attachments: [
+      {
+        attachmentType: 'STANDARD_REFERENCE',
+        objectKey: upload.record.objectKey,
+        uploadToken: upload.uploadToken,
+      },
+    ],
+  });
+  expect(published.statusCode, published.body).toBe(200);
+  const projectId = published.json().data.id;
+  await db.projectMember.create({
+    data: { projectId, userId: expert.user.id, createdBy: f.user.uid },
+  });
+  const detail = await projectDetailHttp(projectId, expert.headers);
+  expect(detail.statusCode, detail.body).toBe(200);
+  expect(detail.json().data.attachments).toHaveLength(1);
+  const file = await app.inject({
+    url: `/api/v1/files/view?objectKey=${encodeURIComponent(upload.record.objectKey)}`,
+    headers: expert.headers,
+  });
+  expect(file.statusCode).toBe(403);
+});
+test('member foundations preserve history and source idempotency without creating memberships from an authenticated detail query', async () => {
+  const f = await projectManagerFixture();
+  const expert = await projectManagerAccount(1, 100, false);
+  const original = await db.projectMember.create({
+    data: {
+      projectId: f.projectId,
+      userId: expert.user.id,
+      admissionAttemptId: 77,
+      status: 'LEFT',
+      createdBy: f.user.uid,
+    },
+  });
+  const another = await db.projectMember.create({
+    data: {
+      projectId: f.projectId,
+      userId: expert.user.id,
+      status: 'ACTIVE',
+      createdBy: f.user.uid,
+    },
+  });
+  expect(original.id).not.toBe(another.id);
+  await expect(
+    db.projectMember.create({
+      data: {
+        projectId: f.projectId,
+        userId: expert.user.id,
+        admissionAttemptId: 77,
+        createdBy: f.user.uid,
+      },
+    }),
+  ).rejects.toMatchObject({ code: 'P2002' });
+  const count = await db.projectMember.count();
+  const result = await projectDetailHttp(f.projectId, expert.headers);
+  expect(result.statusCode, result.body).toBe(200);
+  expect(await db.projectMember.count()).toBe(count);
+  expect((await db.user.findUniqueOrThrow({ where: { id: expert.user.id } })).role).toBe('EXPERT');
+});
+
+async function memberCountProject(
+  owner: { id: string; uid: string },
+  projectNo: string,
+  status = 'PUBLISHED',
+  deleted = false,
+) {
+  return db.project.create({
+    data: {
+      projectNo,
+      requesterType: 'ORGANIZATION',
+      requesterId: owner.id,
+      requesterName: '统计组织快照',
+      createdBy: owner.uid,
+      updatedBy: owner.uid,
+      status,
+      deleted,
+    },
+  });
+}
+test('organization project counts use exact membership relations, ACTIVE row counts and legacy project/role inclusion', async () => {
+  const f = await memberFixture(),
+    member = await f.add();
+  const first = await memberCountProject(f.owner, 'COUNT_A'),
+    second = await memberCountProject(f.owner, 'COUNT_B', 'DRAFT', true);
+  const data = {
+    projectId: first.id,
+    userId: member.user.id,
+    userOrgRelId: member.rel.id,
+    organizationId: f.orgId,
+    createdBy: f.owner.uid,
+  };
+  await db.projectMember.createMany({
+    data: [
+      data,
+      { ...data, projectRole: 'PROJECT_MANAGER' },
+      { ...data, projectId: second.id },
+      ...[
+        'PENDING_CONFIRM',
+        'PENDING_ENTRY',
+        'ENTRY_DECLINED',
+        'PENDING_EXIT',
+        'PENDING_TRANSFER',
+        'LEFT',
+        'REMOVED',
+      ].map((status) => ({ ...data, status })),
+    ],
+  });
+  const foreignOrg = await db.organization.create({
+    data: { name: '统计其他组织', expertiseTags: [] },
+  });
+  const foreign = await db.userOrgRel.create({
+    data: { orgId: foreignOrg.id, userId: member.user.id, uid: member.user.uid },
+  });
+  await db.projectMember.createMany({
+    data: [
+      { ...data, userOrgRelId: foreign.id, organizationId: foreignOrg.id },
+      { ...data, userOrgRelId: null, organizationId: null },
+    ],
+  });
+  const response = await post('/organizations/members', { orgId: f.orgId }, f.headers);
+  expect(response.statusCode, response.body).toBe(200);
+  expect(
+    response.json().data.records.find((r: { memberId: string }) => r.memberId === member.rel.id),
+  ).toMatchObject({ activeProjectCount: 3 });
+  expect(
+    response.json().data.records.find((r: { memberId: string }) => r.memberId === f.ownerRel.id),
+  ).toMatchObject({ activeProjectCount: 0 });
+  const filtered = await post(
+    '/organizations/members',
+    { orgId: f.orgId, projectId: first.id },
+    f.headers,
+  );
+  expect(filtered.statusCode, filtered.body).toBe(200);
+  expect(filtered.json().data).toMatchObject({
+    total: 1,
+    pages: 1,
+    records: [{ memberId: member.rel.id, activeProjectCount: 3 }],
+  });
+});
+test('project membership filters apply before pagination without row duplication and combine with organization status and keyword filters', async () => {
+  const f = await memberFixture(),
+    first = await f.add(),
+    second = await f.add('MEMBER', 'LEFT'),
+    excluded = await f.add();
+  const project = await memberCountProject(f.owner, 'FILTER_A'),
+    other = await memberCountProject(f.owner, 'FILTER_B');
+  for (const [i, member] of [first, second, excluded].entries())
+    await db.userOrgRel.update({
+      where: { id: member.rel.id },
+      data: { joinedAt: new Date(`2026-10-0${i + 1}T00:00:00Z`) },
+    });
+  const data = { projectId: project.id, createdBy: f.owner.uid };
+  await db.projectMember.createMany({
+    data: [
+      { ...data, userId: first.user.id, userOrgRelId: first.rel.id },
+      { ...data, userId: first.user.id, userOrgRelId: first.rel.id },
+      { ...data, userId: second.user.id, userOrgRelId: second.rel.id },
+      { ...data, projectId: other.id, userId: excluded.user.id, userOrgRelId: excluded.rel.id },
+    ],
+  });
+  const page = await post(
+    '/organizations/members',
+    { orgId: f.orgId, projectId: project.id, current: 1, size: 1 },
+    f.headers,
+  );
+  expect(page.statusCode, page.body).toBe(200);
+  expect(page.json().data).toMatchObject({
+    total: 2,
+    pages: 2,
+    records: [{ memberId: second.rel.id, activeProjectCount: 1 }],
+  });
+  const next = await post(
+    '/organizations/members',
+    { orgId: f.orgId, projectId: project.id, current: 2, size: 1 },
+    f.headers,
+  );
+  expect(next.json().data).toMatchObject({
+    total: 2,
+    records: [{ memberId: first.rel.id, activeProjectCount: 2 }],
+  });
+  const combined = await post(
+    '/organizations/members',
+    { orgId: f.orgId, projectId: project.id, joinStatus: 'ACTIVE', keyword: first.user.uid },
+    f.headers,
+  );
+  expect(combined.json().data).toMatchObject({
+    total: 1,
+    records: [{ memberId: first.rel.id, activeProjectCount: 2 }],
+  });
+  expect(
+    (
+      await post(
+        '/organizations/members',
+        { orgId: f.orgId, projectId: project.id, current: 3, size: 1 },
+        f.headers,
+      )
+    ).json().data.records,
+  ).toEqual([]);
+});
+test('project filtering preserves organization manager scope and ignores the same user personal or other-organization project associations', async () => {
+  const f = await memberFixture(),
+    member = await f.add();
+  const project = await memberCountProject(f.owner, 'SCOPE_A');
+  await db.projectMember.create({
+    data: { projectId: project.id, userId: member.user.id, createdBy: f.owner.uid },
+  });
+  const query = { orgId: f.orgId, projectId: project.id };
+  expect((await post('/organizations/members', query, f.headers)).json().data.total).toBe(0);
+  expect((await post('/organizations/members', query, member.headers)).statusCode).toBe(403);
+  const foreignOrg = await db.organization.create({
+    data: { name: '筛选其他组织', expertiseTags: [] },
+  });
+  expect(
+    (await post('/organizations/members', { ...query, orgId: foreignOrg.id }, f.headers))
+      .statusCode,
+  ).toBe(403);
+  const rel = await db.userOrgRel.create({
+    data: { orgId: foreignOrg.id, userId: member.user.id, uid: member.user.uid },
+  });
+  await db.projectMember.create({
+    data: {
+      projectId: project.id,
+      userId: member.user.id,
+      userOrgRelId: rel.id,
+      createdBy: f.owner.uid,
+    },
+  });
+  expect((await post('/organizations/members', query, f.headers)).json().data.total).toBe(0);
+});
+test('project filter null and missing are equivalent, nonexistent integer IDs return empty pages and invalid encodings reject', async () => {
+  const f = await memberFixture();
+  await f.add();
+  const list = (extra: Record<string, unknown>) =>
+    post('/organizations/members', { orgId: f.orgId, ...extra }, f.headers);
+  expect((await list({ projectId: null })).json().data).toEqual((await list({})).json().data);
+  for (const projectId of [0, -1, 2147483647]) {
+    const response = await list({ projectId });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().data).toMatchObject({ total: 0, pages: 0, records: [] });
+  }
+  for (const projectId of [f.orgId, '1', 1.1, 2147483648, -2147483649])
+    expect((await list({ projectId })).statusCode).toBe(400);
+});
+
+const projectCardsHttp = (headers: Record<string, string>, manager = false) =>
+  app.inject({ url: manager ? '/api/v1/projects/manager/list' : '/api/v1/projects/list', headers });
+async function cardSnapshot(
+  projectId: number,
+  userId: string,
+  perspective: string,
+  branchNodeCode = 'SUBTASK_ACCEPTANCE',
+) {
+  return db.projectRoleNodeSnapshot.create({
+    data: {
+      projectId,
+      userId,
+      perspective,
+      branchNodeCode,
+      branchPriority: 80,
+      sourceBizType: 'SUBTASK',
+      sourceBizId: 1,
+      sourceEventAt: new Date(),
+      calculatedAt: new Date(),
+    },
+  });
+}
+test('navigator cards follow own recruitment or own perspective branch and hide completed, deleted and draft projects', async () => {
+  const f = await projectManagerFixture(),
+    manager = await projectManagerAccount(1);
+  let result = await projectCardsHttp(f.headers);
+  expect(result.statusCode, result.body).toBe(200);
+  expect(result.json().data).toMatchObject([
+    {
+      id: f.projectId,
+      currentNodeCode: 'RECRUIT_PROJECT_MANAGER',
+      branchNodeCode: null,
+      currentAction: 'RECRUIT_PROJECT_MANAGER',
+    },
+  ]);
+  expect(result.json().data[0]).not.toHaveProperty('primaryProjectManager');
+  expect((await f.recruit(manager.user.id)).statusCode).toBe(200);
+  expect((await projectCardsHttp(f.headers)).json().data).toEqual([]);
+  const own = await cardSnapshot(f.projectId, f.user.id, 'NAVIGATOR');
+  result = await projectCardsHttp(f.headers);
+  expect(result.json().data).toMatchObject([
+    { id: f.projectId, currentNodeCode: 'PRODUCTION_PLAN', branchNodeCode: 'SUBTASK_ACCEPTANCE' },
+  ]);
+  for (const patch of [
+    { currentNodeCode: 'COMPLETED' },
+    { currentNodeCode: 'PRODUCTION_PLAN', deleted: true },
+    { deleted: false, status: 'DRAFT' },
+  ]) {
+    await db.project.update({ where: { id: f.projectId }, data: patch });
+    expect((await projectCardsHttp(f.headers)).json().data).toEqual([]);
+  }
+  await db.projectRoleNodeSnapshot.delete({ where: { id: own.id } });
+});
+test('manager cards distinguish primary and handler perspectives, recruitment retry and dual-role primary precedence', async () => {
+  const f = await productionPlanFixture();
+  expect((await projectCardsHttp(f.manager.headers, true)).json().data).toMatchObject([
+    {
+      id: f.projectId,
+      primaryProjectManager: true,
+      expertRecruitmentHandler: false,
+      currentNodeCode: 'PRODUCTION_PLAN',
+    },
+  ]);
+  expect((await projectCardsHttp(f.handler.headers, true)).json().data).toEqual([]);
+  const ignored = await cardSnapshot(
+    f.projectId,
+    f.handler.user.id,
+    'PROJECT_MANAGER',
+    'EXPERT_RECRUITMENT_RETRY',
+  );
+  expect((await projectCardsHttp(f.handler.headers, true)).json().data).toEqual([]);
+  const handler = await cardSnapshot(
+    f.projectId,
+    f.handler.user.id,
+    'EXPERT_RECRUITMENT_HANDLER',
+    'EXPERT_RECRUITMENT_RETRY',
+  );
+  expect((await projectCardsHttp(f.handler.headers, true)).json().data).toMatchObject([
+    {
+      primaryProjectManager: false,
+      expertRecruitmentHandler: true,
+      currentAction: 'VIEW_DETAIL',
+      branchNodeCode: 'EXPERT_RECRUITMENT_RETRY',
+    },
+  ]);
+  await db.projectManagerRecruitment.updateMany({
+    where: { projectId: f.projectId, status: 'ASSIGNED' },
+    data: { expertRecruitmentHandlerUserId: f.manager.user.id },
+  });
+  await cardSnapshot(
+    f.projectId,
+    f.manager.user.id,
+    'EXPERT_RECRUITMENT_HANDLER',
+    'EXPERT_RECRUITMENT_RETRY',
+  );
+  const result = await projectCardsHttp(f.manager.headers, true);
+  expect(result.statusCode, result.body).toBe(200);
+  expect(result.json().data[0]).toMatchObject({
+    primaryProjectManager: true,
+    expertRecruitmentHandler: true,
+    branchNodeCode: null,
+  });
+  await db.projectRoleNodeSnapshot.deleteMany({ where: { id: { in: [ignored.id, handler.id] } } });
+});
+test('manager card main visibility and late branch do not replace the shared node, and stale completed snapshots never push', async () => {
+  const f = await productionPlanFixture();
+  for (const currentNodeCode of [
+    'PRODUCTION_PLAN',
+    'ENTRANCE_EXAM',
+    'STANDARD_TRAINING',
+    'RECRUIT_EXECUTION_EXPERT',
+  ]) {
+    await db.project.update({ where: { id: f.projectId }, data: { currentNodeCode } });
+    expect((await projectCardsHttp(f.manager.headers, true)).json().data).toHaveLength(1);
+  }
+  await db.project.update({
+    where: { id: f.projectId },
+    data: { currentNodeCode: 'PRODUCTION_TASK' },
+  });
+  expect((await projectCardsHttp(f.manager.headers, true)).json().data).toEqual([]);
+  await cardSnapshot(f.projectId, f.manager.user.id, 'PROJECT_MANAGER', 'OUTPUT_DATA_REVIEW');
+  expect((await projectCardsHttp(f.manager.headers, true)).json().data).toMatchObject([
+    { currentNodeCode: 'PRODUCTION_TASK', branchNodeCode: 'OUTPUT_DATA_REVIEW' },
+  ]);
+  await db.project.update({ where: { id: f.projectId }, data: { currentNodeCode: 'COMPLETED' } });
+  expect((await projectCardsHttp(f.manager.headers, true)).json().data).toEqual([]);
+});
+test('list counts all ACTIVE membership rows, preserves category snapshots and live names, and sorts update time then numeric ID', async () => {
+  const f = await projectManagerFixture();
+  const second = await f.save({ ...f.payload, projectName: '第二项目' });
+  const secondId = second.json().data.id;
+  const now = new Date('2026-10-21T02:00:00Z');
+  await db.project.updateMany({
+    where: { id: { in: [f.projectId, secondId] } },
+    data: { updatedAt: now },
+  });
+  await db.user.update({
+    where: { id: f.user.id },
+    data: { displayName: '实时昵称', realName: '实时姓名' },
+  });
+  await db.projectCategory.update({
+    where: { id: f.categories[0]!.id },
+    data: { categoryName: '改名字典' },
+  });
+  await db.projectMember.createMany({
+    data: [
+      { projectId: f.projectId, userId: f.user.id, createdBy: f.user.uid },
+      {
+        projectId: f.projectId,
+        userId: f.user.id,
+        projectRole: 'PROJECT_MANAGER',
+        createdBy: f.user.uid,
+      },
+      { projectId: f.projectId, userId: f.user.id, status: 'LEFT', createdBy: f.user.uid },
+    ],
+  });
+  const result = await projectCardsHttp(f.headers);
+  expect(result.statusCode, result.body).toBe(200);
+  expect(result.json().data.map((r: { id: number }) => r.id)).toEqual([secondId, f.projectId]);
+  expect(result.json().data[1]).toMatchObject({
+    activeExpertCount: 2,
+    requesterName: '实时昵称(实时姓名)',
+    creatorName: '实时昵称(实时姓名)',
+    categoryLevel1Name: '项目分类0',
+  });
+});
+test('list organization owners read accepted assignment relations and only fall back when no owner relation of any status exists', async () => {
+  const f = await projectManagerFixture(),
+    first = await projectManagerAccount(1),
+    legacy = await projectManagerAccount(2);
+  const org = await db.organization.create({ data: { name: '卡片负责人组织', expertiseTags: [] } });
+  const assignment = await db.projectExpertAssignment.create({
+    data: {
+      assignmentNo: 'CARD_OWNER_A',
+      projectId: f.projectId,
+      subjectType: 'ORGANIZATION',
+      organizationId: org.id,
+      status: 'ACCEPTED',
+      projectOwnerUserId: legacy.user.id,
+      createdBy: f.user.uid,
+    },
+  });
+  let result = await projectCardsHttp(f.headers);
+  expect(result.statusCode, result.body).toBe(200);
+  expect(result.json().data[0].projectOwners.map((o: { userId: string }) => o.userId)).toEqual([
+    legacy.user.id,
+  ]);
+  const relation = await db.projectExpertAssignmentOwner.create({
+    data: { assignmentId: assignment.id, userId: first.user.id, createdBy: f.user.uid },
+  });
+  result = await projectCardsHttp(f.headers);
+  expect(result.json().data[0].projectOwners.map((o: { userId: string }) => o.userId)).toEqual([
+    first.user.id,
+  ]);
+  expect(result.json().data[0].projectOwners[0]).not.toHaveProperty('assignmentId');
+  await db.projectExpertAssignmentOwner.update({
+    where: { id: relation.id },
+    data: { status: 'REMOVED' },
+  });
+  expect((await projectCardsHttp(f.headers)).json().data[0].projectOwners).toEqual([]);
+  await db.projectExpertAssignmentOwner.delete({ where: { id: relation.id } });
+  await db.projectExpertAssignment.update({
+    where: { id: assignment.id },
+    data: { status: 'PENDING_ACCEPTANCE' },
+  });
+  expect((await projectCardsHttp(f.headers)).json().data[0].projectOwners).toEqual([]);
+});
+test('assist grading uses only ACTIVE undeleted exam current-version MANUAL reviewers and never becomes a card visibility grant', async () => {
+  const f = await projectManagerFixture(),
+    manager = await projectManagerAccount(1);
+  const exam = await db.projectEntranceExam.create({
+    data: {
+      projectId: f.projectId,
+      examNo: 'CARD_EXAM',
+      examName: '卡片考试',
+      currentVersionId: 7001,
+      createdBy: f.user.uid,
+    },
+  });
+  const round = await db.entranceExamGradingRound.create({
+    data: {
+      examVersionId: 7001,
+      roundNo: 1,
+      gradingMode: 'MANUAL',
+      reviewersJson: [{ userId: f.user.id, uid: f.user.uid, name: '阅卷人' }],
+      createdBy: f.user.uid,
+    },
+  });
+  const result = await projectCardsHttp(f.headers);
+  expect(result.statusCode, result.body).toBe(200);
+  expect(result.json().data[0].needAssistGrading).toBe(true);
+  for (const patch of [
+    { status: 'CLOSED' },
+    { status: 'ACTIVE', deleted: true },
+    { deleted: false, currentVersionId: 7002 },
+  ]) {
+    await db.projectEntranceExam.update({ where: { id: exam.id }, data: patch });
+    expect((await projectCardsHttp(f.headers)).json().data[0].needAssistGrading).toBe(false);
+  }
+  await db.projectEntranceExam.update({ where: { id: exam.id }, data: { currentVersionId: 7001 } });
+  await db.entranceExamGradingRound.update({
+    where: { id: round.id },
+    data: { gradingMode: 'AUTO' },
+  });
+  expect((await projectCardsHttp(f.headers)).json().data[0].needAssistGrading).toBe(false);
+  await db.entranceExamGradingRound.update({
+    where: { id: round.id },
+    data: { gradingMode: 'MANUAL' },
+  });
+  expect((await f.recruit(manager.user.id)).statusCode).toBe(200);
+  expect((await projectCardsHttp(f.headers)).json().data).toEqual([]);
+});
+test('lists require live independent grants and current relationships, not stale snapshots or fixed EXPERT sessions', async () => {
+  const f = await projectManagerFixture(),
+    manager = await projectManagerAccount(1),
+    other = await projectManagerAccount(2);
+  expect((await f.recruit(manager.user.id)).statusCode).toBe(200);
+  await cardSnapshot(f.projectId, manager.user.id, 'PROJECT_MANAGER');
+  expect((await projectCardsHttp(other.headers, true)).json().data).toEqual([]);
+  expect((await f.recruit(other.user.id)).statusCode).toBe(200);
+  expect((await projectCardsHttp(manager.headers, true)).json().data).toEqual([]);
+  await new ManagementService(db).change({
+    uid: other.user.uid,
+    role: 'PM',
+    action: 'REVOKE',
+    actor: 'integration-operator',
+    reason: '卡片授权撤销',
+  });
+  expect((await projectCardsHttp(other.headers, true)).statusCode).toBe(403);
+  expect((await projectCardsHttp(other.headers)).statusCode).toBe(403);
+  expect((await app.inject('/api/v1/projects/list')).statusCode).toBe(401);
+});
+test('historical null card nodes fall back without writes, and cross-role snapshots are not selected', async () => {
+  const f = await projectManagerFixture();
+  await db.project.update({ where: { id: f.projectId }, data: { currentNodeCode: null } });
+  let result = await projectCardsHttp(f.headers);
+  expect(result.statusCode, result.body).toBe(200);
+  expect(result.json().data[0].currentNodeCode).toBe('RECRUIT_PROJECT_MANAGER');
+  expect(
+    (await db.project.findUniqueOrThrow({ where: { id: f.projectId } })).currentNodeCode,
+  ).toBeNull();
+  const manager = await projectManagerAccount(1);
+  expect((await f.recruit(manager.user.id)).statusCode).toBe(200);
+  await db.project.update({ where: { id: f.projectId }, data: { currentNodeCode: null } });
+  await cardSnapshot(f.projectId, f.user.id, 'EXPERT_MEMBER', 'PRODUCTION_TASK');
+  expect((await projectCardsHttp(f.headers)).json().data).toEqual([]);
+  result = await projectCardsHttp(manager.headers, true);
+  expect(result.json().data[0].currentNodeCode).toBe('PRODUCTION_PLAN');
+  expect(
+    (await db.project.findUniqueOrThrow({ where: { id: f.projectId } })).currentNodeCode,
+  ).toBeNull();
 });
