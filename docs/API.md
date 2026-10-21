@@ -10,31 +10,42 @@
 
 执行 `pnpm dev:web` 后可通过 `http://127.0.0.1:3001/api/v1/docs/` 访问同源文档；`API_PROXY_TARGET` 指向 HTTPS 后端时使用 `https://localhost:3001/api/v1/docs/`。部署包及 Vercel 由同一个 Fastify 服务托管 Web 与 API，数据库状态以 `/api/v1/health/ready` 为准。
 
-| 方法与路径（前缀 `/api/v1`）                  | 用途                               |
-| --------------------------------------------- | ---------------------------------- |
-| POST `/auth/sms/send`                         | 按 `scene` 发送验证码              |
-| POST `/auth/register`                         | 注册并返回用户资料                 |
-| POST `/auth/login`                            | 手机号 / 邮箱 / uid + 密码登录     |
-| POST `/auth/sms/login`                        | 手机号 + 验证码登录或返回注册指引  |
-| POST `/auth/refresh`                          | 轮换访问和刷新令牌                 |
-| POST `/auth/password/reset`                   | 验证码重置密码并全端下线           |
-| POST `/auth/logout`                           | 撤销当前会话                       |
-| GET `/users/me`                               | 当前用户资料                       |
-| GET `/users/nickname/check`                   | 匿名昵称可用性与推荐昵称           |
-| POST `/users/me/update`                       | 本人资料更新、改密并全端下线       |
-| GET `/organizations`                          | 指定组织资料（主管/管理员）        |
-| POST `/organizations/update`                  | 组织简介与Logo部分更新（主管）     |
-| POST `/organizations/members`                 | 组织人员分页列表（项目分支待接入） |
-| POST `/organizations/members/update`          | 编辑成员及版本条件更新             |
-| POST `/organizations/members/position`        | 组织角色变更与主管转让             |
-| POST `/organizations/members/exit-requests`   | 本人退出申请或合法代操作退出       |
-| POST `/organizations/approvals/pending`       | 本人组织待办                       |
-| POST `/organizations/approvals/records`       | 已处理节点记录                     |
-| POST `/organizations/approvals/process`       | 双版本审批处理                     |
-| GET `/organizations/member-imports/template`  | 成员XLSX模板，登录后下载           |
-| POST `/organizations/member-imports/generate` | 全量校验并原子导入成员             |
-| GET `/health/live`                            | 存活状态                           |
-| GET `/health/ready`                           | 数据库就绪状态                     |
+| 方法与路径（前缀 `/api/v1`）                                     | 用途                                             |
+| ---------------------------------------------------------------- | ------------------------------------------------ |
+| POST `/auth/sms/send`                                            | 按 `scene` 发送验证码                            |
+| POST `/auth/register`                                            | 注册并返回用户资料                               |
+| POST `/auth/login`                                               | 手机号 / 邮箱 / uid + 密码登录                   |
+| POST `/auth/sms/login`                                           | 手机号 + 验证码登录或返回注册指引                |
+| POST `/auth/refresh`                                             | 轮换访问和刷新令牌                               |
+| POST `/auth/password/reset`                                      | 验证码重置密码并全端下线                         |
+| POST `/auth/logout`                                              | 撤销当前会话                                     |
+| GET `/users/me`                                                  | 当前用户资料                                     |
+| GET `/users/nickname/check`                                      | 匿名昵称可用性与推荐昵称                         |
+| POST `/users/me/update`                                          | 本人资料更新、改密并全端下线                     |
+| GET `/organizations`                                             | 指定组织资料（主管/管理员）                      |
+| POST `/organizations/update`                                     | 组织简介与Logo部分更新（主管）                   |
+| POST `/organizations/members`                                    | 组织人员分页列表（项目分支待接入）               |
+| POST `/organizations/members/update`                             | 编辑成员及版本条件更新                           |
+| POST `/organizations/members/position`                           | 组织角色变更与主管转让                           |
+| POST `/organizations/members/exit-requests`                      | 本人退出申请或合法代操作退出                     |
+| POST `/organizations/approvals/pending`                          | 本人组织待办                                     |
+| POST `/organizations/approvals/records`                          | 已处理节点记录                                   |
+| POST `/organizations/approvals/process`                          | 双版本审批处理                                   |
+| GET `/organizations/member-imports/template`                     | 成员XLSX模板，登录后下载                         |
+| POST `/organizations/member-imports/generate`                    | 全量校验并原子导入成员                           |
+| GET `/projects/manager-candidates`                               | 本人项目策略官候选（NAVIGATOR）                  |
+| POST `/projects/manager-recruitments`                            | 直接招募或更换策略官（NAVIGATOR）                |
+| GET `/projects/production-plan`                                  | 查询生产计划（当前PM主策略官/协作负责人）        |
+| POST `/projects/production-plan/confirm`                         | 确认生产计划（仅当前主策略官，projectId在query） |
+| GET `/projects/{projectId}`                                      | 已发布项目详情（实际创建人/任职/在项成员范围）   |
+| GET `/projects/list`                                             | 领航员本人待办卡片（独立NAVIGATOR）              |
+| GET `/projects/manager/list`                                     | 当前主策略官/协作负责人待办卡片（独立PM）        |
+| GET `/projects/draft/current`                                    | 本人唯一草稿查询                                 |
+| POST `/projects/create`                                          | 保存完整草稿或校验并发布项目                     |
+| GET `/project-categories`                                        | 项目分类字典（独立NAVIGATOR授权）                |
+| GET `/project-requesters/{requesterType}/{requesterId}/backfill` | 本人需求方回填（独立NAVIGATOR授权）              |
+| GET `/health/live`                                               | 存活状态                                         |
+| GET `/health/ready`                                              | 数据库就绪状态                                   |
 
 认证成功统一 HTTP 200，使用 `{code: 200, message: "操作成功", data: ...}`。登录 data 包含 `accessToken/refreshToken/tokenType/expiresIn`，注册返回 UserDTO，退出与重置返回 null。失败使用 `code/message/data`，限流 HTTP 429 携带 `Retry-After`。健康检查保留原 `status` 结构。
 
@@ -51,6 +62,8 @@ curl http://127.0.0.1:3000/api/v1/users/me \
 
 维护入口：请求 schema 与 DTO 在 `packages/shared/src/auth.ts`；响应与路由元数据在 `apps/server/src/modules/auth/auth.schema.ts`；Swagger 插件注册在 `apps/server/src/docs.ts`，须先于业务路由。新增接口维护唯一 operationId、summary、tags、请求与响应 schema；响应 schema 会影响实际序列化，必须验证字段完整性。
 
+管理接口已开始接入本后端：管理授权独立维护，注册/登录及用户资料角色仍固定EXPERT。已接入项目分类、需求方回填（第8迁移、80项专用库集成通过），并新增草稿/发布实现及第9迁移；用户回传18:18:48运行92项集成全部通过，第9/10专用库结构已就绪，台账业务ID的UUID/数值文本兼容及附件修复验证通过；候选/招募已接入本批代码，已通过102项专用库集成（用户2026-10-20回传），迁移历史未另查；API-031/034项目列表读取已接入（部分迁移），用户2026-10-21回传130项集成全部通过，第14所需专用库结构已就绪，迁移历史未另查，286项单测通过；支线重算/修复、来源写流程和实时投递仍待05—14，见[项目列表](PROJECT_LISTS.md)；API-035详情和成员表基础已接入本批代码，独立NAV创建人/PM当前任职或ACTIVE MEMBER，管理范围优先，用户2026-10-20回传118项专用库集成全部通过，第13所需结构已就绪，迁移历史未另查，274项单测通过，见[项目详情](PROJECT_DETAILS.md)；生产计划GET `/projects/production-plan`和POST `/projects/production-plan/confirm`已接入，两者projectId均在query，主策略官确认、协作负责人只读，用户2026-10-20回传110项专用库集成全部通过，第12所需结构已就绪，迁移历史未另查，见[生产计划](PROJECT_PRODUCTION_PLANS.md)。候选/任职/任务轮次和待投递事件范围见[策略官与任务基础](PROJECT_MANAGERS.md)。草稿/发布按旧代码实际只要求有效登录和本人范围，完整快照/必填校验差异、附件事务和创建人文件权限见[项目草稿与发布](PROJECT_CREATION.md)。授权维护、接口约束及数据库验证限制见[管理授权与项目基础接口](MANAGEMENT_ACCESS.md)。
+
 ## Swagger 文档标准
 
 后续新增、迁移和修改的后端接口统一遵循本标准。Swagger 必须能让调用方直接理解字段与使用条件；中文说明写进实际 JSON Schema/OpenAPI，TypeScript/Java 注释或独立 Markdown 不能替代它。
@@ -60,7 +73,7 @@ curl http://127.0.0.1:3000/api/v1/users/me \
 3. **取值与业务规则**：枚举逐值解释，例如 `INDIVIDUAL=个人、ORGANIZATION=组织`；说明实际默认行为、格式/长度、数值单位、日期格式/时区、脱敏和 null/空数组的意义。`required` 由实际 schema 声明；条件必填在字段和接口说明写清，例如组织账号必须填写 `organization.name`。不要为了展示默认值给 schema 添加会改变 AJV 入参的 `default`。
 4. **枚举可读性**：普通字符串枚举优先输出 `type: string` + `enum`，避免把每个字面量展开为一层 `anyOf`。保留现有合法取值、TypeScript 类型推导和验证语义；只有真实联合结构才使用 `oneOf/anyOf`。
 5. **完整示例**：每个有请求体的接口至少一个可通过实际 schema 校验的请求示例；个人/组织等主要分支分别给示例。成功响应提供实际结构示例，失败响应说明 HTTP 状态、业务码、中文原因和必要响应头（例如 `Retry-After` 单位为秒）。示例里的密码、令牌、手机号和证件均为演示值，不能使用环境密钥或真实用户数据。
-6. **文档与当前实现一致**：字段未接入、固定值、兼容字段被忽略、暂不支持的分支必须明确说明，不能把规划能力写成已上线。注册 `roles` 可省略且固定 EXPERT、文件存储默认关闭、已认领项目/考试附件访问授权尚未接入等限制需在页面直接可见。
+6. **文档与当前实现一致**：字段未接入、固定值、兼容字段被忽略、暂不支持的分支必须明确说明，不能把规划能力写成已上线。注册 `roles` 可省略且固定 EXPERT、文件存储默认关闭、已认领项目附件当前仅接实有NAVIGATOR授权的创建人；PM/专家及考试附件授权仍待接入等限制需在页面直接可见。
 7. **响应 schema 保真**：响应 schema 会影响 Fastify 序列化。给原自由对象补嵌套字段时核验字段与 null 不丢失；文档补充不得暗改校验、字段名、HTTP 状态或业务行为。发现业务差异按迁移任务另外记录。
 8. **交付验收**：查看生成的 `/api/v1/docs/json`，检查中文字段说明、嵌套结构、枚举和完整示例确实存在；示例通过实际请求校验；验证响应序列化及现有契约不变。`apps/server/tests/docs.test.ts` 已递归检查当前请求/响应字段的中文说明，并校验示例与枚举、组织响应字段保留；有 path/query/header 或新响应结构时扩展相应检查。不能仅靠 schema 源码有注释就通过验收。
 
@@ -101,7 +114,7 @@ OSS 物理主目录为配置的 `OSS_BUCKET` 下的 `tyde/`。API 与台账的 `
 
 `bizType` 默认 COMMON，`category` 默认由业务推断；忽略大小写和首尾空白，未知值400。固定业务大类不能被 category 放宽，ANY 仍受已知安全类型白名单。全局单文件默认50MiB、请求100MiB（含multipart边界/字段）、批量10个；图片/JSON10MiB，文档/Excel20MiB，视频/业务附件/ANY50MiB，均可被全局硬上限收紧。文件名、声明MIME和实际内容须一致；拒绝SVG/HTML/脚本及伪装内容；Office ZIP 检查结构和CRC，最多检查200项、解压2MiB，不解包落盘。文件和请求超限413，字段/内容不符400。
 
-敏感文件只通过鉴权代理读取：未认领对象只允许上传者；匿名预上传在组织认领前不能读取（uploadToken不是读取凭据）。已认领营业执照仅所属组织有效关系（ACTIVE/EXIT_APPROVING/PENDING_LEAVE）的 OWNER/ADMIN 可读取，且组织未逻辑删除；不使用用户单组织兼容字段或 hasExpertManagementRole 展示字段授权。**已认领项目/考试附件读取依赖后续业务关系，当前明确403，不能用于完整项目/考试流程。** 非敏感文件沿用登录后访问规则。只接受新项目存活台账，不接收旧bucket未登记对象；这与旧普通文件“只要登录即可查看”存在收紧差异，尚未作为完整兼容验收通过。
+敏感文件只通过鉴权代理读取：未认领对象只允许上传者；匿名预上传在组织认领前不能读取（uploadToken不是读取凭据）。已认领营业执照仅所属组织有效关系（ACTIVE/EXIT_APPROVING/PENDING_LEAVE）的 OWNER/ADMIN 可读取，且组织未逻辑删除；不使用用户单组织兼容字段或 hasExpertManagementRole 展示字段授权。**已认领项目附件当前仅接回具有独立NAVIGATOR授权的项目创建人读取，并要求项目未删除、附件ACTIVE和台账绑定一致；第9/10专用库结构已就绪，该分支及附件认领已通过92项集成，真实OSS及部署验收仍待完成。本批另接入独立PM授权且当前ASSIGNED的主策略官/协作负责人读取代码（102项专用库集成已通过），更换任职/撤销授权即失效；专家及考试附件仍待回补，不能视为完整项目/考试流程。** 非敏感文件沿用登录后访问规则。只接受新项目存活台账，不接收旧bucket未登记对象；这与旧普通文件“只要登录即可查看”存在收紧差异，尚未作为完整兼容验收通过。
 
 组织注册的 `organization.businessLicense` 接受 BUSINESS_LICENSE 的 `objectKey/uploadToken`，默认24小时内一次认领（可配置），原文凭证不落库。无记录/类型错误/存储对象缺失或大小不符400，错误凭证403，过期/重复409，存储关闭/不可达503。认领、验证码消费、组织与用户创建同事务，失败回滚；`organization.businessLicenseUrl` 保留旧字段名，返回objectKey或null，不是公开URL。
 
@@ -145,7 +158,7 @@ GET `/organizations?orgId=<UUID>`、POST `/organizations/update` 沿用旧路径
 
 POST `/organizations/members` 请求必填orgId（UUID），可选keyword、joinedStartDate/joinedEndDate、leftStartDate/leftEndDate、employmentType、position、joinStatus、projectId、current/size；默认第1页、每页20，最多100。keyword去首尾空白，包含匹配真实姓名/UID，仅完整手机号精确匹配；不按昵称检索。日期`yyyy-MM-dd`按上海自然日闭区间；起点晚于终点或非法日期400。旧Controller说明与实际SQL对已离组成员范围矛盾，当前遵循SQL：未传joinStatus包含所有状态，可显式筛选LEFT/REMOVED。响应是total/pages/current/size/records，空结果pages=0、records=[]；手机号脱敏，不暴露用户敏感字段。
 
-项目成员模型未迁移，`activeProjectCount=null`表示未知，提交非null `projectId`返回503，不返回假0或忽略筛选；API-018保持部分迁移，04模型落地时回补。排序规则/大小写及UUID、ISO UTC响应日期仍待旧接口兼容验收。
+04本批已接回API-018计数/筛选代码：`activeProjectCount`为本条`userOrgRelId`下ACTIVE项目成员记录数，无记录0；沿旧SQL COUNT(*)不按项目去重、不按项目角色/项目状态/删除过滤，不受projectId筛选影响，同用户其他组织/个人项目不计入。`projectId`恢复JSON数值类型（新库32位整数，非UUID），省略/null不筛选；按同一组织关系下ACTIVE记录精确筛选，0/负数/不存在ID空页，字符串/小数/超32位范围400。筛选在分页前生效，当前页批量聚合，与分页共用RepeatableRead快照。API-018改为已实现待验收，278项单测通过，用户2026-10-21回传122项集成全部通过（总54.60秒），原测试库阻塞解除，无新增迁移，依赖既有第13结构。旧64位ID/数值字符串隐式转换的兼容仍待验收。排序规则/大小写及UUID、ISO UTC响应日期仍待旧接口兼容验收。
 
 POST `/organizations/members/update` 必填orgId、memberId（组织关系ID）、versionNo；joinedAt/employmentType至少一项非null，null/未传保持。joinedAt沿用旧`yyyy-MM-dd HH:mm:ss`按上海解释，不得为未来；FULL_TIME=全职、PART_TIME=兼职。主管可编辑全部目标，管理员仅普通成员/自己；目标不额外限制关系状态（沿旧Service）。操作人须处于ACTIVE/EXIT_APPROVING/PENDING_LEAVE；组织锁内实时检查权限和版本，成功版本+1并记uid审计，冲突409。
 

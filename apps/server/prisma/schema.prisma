@@ -8,32 +8,45 @@ datasource db {
 }
 
 model User {
-  id             String        @id @default(uuid()) @db.Uuid
-  phoneE164      String        @unique @db.VarChar(16)
-  phoneRegion    String        @db.VarChar(2)
-  username       String        @unique @db.VarChar(32)
-  displayName    String        @unique @db.VarChar(320)
-  avatarUrl      String?       @db.VarChar(512)
-  bio            String?       @db.VarChar(1000)
-  idVerified     Int           @default(0) @db.SmallInt
-  updatedBy      String?       @db.VarChar(36)
-  createdAt      DateTime      @default(now()) @db.Timestamptz(3)
-  updatedAt      DateTime      @updatedAt @db.Timestamptz(3)
-  sessions       Session[]
-  uid            String        @unique @default(uuid()) @db.VarChar(36)
-  accountType    String        @default("INDIVIDUAL") @db.VarChar(16)
-  passwordHash   String?       @db.VarChar(256)
-  email          String?       @unique @db.VarChar(128)
-  realName       String?       @db.VarChar(64)
-  idCardNo       String?       @unique @db.VarChar(32)
-  role           String        @default("EXPERT") @db.VarChar(16)
-  status         String        @default("ACTIVE") @db.VarChar(16)
-  lastLoginAt    DateTime?     @db.Timestamptz(3)
-  lastLoginIp    String?       @db.VarChar(64)
-  organizationId String?       @db.Uuid
-  orgPosition    String?       @db.VarChar(16)
-  organization   Organization? @relation(fields: [organizationId], references: [id])
-  memberships    UserOrgRel[]
+  id                     String                         @id @default(uuid()) @db.Uuid
+  phoneE164              String                         @unique @db.VarChar(16)
+  phoneRegion            String                         @db.VarChar(2)
+  username               String                         @unique @db.VarChar(32)
+  displayName            String                         @unique @db.VarChar(320)
+  avatarUrl              String?                        @db.VarChar(512)
+  bio                    String?                        @db.VarChar(1000)
+  idVerified             Int                            @default(0) @db.SmallInt
+  updatedBy              String?                        @db.VarChar(36)
+  createdAt              DateTime                       @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime                       @updatedAt @db.Timestamptz(3)
+  sessions               Session[]
+  uid                    String                         @unique @default(uuid()) @db.VarChar(36)
+  accountType            String                         @default("INDIVIDUAL") @db.VarChar(16)
+  passwordHash           String?                        @db.VarChar(256)
+  email                  String?                        @unique @db.VarChar(128)
+  realName               String?                        @db.VarChar(64)
+  idCardNo               String?                        @unique @db.VarChar(32)
+  role                   String                         @default("EXPERT") @db.VarChar(16)
+  status                 String                         @default("ACTIVE") @db.VarChar(16)
+  lastLoginAt            DateTime?                      @db.Timestamptz(3)
+  lastLoginIp            String?                        @db.VarChar(64)
+  organizationId         String?                        @db.Uuid
+  orgPosition            String?                        @db.VarChar(16)
+  organization           Organization?                  @relation(fields: [organizationId], references: [id])
+  memberships            UserOrgRel[]
+  creditScore            Int?                           @default(100)
+  managerRecruitments    ProjectManagerRecruitment[]    @relation("ManagerCandidate")
+  handlerRecruitments    ProjectManagerRecruitment[]    @relation("RecruitmentHandler")
+  previousRecruitments   ProjectManagerRecruitment[]    @relation("PreviousManager")
+  projectMembers         ProjectMember[]
+  projectTaskRounds      ProjectTaskRound[]
+  requestedProjects      Project[]
+  managementGrants       ManagementGrant[]
+  managementGrantAudits  ManagementGrantAudit[]
+  roleNodeSnapshots      ProjectRoleNodeSnapshot[]
+  expertAssignments      ProjectExpertAssignment[]      @relation("AssignedExpert")
+  legacyOwnerAssignments ProjectExpertAssignment[]      @relation("LegacyAssignmentOwner")
+  assignmentOwners       ProjectExpertAssignmentOwner[]
 }
 
 model VerificationChallenge {
@@ -88,21 +101,23 @@ model AuthRateLimit {
 }
 
 model Organization {
-  id                 String       @id @default(uuid()) @db.Uuid
-  name               String       @unique @db.VarChar(128)
-  unifiedCreditCode  String?      @unique @db.VarChar(32)
-  description        String?      @db.VarChar(1024)
-  logoUrl            String?      @db.VarChar(512)
-  businessLicenseKey String?      @db.VarChar(512)
+  id                 String                    @id @default(uuid()) @db.Uuid
+  name               String                    @unique @db.VarChar(128)
+  unifiedCreditCode  String?                   @unique @db.VarChar(32)
+  description        String?                   @db.VarChar(1024)
+  logoUrl            String?                   @db.VarChar(512)
+  businessLicenseKey String?                   @db.VarChar(512)
   expertiseTags      String[]
-  createdAt          DateTime     @default(now()) @db.Timestamptz(3)
+  createdAt          DateTime                  @default(now()) @db.Timestamptz(3)
   users              User[]
   memberships        UserOrgRel[]
-  verifyStatus       String       @default("PENDING") @db.VarChar(16)
-  status             String       @default("ACTIVE") @db.VarChar(16)
-  deleted            Boolean      @default(false)
-  updatedBy          String?      @db.VarChar(36)
-  updatedAt          DateTime     @default(now()) @updatedAt @db.Timestamptz(3)
+  verifyStatus       String                    @default("PENDING") @db.VarChar(16)
+  status             String                    @default("ACTIVE") @db.VarChar(16)
+  deleted            Boolean                   @default(false)
+  updatedBy          String?                   @db.VarChar(36)
+  updatedAt          DateTime                  @default(now()) @updatedAt @db.Timestamptz(3)
+  projectMembers     ProjectMember[]
+  expertAssignments  ProjectExpertAssignment[]
 }
 
 model UploadedFile {
@@ -120,7 +135,8 @@ model UploadedFile {
   ownerUid       String?   @db.VarChar(36)
   status         String    @default("UPLOADED") @db.VarChar(16)
   claimedBizType String?   @db.VarChar(64)
-  claimedBizId   String?   @db.Uuid
+  // 多业务主键：组织UUID或项目数值ID文本；必须结合claimedBizType使用。
+  claimedBizId   String?   @db.VarChar(64)
   claimedAt      DateTime? @db.Timestamptz(3)
   expiresAt      DateTime? @db.Timestamptz(3)
   deletedAt      DateTime? @db.Timestamptz(3)
@@ -134,23 +150,24 @@ model UploadedFile {
 
 // 多组织成员关系是组织权限来源；User.organizationId/orgPosition 暂留资料兼容。
 model UserOrgRel {
-  id               String       @id @default(uuid()) @db.Uuid
-  userId           String       @db.Uuid
-  uid              String       @db.VarChar(36)
-  orgId            String       @db.Uuid
-  position         String       @default("MEMBER") @db.VarChar(16)
-  employmentType   String?      @db.VarChar(16)
-  joinStatus       String       @default("ACTIVE") @db.VarChar(24)
-  joinedAt         DateTime?    @default(now()) @db.Timestamptz(3)
-  plannedLeaveDate DateTime?    @db.Date
-  leftAt           DateTime?    @db.Timestamptz(3)
-  versionNo        Int          @default(0)
-  createdBy        String?      @db.VarChar(36)
-  updatedBy        String?      @db.VarChar(36)
-  createdAt        DateTime     @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime     @updatedAt @db.Timestamptz(3)
-  user             User         @relation(fields: [userId], references: [id])
-  organization     Organization @relation(fields: [orgId], references: [id])
+  id               String          @id @default(uuid()) @db.Uuid
+  userId           String          @db.Uuid
+  uid              String          @db.VarChar(36)
+  orgId            String          @db.Uuid
+  position         String          @default("MEMBER") @db.VarChar(16)
+  employmentType   String?         @db.VarChar(16)
+  joinStatus       String          @default("ACTIVE") @db.VarChar(24)
+  joinedAt         DateTime?       @default(now()) @db.Timestamptz(3)
+  plannedLeaveDate DateTime?       @db.Date
+  leftAt           DateTime?       @db.Timestamptz(3)
+  versionNo        Int             @default(0)
+  createdBy        String?         @db.VarChar(36)
+  updatedBy        String?         @db.VarChar(36)
+  createdAt        DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime        @updatedAt @db.Timestamptz(3)
+  user             User            @relation(fields: [userId], references: [id])
+  organization     Organization    @relation(fields: [orgId], references: [id])
+  projectMembers   ProjectMember[]
 
   @@unique([userId, orgId])
   @@index([orgId, joinStatus])
@@ -305,10 +322,414 @@ model OrganizationDeparture {
 }
 
 model MemberImportReceipt {
-  key         String @id @db.VarChar(64)
-  requestHash String @db.VarChar(64)
+  key         String   @id @db.VarChar(64)
+  requestHash String   @db.VarChar(64)
   response    Json
   expiresAt   DateTime @db.Timestamptz(3)
   createdAt   DateTime @default(now()) @db.Timestamptz(3)
+
   @@index([expiresAt])
+}
+
+// 管理授权独立于登录身份；不从注册参数或 User.role 推导。
+model ManagementGrant {
+  userId    String    @db.Uuid
+  role      String    @db.VarChar(16)
+  grantedBy String    @db.VarChar(128)
+  grantedAt DateTime  @default(now()) @db.Timestamptz(3)
+  revokedAt DateTime? @db.Timestamptz(3)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@id([userId, role])
+  @@index([role, revokedAt])
+}
+
+model ManagementGrantAudit {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  role      String   @db.VarChar(16)
+  action    String   @db.VarChar(16)
+  actor     String   @db.VarChar(128)
+  reason    String   @db.VarChar(500)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId, createdAt])
+}
+
+model ProjectCategory {
+  projects       ProjectCategoryRelation[]
+  id             Int                       @id @default(autoincrement())
+  categoryCode   String                    @unique @db.VarChar(64)
+  categoryName   String                    @db.VarChar(128)
+  categoryLevel  Int                       @db.SmallInt
+  searchKeywords String?                   @db.VarChar(500)
+  sortNo         Int                       @default(0)
+  status         String                    @default("ENABLED") @db.VarChar(16)
+  createdBy      String                    @db.VarChar(128)
+  updatedBy      String                    @db.VarChar(128)
+  createdAt      DateTime                  @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime                  @updatedAt @db.Timestamptz(3)
+
+  @@unique([categoryLevel, categoryName])
+  @@index([status, categoryLevel, sortNo, id])
+}
+
+model Project {
+  id                    Int                         @id @default(autoincrement())
+  projectNo             String                      @unique @db.VarChar(40)
+  requesterType         String                      @db.VarChar(16)
+  requesterId           String                      @db.Uuid
+  requesterName         String                      @db.VarChar(320)
+  projectName           String?                     @db.VarChar(128)
+  projectDescription    String?                     @db.Text
+  difficultyLevel       String?                     @db.VarChar(16)
+  projectQuantity       Decimal?                    @db.Decimal(20, 4)
+  quantityUnit          String?                     @db.VarChar(30)
+  deadline              DateTime?                   @db.Timestamptz(3)
+  requiredHeadcount     Int?
+  educationRequirement  String                      @default("BACHELOR") @db.VarChar(24)
+  employmentType        String?                     @db.VarChar(16)
+  experienceRequirement String?                     @db.Text
+  workSummary           String?                     @db.Text
+  specialRequirement    String?                     @db.Text
+  mandatoryRequirement  String?                     @db.Text
+  standardContent       String?                     @db.Text
+  standardLink          String?                     @db.VarChar(2000)
+  status                String                      @default("DRAFT") @db.VarChar(16)
+  currentNodeCode       String?                     @db.VarChar(40)
+  publishedAt           DateTime?                   @db.Timestamptz(3)
+  closedAt              DateTime?                   @db.Timestamptz(3)
+  versionNo             Int                         @default(0)
+  extJson               Json?
+  createdBy             String                      @db.VarChar(36)
+  updatedBy             String                      @db.VarChar(36)
+  deleted               Boolean                     @default(false)
+  createdAt             DateTime                    @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime                    @updatedAt @db.Timestamptz(3)
+  requester             User                        @relation(fields: [requesterId], references: [id], onDelete: Restrict)
+  managerRecruitments   ProjectManagerRecruitment[]
+  taskRounds            ProjectTaskRound[]
+  eventOutbox           ProjectEventOutbox[]
+  productionPlan        ProjectProductionPlan?
+  categories            ProjectCategoryRelation[]
+  attachments           ProjectAttachment[]
+  members               ProjectMember[]
+  roleNodeSnapshots     ProjectRoleNodeSnapshot[]
+  expertAssignments     ProjectExpertAssignment[]
+  entranceExams         ProjectEntranceExam[]
+
+  @@index([createdBy, status, deleted])
+  @@index([requesterType, requesterId, projectName])
+}
+
+model ProjectCategoryRelation {
+  id                   Int             @id @default(autoincrement())
+  projectId            Int
+  categoryId           Int
+  categoryLevel        Int             @db.SmallInt
+  categoryNameSnapshot String          @db.VarChar(128)
+  sortNo               Int             @default(0)
+  createdBy            String          @db.VarChar(36)
+  createdAt            DateTime        @default(now()) @db.Timestamptz(3)
+  project              Project         @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  category             ProjectCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  @@unique([projectId, categoryId])
+  @@index([projectId, categoryLevel, sortNo, id])
+}
+
+model ProjectAttachment {
+  id             Int      @id @default(autoincrement())
+  projectId      Int
+  attachmentType String   @db.VarChar(24)
+  fileName       String   @db.VarChar(255)
+  objectKey      String   @unique @db.VarChar(500)
+  extension      String   @db.VarChar(16)
+  contentType    String   @db.VarChar(128)
+  fileSize       Int
+  fileHash       String   @db.VarChar(64)
+  sortNo         Int      @default(0)
+  status         String   @default("ACTIVE") @db.VarChar(16)
+  uploaderName   String   @db.VarChar(320)
+  createdBy      String   @db.VarChar(36)
+  updatedBy      String   @db.VarChar(36)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  @@index([projectId, status, sortNo, id])
+}
+
+model ProjectManagerRecruitment {
+  id                             Int       @id @default(autoincrement())
+  recruitmentNo                  String    @unique @db.VarChar(40)
+  projectId                      Int
+  candidateUserId                String    @db.Uuid
+  expertRecruitmentHandlerUserId String?   @db.Uuid
+  recruitmentType                String    @db.VarChar(16)
+  assignmentMode                 String    @default("DIRECT") @db.VarChar(24)
+  status                         String    @default("ASSIGNED") @db.VarChar(24)
+  previousManagerUserId          String?   @db.Uuid
+  acceptanceDeadline             DateTime? @db.Timestamptz(3)
+  respondedAt                    DateTime? @db.Timestamptz(3)
+  assignedAt                     DateTime  @db.Timestamptz(3)
+  replacedAt                     DateTime? @db.Timestamptz(3)
+  rejectReason                   String?   @db.Text
+  createdBy                      String    @db.VarChar(36)
+  updatedBy                      String    @db.VarChar(36)
+  createdAt                      DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt                      DateTime  @updatedAt @db.Timestamptz(3)
+  project                        Project   @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  candidate                      User      @relation("ManagerCandidate", fields: [candidateUserId], references: [id], onDelete: Restrict)
+  handler                        User?     @relation("RecruitmentHandler", fields: [expertRecruitmentHandlerUserId], references: [id], onDelete: Restrict)
+  previousManager                User?     @relation("PreviousManager", fields: [previousManagerUserId], references: [id], onDelete: Restrict)
+
+  @@index([projectId, status, assignedAt, id])
+  @@index([candidateUserId, status])
+}
+
+model ProjectTaskRound {
+  id           Int       @id @default(autoincrement())
+  projectId    Int
+  userId       String    @db.Uuid
+  role         String    @db.VarChar(16)
+  taskType     String    @db.VarChar(64)
+  status       String    @default("OPEN") @db.VarChar(16)
+  participated Boolean   @default(false)
+  openedAt     DateTime  @default(now()) @db.Timestamptz(3)
+  finishedAt   DateTime? @db.Timestamptz(3)
+  project      Project   @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  user         User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([projectId, status])
+  @@index([userId, role, status, finishedAt])
+}
+
+// 事务事件事实；14阶段接入实际投递、重试和租约，当前只落PENDING。
+model ProjectEventOutbox {
+  id            String    @id @default(uuid()) @db.Uuid
+  projectId     Int
+  eventType     String    @db.VarChar(64)
+  operation     String    @db.VarChar(96)
+  actorUserId   String?   @db.Uuid
+  payload       Json
+  status        String    @default("PENDING") @db.VarChar(16)
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now()) @db.Timestamptz(3)
+  deliveredAt   DateTime? @db.Timestamptz(3)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  project       Project   @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  @@index([status, nextAttemptAt, createdAt])
+  @@index([projectId, createdAt])
+}
+
+model ProjectProductionPlan {
+  id                  Int                      @id @default(autoincrement())
+  projectId           Int                      @unique
+  project             Project                  @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  operatorHeadcount   Int
+  operatorCpd         Decimal                  @db.Decimal(20, 4)
+  inspectorHeadcount  Int?
+  inspectorCpd        Decimal?                 @db.Decimal(20, 4)
+  needWrittenExam     Boolean                  @default(true)
+  maxActiveExamCount  Int                      @default(1)
+  needInterview       Boolean                  @default(false)
+  totalExpectedOutput Decimal                  @db.Decimal(30, 4)
+  confirmedBy         String
+  confirmedAt         DateTime                 @db.Timestamptz(3)
+  extJson             Json?
+  createdBy           String
+  updatedBy           String?
+  createdAt           DateTime                 @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime                 @updatedAt @db.Timestamptz(3)
+  crowds              ProjectProductionCrowd[]
+  stages              ProjectProductionStage[]
+
+  @@index([confirmedBy, confirmedAt])
+}
+
+model ProjectProductionCrowd {
+  id                 Int                   @id @default(autoincrement())
+  planId             Int
+  plan               ProjectProductionPlan @relation(fields: [planId], references: [id], onDelete: Restrict)
+  sequenceNo         Int
+  crowdName          String                @db.VarChar(100)
+  profileRequirement String
+  createdBy          String
+  updatedBy          String?
+  createdAt          DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime              @updatedAt @db.Timestamptz(3)
+
+  @@unique([planId, sequenceNo])
+}
+
+model ProjectProductionStage {
+  id                 Int                   @id @default(autoincrement())
+  planId             Int
+  plan               ProjectProductionPlan @relation(fields: [planId], references: [id], onDelete: Restrict)
+  sequenceNo         Int
+  stageName          String                @db.VarChar(100)
+  startDate          DateTime              @db.Date
+  endDate            DateTime              @db.Date
+  naturalDayCount    Int
+  workdayCount       Int
+  workdayCountSource String                @default("AUTO") @db.VarChar(20)
+  operatorHeadcount  Int
+  operatorCpd        Decimal               @db.Decimal(20, 4)
+  accuracyRate       Decimal?              @db.Decimal(7, 4)
+  expectedOutput     Decimal               @db.Decimal(30, 4)
+  createdBy          String
+  updatedBy          String?
+  createdAt          DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime              @updatedAt @db.Timestamptz(3)
+
+  @@unique([planId, sequenceNo])
+  @@index([startDate, endDate])
+}
+
+// 仅保存实际项目成员真值；注册/组织身份/管理授权不会创建成员。
+model ProjectMember {
+  id                          Int                      @id @default(autoincrement())
+  projectId                   Int
+  userId                      String                   @db.Uuid
+  userOrgRelId                String?                  @db.Uuid
+  organizationId              String?                  @db.Uuid
+  // 接单来源外键已在第14迁移接入；准入来源待08，无来源写入口或伪造记录。
+  expertAssignmentId          Int?
+  admissionAttemptId          Int?                     @unique
+  admittedAt                  DateTime?                @db.Timestamptz(3)
+  entryDecision               String?                  @db.VarChar(12)
+  plannedEntryDate            DateTime?                @db.Date
+  entryDeclineReason          String?                  @db.VarChar(500)
+  projectRole                 String                   @default("MEMBER") @db.VarChar(20)
+  status                      String                   @default("ACTIVE") @db.VarChar(24)
+  joinedAt                    DateTime?                @db.Timestamptz(3)
+  standardTrainingConfirmedAt DateTime?                @db.Timestamptz(3)
+  plannedLeaveDate            DateTime?                @db.Date
+  leftAt                      DateTime?                @db.Timestamptz(3)
+  createdBy                   String                   @db.VarChar(36)
+  updatedBy                   String?                  @db.VarChar(36)
+  createdAt                   DateTime                 @default(now()) @db.Timestamptz(3)
+  updatedAt                   DateTime                 @updatedAt @db.Timestamptz(3)
+  project                     Project                  @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  user                        User                     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  organizationMembership      UserOrgRel?              @relation(fields: [userOrgRelId], references: [id], onDelete: Restrict)
+  organization                Organization?            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  expertAssignment            ProjectExpertAssignment? @relation(fields: [expertAssignmentId], references: [id], onDelete: Restrict)
+
+  @@index([userId, status])
+  @@index([userOrgRelId, status])
+  @@index([projectId, status, joinedAt])
+  @@index([projectId, status, plannedEntryDate, plannedLeaveDate])
+  @@index([projectId, organizationId, status])
+}
+
+model ProjectRoleNodeSnapshot {
+  id             Int      @id @default(autoincrement())
+  projectId      Int
+  userId         String   @db.Uuid
+  perspective    String   @db.VarChar(32)
+  branchNodeCode String   @db.VarChar(64)
+  branchPriority Int
+  sourceBizType  String   @db.VarChar(32)
+  sourceBizId    Int
+  sourceEventAt  DateTime @db.Timestamptz(3)
+  calculatedAt   DateTime @db.Timestamptz(3)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  user           User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([projectId, userId, perspective])
+  @@index([userId, perspective])
+  @@index([calculatedAt])
+}
+
+// 04列表读取前置；接单写流程及容量/组织校验归07，不能由本表存在推导业务已迁移。
+model ProjectExpertAssignment {
+  id                    Int                            @id @default(autoincrement())
+  assignmentNo          String                         @unique @db.VarChar(64)
+  projectId             Int
+  subjectType           String                         @db.VarChar(24)
+  organizationId        String?                        @db.Uuid
+  expertUserId          String?                        @db.Uuid
+  projectOwnerUserId    String?                        @db.Uuid
+  previousAssignmentId  Int?
+  productionRequirement Decimal?                       @db.Decimal(20, 4)
+  operatorHeadcount     Int?
+  inspectorHeadcount    Int?
+  status                String                         @default("PENDING_ACCEPTANCE") @db.VarChar(24)
+  acceptedAt            DateTime?                      @db.Timestamptz(3)
+  rejectedAt            DateTime?                      @db.Timestamptz(3)
+  rejectReason          String?
+  createdBy             String                         @db.VarChar(36)
+  updatedBy             String?                        @db.VarChar(36)
+  createdAt             DateTime                       @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime                       @updatedAt @db.Timestamptz(3)
+  project               Project                        @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  organization          Organization?                  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  expert                User?                          @relation("AssignedExpert", fields: [expertUserId], references: [id], onDelete: Restrict)
+  legacyOwner           User?                          @relation("LegacyAssignmentOwner", fields: [projectOwnerUserId], references: [id], onDelete: Restrict)
+  owners                ProjectExpertAssignmentOwner[]
+  members               ProjectMember[]
+  previousAssignment    ProjectExpertAssignment?       @relation("PreviousAssignment", fields: [previousAssignmentId], references: [id], onDelete: Restrict)
+  replacements          ProjectExpertAssignment[]      @relation("PreviousAssignment")
+
+  @@index([projectId, status])
+}
+
+model ProjectExpertAssignmentOwner {
+  id           Int                     @id @default(autoincrement())
+  assignmentId Int
+  userId       String                  @db.Uuid
+  status       String                  @default("ACTIVE") @db.VarChar(16)
+  appointedAt  DateTime                @default(now()) @db.Timestamptz(3)
+  removedAt    DateTime?               @db.Timestamptz(3)
+  createdBy    String                  @db.VarChar(36)
+  updatedBy    String?                 @db.VarChar(36)
+  createdAt    DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime                @updatedAt @db.Timestamptz(3)
+  assignment   ProjectExpertAssignment @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
+  user         User                    @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([assignmentId, userId])
+  @@index([userId, status])
+}
+
+// 仅04列表协助阅卷来源读取；05落地配置版本后补版本外键及全部考试写流程。
+model ProjectEntranceExam {
+  id               Int       @id @default(autoincrement())
+  examNo           String    @unique @db.VarChar(64)
+  projectId        Int
+  examName         String    @db.VarChar(128)
+  status           String    @default("ACTIVE") @db.VarChar(16)
+  currentVersionId Int?
+  closedBy         String?   @db.VarChar(36)
+  closedAt         DateTime? @db.Timestamptz(3)
+  closeReason      String?   @db.VarChar(500)
+  createdBy        String    @db.VarChar(36)
+  updatedBy        String?   @db.VarChar(36)
+  deleted          Boolean   @default(false)
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime  @updatedAt @db.Timestamptz(3)
+  project          Project   @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  @@index([projectId, status, deleted, createdAt])
+}
+
+model EntranceExamGradingRound {
+  id             Int      @id @default(autoincrement())
+  examVersionId  Int
+  roundNo        Int
+  gradingMode    String   @db.VarChar(16)
+  toolCode       String?  @db.VarChar(64)
+  toolName       String?  @db.VarChar(128)
+  toolConfigJson Json?
+  reviewersJson  Json?
+  createdBy      String   @db.VarChar(36)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([examVersionId, roundNo])
 }

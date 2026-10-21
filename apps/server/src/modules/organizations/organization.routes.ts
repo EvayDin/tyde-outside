@@ -124,7 +124,7 @@ export async function organizationRoutes(
           ...organizationSchema(
             'getOrganizationMembers',
             '获取组织人员列表',
-            '主管/管理员在ACTIVE、EXIT_APPROVING、PENDING_LEAVE状态可查询。分页、日期和属性筛选遵循旧SQL。旧Controller称排除已离组，但实际SQL没有排除，当前按SQL保留。项目关系未接入，activeProjectCount固定null，非null projectId返回503。',
+            '主管/管理员在ACTIVE、EXIT_APPROVING、PENDING_LEAVE状态可查询。分页、日期和属性筛选遵循旧SQL。旧Controller称排除已离组，但实际SQL没有排除，当前按SQL保留。项目筛选按本组织每条userOrgRelId关联的ACTIVE项目成员记录生效；projectId为新库32位JSON整数，省略/null不筛选。activeProjectCount返回该组织关系全部ACTIVE记录数，无记录0；不去重项目、不过滤角色/项目状态/删除、不受projectId筛选影响。不额外检查项目存在性，0/负数沿旧SQL返回无匹配。',
             memberListResponse,
           ),
           body: memberQueryBody,

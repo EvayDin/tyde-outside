@@ -6,6 +6,7 @@ import { FileRegistryService } from './file-registry.service.js';
 import { businesses, categories, type FileUploadResponse } from './file.types.js';
 import { uploadPolicy, validateUpload, type UploadInput } from './file-validation.js';
 import { validObjectKey } from './object-storage.js';
+import { ManagementService } from '../management/management.service.js';
 
 export class FileService {
   constructor(readonly registry: FileRegistryService) {}
@@ -96,8 +97,49 @@ export class FileService {
     const businessAttachment = ['PROJECT_ATTACHMENT', 'ENTRANCE_EXAM_ATTACHMENT'].includes(
       record.bizType,
     );
-    if (businessAttachment && record.status === 'CLAIMED')
-      throw new AuthError(403, 'FORBIDDEN', '业务附件访问权限尚未接入，请等待所属业务迁移');
+    if (businessAttachment && record.status === 'CLAIMED') {
+      if (
+        record.bizType !== 'PROJECT_ATTACHMENT' ||
+        record.claimedBizType !== 'PROJECT_ATTACHMENT' ||
+        !record.claimedBizId ||
+        !/^[1-9]\d*$/.test(record.claimedBizId) ||
+        !Number.isSafeInteger(Number(record.claimedBizId)) ||
+        Number(record.claimedBizId) > 2147483647
+      )
+        throw new AuthError(403, 'FORBIDDEN', '无权访问该业务附件');
+      const attachment = await this.registry.db.projectAttachment.findFirst({
+        where: {
+          objectKey: record.objectKey,
+          projectId: Number(record.claimedBizId),
+          status: 'ACTIVE',
+          project: { deleted: false },
+        },
+        select: { id: true, project: { select: { createdBy: true } } },
+      });
+      if (!attachment) throw new AuthError(403, 'FORBIDDEN', '无权访问该项目附件');
+      const management = new ManagementService(this.registry.db);
+      if (
+        attachment.project.createdBy === principal.uid &&
+        (await management.hasRole(principal, 'NAVIGATOR'))
+      )
+        return this.registry.storage.open(record.objectKey);
+      if (await management.hasRole(principal, 'PM')) {
+        const assigned = await this.registry.db.projectManagerRecruitment.findFirst({
+          where: {
+            projectId: Number(record.claimedBizId),
+            status: 'ASSIGNED',
+            OR: [
+              { candidateUserId: principal.userId },
+              { expertRecruitmentHandlerUserId: principal.userId },
+            ],
+          },
+          select: { id: true },
+        });
+        if (assigned) return this.registry.storage.open(record.objectKey);
+      }
+      // 专家接单/准入与考试附件读取仍由后续所属任务接入，上传者身份不代替业务权限。
+      throw new AuthError(403, 'FORBIDDEN', '无权访问该项目附件');
+    }
     if (record.sensitiveFlag || businessAttachment) {
       let permitted = record.ownerUid === principal.uid;
       if (record.claimedBizType === 'ORGANIZATION_BUSINESS_LICENSE' && record.claimedBizId) {

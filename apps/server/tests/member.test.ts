@@ -63,6 +63,7 @@ function fixture(
       };
   const tx = {
     $queryRaw: vi.fn(),
+    projectMember: { groupBy: vi.fn().mockResolvedValue([]) },
     organization: { findFirst: vi.fn().mockResolvedValue({ id: orgId }) },
     userOrgRel: {
       findUnique: vi
@@ -178,7 +179,7 @@ test('self editing, malformed requests, cross organization targets and stale ver
     ),
   ).rejects.toMatchObject({ status: 409 });
 });
-test('member date ranges cover Shanghai end dates and unavailable project filters fail explicitly', async () => {
+test('member date ranges cover Shanghai end dates and invalid project filter types fail explicitly', async () => {
   const { service, tx } = fixture();
   tx.userOrgRel.count.mockResolvedValue(6);
   await service.list(
@@ -219,8 +220,10 @@ test('member date ranges cover Shanghai end dates and unavailable project filter
   await expect(
     service.list({ orgId, joinedStartDate: '2026-10-02', joinedEndDate: '2026-10-01' }, identity),
   ).rejects.toMatchObject({ status: 400 });
-  await expect(service.list({ orgId, projectId: memberId }, identity)).rejects.toMatchObject({
-    status: 503,
+  await expect(
+    service.list({ orgId, projectId: memberId as never }, identity),
+  ).rejects.toMatchObject({
+    status: 400,
   });
 });
 test.each([
@@ -330,7 +333,7 @@ test('member HTTP schemas validate all examples, serialize records and reject un
     const spec = (await app.inject('/api/v1/docs/json')).json();
     expect(spec.paths['/api/v1/organizations/members/update'].post.responses['409']).toBeDefined();
     expect(spec.paths['/api/v1/organizations/members'].post.description).toContain(
-      'activeProjectCount固定null',
+      'activeProjectCount返回该组织关系全部ACTIVE记录数',
     );
   } finally {
     await app.close();
@@ -354,4 +357,111 @@ test('unexpected phone formats remain masked rather than falling through to raw 
   ] as never);
   const page = await service.list({ orgId }, identity);
   expect(page.records[0]!.phoneMasked).toBe('****');
+});
+
+test('member project counts batch only the current page, retain row count semantics and never inherit the requested project filter', async () => {
+  const { tx, service, target } = fixture();
+  tx.userOrgRel.count.mockResolvedValue(1);
+  tx.userOrgRel.findMany.mockResolvedValue([
+    {
+      ...target,
+      user: {
+        realName: '成员',
+        displayName: '昵称',
+        phoneE164: '+8613812345678',
+        status: 'ACTIVE',
+        avatarUrl: null,
+      },
+    },
+  ] as never);
+  tx.projectMember.groupBy.mockResolvedValue([
+    { userOrgRelId: target.id, _count: { _all: 3 } },
+  ] as never);
+  const result = await service.list({ orgId, projectId: 3001 }, identity);
+  expect(result.records[0]).toMatchObject({
+    memberId: target.id,
+    activeProjectCount: 3,
+    phoneMasked: '138****5678',
+  });
+  expect(tx.userOrgRel.count).toHaveBeenCalledWith({
+    where: { orgId, projectMembers: { some: { projectId: 3001, status: 'ACTIVE' } } },
+  });
+  expect(tx.userOrgRel.findMany.mock.calls[0]![0].where).toEqual(
+    tx.userOrgRel.count.mock.calls[0]![0]!.where,
+  );
+  expect(tx.projectMember.groupBy).toHaveBeenCalledExactlyOnceWith({
+    by: ['userOrgRelId'],
+    where: { userOrgRelId: { in: [target.id] }, status: 'ACTIVE' },
+    _count: { _all: true },
+  });
+});
+test('members with no ACTIVE association return a real zero; empty and out-of-range pages skip project aggregation', async () => {
+  const { tx, service, target } = fixture();
+  tx.userOrgRel.count.mockResolvedValue(1);
+  tx.userOrgRel.findMany.mockResolvedValue([
+    {
+      ...target,
+      user: {
+        realName: null,
+        displayName: '昵称',
+        phoneE164: '+8613812345678',
+        status: 'ACTIVE',
+        avatarUrl: null,
+      },
+    },
+  ] as never);
+  expect(
+    (await service.list({ orgId, projectId: null }, identity)).records[0]!.activeProjectCount,
+  ).toBe(0);
+  tx.projectMember.groupBy.mockClear();
+  expect((await service.list({ orgId, current: 2, size: 1 }, identity)).records).toEqual([]);
+  expect(tx.projectMember.groupBy).not.toHaveBeenCalled();
+  tx.userOrgRel.count.mockResolvedValue(0);
+  expect((await service.list({ orgId }, identity)).records).toEqual([]);
+  expect(tx.projectMember.groupBy).not.toHaveBeenCalled();
+});
+test('zero and negative project IDs preserve exact no-match filtering while non-integer and out-of-range inputs fail', async () => {
+  const { tx, service } = fixture();
+  for (const projectId of [0, -1]) {
+    await service.list({ orgId, projectId }, identity);
+    expect(tx.userOrgRel.count).toHaveBeenLastCalledWith({
+      where: { orgId, projectMembers: { some: { projectId, status: 'ACTIVE' } } },
+    });
+  }
+  for (const projectId of [1.5, 2147483648, -2147483649, '3001', memberId])
+    await expect(
+      service.list({ orgId, projectId: projectId as never }, identity),
+    ).rejects.toMatchObject({ status: 400 });
+});
+test('member HTTP accepts numeric project filters, rejects UUID placeholders and serializes nonnullable project counts', async () => {
+  vi.spyOn(AuthService.prototype, 'authenticate').mockResolvedValue(identity);
+  const list = vi
+    .spyOn(MemberService.prototype, 'list')
+    .mockResolvedValue(memberListResponse.examples[0] as never);
+  const app = await createApp(config, new PrismaClient());
+  try {
+    const headers = { authorization: 'Bearer token' };
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/organizations/members',
+      headers,
+      payload: { orgId, projectId: 3001 },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().data.records[0].activeProjectCount).toBe(0);
+    expect(list).toHaveBeenCalledWith({ orgId, projectId: 3001 }, identity);
+    for (const projectId of [memberId, '3001', 1.5, 2147483648])
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/api/v1/organizations/members',
+            headers,
+            payload: { orgId, projectId },
+          })
+        ).statusCode,
+      ).toBe(400);
+  } finally {
+    await app.close();
+  }
 });

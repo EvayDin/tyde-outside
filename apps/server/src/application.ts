@@ -1,3 +1,6 @@
+import { ProjectListService } from './modules/projects/project-list.service.js';
+import { ProjectQueryService } from './modules/projects/project-query.service.js';
+import { ProjectProductionPlanService } from './modules/projects/project-production-plan.service.js';
 import { organizationRoutes } from './modules/organizations/organization.routes.js';
 import { OrganizationService } from './modules/organizations/organization.service.js';
 import { randomUUID } from 'node:crypto';
@@ -15,6 +18,10 @@ import { FileService } from './modules/files/file.service.js';
 import { FileRegistryService } from './modules/files/file-registry.service.js';
 import { createObjectStorage, type ObjectStorage } from './modules/files/object-storage.js';
 import { registerBrowserTransport } from './browser-transport.js';
+import { ProjectFoundationService } from './modules/projects/project-foundation.service.js';
+import { projectFoundationRoutes } from './modules/projects/project-foundation.routes.js';
+import { ProjectCreationService } from './modules/projects/project-creation.service.js';
+import { ProjectManagerService } from './modules/projects/project-manager.service.js';
 
 export function fastifyOptions(config: Config): FastifyServerOptions {
   return {
@@ -62,7 +69,10 @@ export async function createApp(
       req.url.startsWith(`${API_PREFIX}/auth/`) ||
       req.url.startsWith(`${API_PREFIX}/files`) ||
       req.url.startsWith(`${API_PREFIX}/users/`) ||
-      req.url.startsWith(`${API_PREFIX}/organizations`);
+      req.url.startsWith(`${API_PREFIX}/organizations`) ||
+      req.url.startsWith(`${API_PREFIX}/project-categories`) ||
+      req.url.startsWith(`${API_PREFIX}/project-requesters`) ||
+      req.url.startsWith(`${API_PREFIX}/projects/`);
     const failure = (status: number, code: string, message: string) =>
       legacy
         ? { code: status === 429 ? 4292 : status, message, data: null }
@@ -101,6 +111,17 @@ export async function createApp(
   await authRoutes(app, auth, config);
   await fileRoutes(app, new FileService(files), auth, config);
   await organizationRoutes(app, new OrganizationService(db), auth, config);
+  await projectFoundationRoutes(
+    app,
+    new ProjectFoundationService(db),
+    auth,
+    config,
+    new ProjectCreationService(db, files),
+    new ProjectManagerService(db),
+    new ProjectProductionPlanService(db),
+    new ProjectQueryService(db),
+    new ProjectListService(db),
+  );
   app.get(
     `${API_PREFIX}/health/live`,
     {
