@@ -1,12 +1,14 @@
 import { AuthError } from '../auth/auth.error.js';
 import { monthDates } from './attendance-domain.js';
 import { bundledHolidayCalendars, type Holiday } from './holiday-calendar.data.js';
+import type { fetch as nodeFetch } from 'undici-types';
 export class HolidayCalendarService {
   private readonly cache = new Map<number, { days: Holiday[]; loadedAt: number }>();
   private readonly loading = new Map<number, Promise<Holiday[]>>();
   constructor(
     private readonly source = 'https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/%d.json',
-    private readonly fetcher: typeof fetch = fetch,
+    // 部署构建可能注入不完整的 Web 全局类型；固定使用 Node 原生 fetch 的完整类型。
+    private readonly fetcher: typeof nodeFetch = fetch as typeof nodeFetch,
     private readonly bundled: Readonly<
       Record<number, readonly Holiday[]>
     > = bundledHolidayCalendars,
