@@ -22,7 +22,6 @@ export default defineConfig({
     {
       command: 'pnpm --filter @tyde/web exec vite --host 127.0.0.1 --port 5177 --strictPort',
       url: 'http://127.0.0.1:5177',
-      env: { VITE_MOCK_CURRENT_USER: 'false' },
       reuseExistingServer: false,
     },
   ],

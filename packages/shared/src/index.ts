@@ -5,6 +5,7 @@ import type {
   SmsLoginInput,
   SmsRegisterInput,
   SmsSendInput,
+  UserProfileUpdateInput,
 } from './auth.js';
 
 export const APP_NAME = 'tyde';
@@ -39,6 +40,20 @@ export class ApiError extends Error {
     this.retryAfter = retryAfter;
   }
 }
+/** 现有组织资料查询响应；权限与身份由后端按指定组织校验。 */
+export interface OrganizationDetail {
+  id: string;
+  name: string;
+  unifiedCreditCode: string | null;
+  description: string | null;
+  businessLicenseUrl: string | null;
+  logoUrl: string | null;
+  expertiseTags: string[];
+  verifyStatus: 'PENDING' | 'APPROVED' | 'REJECTED';
+  status: 'ACTIVE' | 'FROZEN' | 'DISSOLVED';
+  position: 'OWNER' | 'ADMIN' | 'MEMBER';
+  createdAt: string;
+}
 export interface AuthApi {
   health(): Promise<{ status: string }>;
   sendCode(input: SmsSendInput): Promise<string>;
@@ -46,6 +61,10 @@ export interface AuthApi {
   verifyCode(input: SmsLoginInput): Promise<VerifyResult>;
   completeRegistration(input: SmsRegisterInput): Promise<AuthUser>;
   getCurrentUser(): Promise<AuthUser>;
+  updateProfile(input: UserProfileUpdateInput): Promise<AuthUser>;
+  /** 成功会撤销全部会话，调用方须返回登录页。 */
+  changePassword(newPassword: string, confirmNewPassword: string): Promise<void>;
+  getOrganization(orgId: string): Promise<OrganizationDetail>;
   logout(): Promise<void>;
 }
 export type BridgeResult<T> =

@@ -367,6 +367,7 @@ test('Desktop sends business HTTP through renderer fetch and reads only public c
     if (path.endsWith('/sms/send')) return result('后端发码结果');
     if (path.endsWith('/login')) return result(firstTokens);
     if (path.endsWith('/logout')) return result(null);
+    if (path.includes('/organizations?')) return result(organization);
     return result(user);
   });
   const { platform } = await import(`../packages/platform/src/index.ts?case=${++sequence}`);
@@ -375,6 +376,9 @@ test('Desktop sends business HTTP through renderer fetch and reads only public c
   assert.equal(await platform.auth.sendCode({ phone, scene: 'login' }), '后端发码结果');
   assert.equal(await platform.auth.login({ account: phone, password: 'Password123!' }), undefined);
   assert.deepEqual(await platform.auth.getCurrentUser(), user);
+  assert.deepEqual(await platform.auth.updateProfile({ bio: '真实资料' }), user);
+  assert.deepEqual(await platform.auth.getOrganization(organization.id), organization);
+  await platform.auth.changePassword('Changed123!', 'Changed123!');
   await platform.auth.logout();
   assert.equal(configurationReads, 1);
   assert.deepEqual(
@@ -383,6 +387,9 @@ test('Desktop sends business HTTP through renderer fetch and reads only public c
       'https://api.example.test/api/v1/auth/sms/send',
       'https://api.example.test/api/v1/auth/login',
       'https://api.example.test/api/v1/users/me',
+      'https://api.example.test/api/v1/users/me/update',
+      'https://api.example.test/api/v1/organizations?orgId=' + organization.id,
+      'https://api.example.test/api/v1/users/me/update',
       'https://api.example.test/api/v1/auth/logout',
     ],
   );
@@ -548,4 +555,175 @@ test('A superseded registration grant does not trigger session cleanup', async (
     calls.map(({ path }) => path),
     ['/api/v1/auth/sms/login', '/api/v1/auth/login'],
   );
+});
+
+const organization = {
+  id: '00000000-0000-4000-8000-000000000002',
+  name: '测试组织',
+  unifiedCreditCode: null,
+  description: '组织简介',
+  businessLicenseUrl: null,
+  logoUrl: null,
+  expertiseTags: ['图像标注'],
+  verifyStatus: 'PENDING',
+  status: 'ACTIVE',
+  position: 'OWNER',
+  createdAt: '2026-10-19T00:00:00.000Z',
+};
+
+test('Profile updates and organization reads use the existing routes and response values', async (t) => {
+  const input = { bio: '', idCardNo: '11010119900101001X', avatarUrl: 'https://example.com/a.png' };
+  const updated = { ...user, ...input };
+  const { api, calls } = await adapter(t, ({ path }) =>
+    result(path.startsWith('/api/v1/organizations?') ? organization : updated),
+  );
+  assert.deepEqual(await api.updateProfile(input), updated);
+  assert.deepEqual(await api.getOrganization(organization.id), organization);
+  assert.deepEqual(calls, [
+    {
+      path: '/api/v1/users/me/update',
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'X-Tyde-Client': 'web', 'Content-Type': 'application/json' },
+      body: input,
+    },
+    {
+      path: '/api/v1/organizations?orgId=' + organization.id,
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: {},
+      body: undefined,
+    },
+  ]);
+});
+
+test('Profile writes and organization queries share a single bounded authentication refresh', async (t) => {
+  const refreshStarted = deferred();
+  const releaseRefresh = deferred();
+  let refreshed = false;
+  const input = { bio: '服务端保存的简介' };
+  const { api, calls } = await adapter(t, async ({ path }) => {
+    if (path.endsWith('/auth/login')) return result(firstTokens);
+    if (path.endsWith('/refresh')) {
+      refreshStarted.resolve();
+      await releaseRefresh.promise;
+      refreshed = true;
+      return result(nextTokens);
+    }
+    if (!refreshed) return result(null, 401);
+    return result(path.startsWith('/api/v1/organizations?') ? organization : { ...user, ...input });
+  });
+  await api.login({ account: phone, password: 'Password123!' });
+  const pending = Promise.all([api.updateProfile(input), api.getOrganization(organization.id)]);
+  await refreshStarted.promise;
+  releaseRefresh.resolve();
+  assert.deepEqual(await pending, [{ ...user, ...input }, organization]);
+  assert.equal(calls.filter(({ path }) => path.endsWith('/refresh')).length, 1);
+  const updates = calls.filter(({ path }) => path.endsWith('/users/me/update'));
+  assert.equal(updates.length, 2);
+  assert.ok(updates.every(({ body }) => JSON.stringify(body) === JSON.stringify(input)));
+  assert.ok(
+    calls
+      .filter(({ method }) => method === 'GET')
+      .every(({ headers }) => !Object.keys(headers).length),
+  );
+});
+
+test('Profile failures and malformed organization data never become local success or replay writes', async (t) => {
+  let mode = 'service';
+  const { api, calls } = await adapter(t, () => {
+    if (mode === 'network') throw new Error('fixture offline');
+    if (mode === 'service') return result(null, 503);
+    return result(mode === 'profile' ? {} : { ...organization, position: 'unknown' });
+  });
+  await assert.rejects(api.updateProfile({ bio: '草稿' }), (error) => error.status === 503);
+  assert.equal(calls.length, 1);
+  mode = 'network';
+  await assert.rejects(
+    api.updateProfile({ bio: '草稿' }),
+    (error) => error.code === 'NETWORK_ERROR',
+  );
+  assert.equal(calls.length, 2);
+  mode = 'profile';
+  await assert.rejects(
+    api.updateProfile({ bio: '草稿' }),
+    (error) => error.code === 'INVALID_RESPONSE',
+  );
+  mode = 'organization';
+  await assert.rejects(
+    api.getOrganization(organization.id),
+    (error) => error.code === 'INVALID_RESPONSE',
+  );
+  assert.equal(calls.filter(({ path }) => path.endsWith('/refresh')).length, 0);
+});
+
+test('Password changes send only the existing password fields and clear refresh credentials on success', async (t) => {
+  const { api, calls } = await adapter(t, ({ path }) => {
+    if (path.endsWith('/auth/login')) return result(firstTokens);
+    if (path.endsWith('/users/me/update')) return result(user);
+    return result(null, 401);
+  });
+  await api.login({ account: phone, password: 'Password123!' });
+  assert.equal(await api.changePassword('Changed123!', 'Changed123!'), undefined);
+  assert.deepEqual(calls.find(({ path }) => path.endsWith('/users/me/update')).body, {
+    newPassword: 'Changed123!',
+    confirmNewPassword: 'Changed123!',
+  });
+  await assert.rejects(api.getCurrentUser(), (error) => error.status === 401);
+  assert.equal(calls.filter(({ path }) => path.endsWith('/refresh')).length, 0);
+});
+
+test('A rejected password change preserves the current session refresh capability', async (t) => {
+  let refreshed = false;
+  const { api, calls } = await adapter(t, ({ path }) => {
+    if (path.endsWith('/auth/login')) return result(firstTokens);
+    if (path.endsWith('/users/me/update')) return result(null, 400);
+    if (path.endsWith('/refresh')) {
+      refreshed = true;
+      return result(nextTokens);
+    }
+    return refreshed ? result(user) : result(null, 401);
+  });
+  await api.login({ account: phone, password: 'Password123!' });
+  await assert.rejects(
+    api.changePassword('Changed123!', 'different'),
+    (error) => error.status === 400,
+  );
+  assert.deepEqual(await api.getCurrentUser(), user);
+  assert.equal(calls.filter(({ path }) => path.endsWith('/users/me/update')).length, 1);
+  assert.deepEqual(calls.find(({ path }) => path.endsWith('/refresh')).body, {
+    refreshToken: firstTokens.refreshToken,
+  });
+});
+
+test('A refresh started during password change cannot restore credentials or an older user response', async (t) => {
+  const changeStarted = deferred();
+  const releaseChange = deferred();
+  const refreshStarted = deferred();
+  const releaseRefresh = deferred();
+  const { api, calls } = await adapter(t, async ({ path }) => {
+    if (path.endsWith('/auth/login')) return result(firstTokens);
+    if (path.endsWith('/users/me/update')) {
+      changeStarted.resolve();
+      await releaseChange.promise;
+      return result(user);
+    }
+    if (path.endsWith('/refresh')) {
+      refreshStarted.resolve();
+      await releaseRefresh.promise;
+      return result(nextTokens);
+    }
+    return result(null, 401);
+  });
+  await api.login({ account: phone, password: 'Password123!' });
+  const password = api.changePassword('Changed123!', 'Changed123!');
+  await changeStarted.promise;
+  const oldUser = assert.rejects(api.getCurrentUser(), (error) => error.status === 401);
+  await refreshStarted.promise;
+  releaseChange.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  releaseRefresh.resolve();
+  await Promise.all([password, oldUser]);
+  await assert.rejects(api.getCurrentUser(), (error) => error.status === 401);
+  assert.equal(calls.filter(({ path }) => path.endsWith('/refresh')).length, 1);
 });

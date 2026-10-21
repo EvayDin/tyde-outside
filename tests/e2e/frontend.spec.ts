@@ -529,7 +529,7 @@ test('个人资料在1280与375视口保留字段、键盘操作和完整单页�
 async function desktopBackend(origin = 'http://127.0.0.1:5177') {
   const requests: RequestRecord[] = [];
   const preflights: string[] = [];
-  const state = { registered: false, signedIn: false, currentStatus: 200 };
+  const state = { registered: false, signedIn: false, currentStatus: 200, user: { ...user } };
   const cookie = 'fixture_session=active; HttpOnly; SameSite=None; Secure; Path=/; Max-Age=1800';
   const server = createServer((request, response) => {
     if (request.headers.origin !== origin) return void response.writeHead(403).end();
@@ -580,8 +580,23 @@ async function desktopBackend(origin = 'http://127.0.0.1:5177') {
               .writeHead(state.currentStatus, headers)
               .end(JSON.stringify(failure(state.currentStatus, '会话服务暂不可用')));
           return state.signedIn && request.headers.cookie?.includes('fixture_session=active')
-            ? reply(user)
+            ? reply(state.user)
             : reject();
+        case '/api/v1/users/me/update': {
+          if (!state.signedIn || !request.headers.cookie?.includes('fixture_session=active'))
+            return reject();
+          const input = JSON.parse(raw) as Record<string, unknown>;
+          if (typeof input.newPassword === 'string') {
+            state.signedIn = false;
+            return reply(state.user, {
+              'Set-Cookie': 'fixture_session=; Max-Age=0; HttpOnly; SameSite=None; Secure; Path=/',
+            });
+          }
+          if (typeof input.bio === 'string') state.user.bio = input.bio.trim() || null;
+          if (typeof input.avatarUrl === 'string')
+            state.user.avatarUrl = input.avatarUrl.trim() || null;
+          return reply(state.user);
+        }
         case '/api/v1/auth/refresh':
           return state.signedIn ? reply(loginTokens, { 'Set-Cookie': cookie }) : reject();
         case '/api/v1/auth/logout':
@@ -615,7 +630,7 @@ for (const [mode, origin] of [
   ['本地资源', 'tyde-app://app/index.html'],
   ['DEV', 'http://127.0.0.1:5177/'],
 ] as const) {
-  test(`Electron ${mode} 页面HTTP注册登录、Cookie恢复退出及本地资料演示`, async () => {
+  test(`Electron ${mode} 页面HTTP注册登录、资料真实写入、Cookie恢复与改密退出`, async () => {
     const backend = await desktopBackend(
       origin.startsWith('tyde-app:') ? 'tyde-app://app' : new URL(origin).origin,
     );
@@ -706,18 +721,28 @@ for (const [mode, origin] of [
       });
       await page.getByRole('link', { name: '个人中心', exact: true }).click();
       await page.getByRole('button', { name: '编辑资料', exact: true }).click();
-      await page.getByLabel('个人简介', { exact: true }).fill('桌面本地演示');
+      await page.getByLabel('个人简介', { exact: true }).fill('桌面真实资料');
       const writesBefore = backend.requests.filter(({ method }) => method === 'POST').length;
       await page.getByRole('button', { name: '保存修改', exact: true }).click();
       await expect(
         page
           .getByRole('tabpanel', { name: '个人资料', exact: true })
-          .getByText('桌面本地演示', { exact: true }),
+          .getByText('桌面真实资料', { exact: true }),
       ).toBeVisible();
-      expect(backend.requests.filter(({ method }) => method === 'POST')).toHaveLength(writesBefore);
+      expect(backend.requests.filter(({ method }) => method === 'POST')).toHaveLength(
+        writesBefore + 1,
+      );
+      expect(
+        backend.requests.findLast(({ path }) => path === '/api/v1/users/me/update')?.body,
+      ).toEqual({ bio: '桌面真实资料' });
       await page.reload();
       await expect(page.getByRole('tablist', { name: '个人中心设置', exact: true })).toBeVisible();
-      await expect(page.getByText('桌面本地演示', { exact: true })).toHaveCount(0);
+      await page.getByRole('tab', { name: '个人资料', exact: true }).click();
+      await expect(
+        page
+          .getByRole('tabpanel', { name: '个人资料', exact: true })
+          .getByText('桌面真实资料', { exact: true }),
+      ).toBeVisible();
       await page.getByRole('button', { name: '账户菜单', exact: true }).click();
       await page.getByRole('button', { name: '退出登录', exact: true }).click();
       await expect(page).toHaveURL(/#\/auth$/);
@@ -727,9 +752,15 @@ for (const [mode, origin] of [
       app = await launch();
       page = await app.firstWindow();
       await expectWelcome(page);
-      await page.getByRole('button', { name: '账户菜单', exact: true }).click();
-      await page.getByRole('button', { name: '退出登录', exact: true }).click();
+      await page.getByRole('link', { name: '个人中心', exact: true }).click();
+      await page.getByRole('tab', { name: '账户安全', exact: true }).click();
+      await page.getByLabel(/^新密码\s*\*?\s*$/).fill('Changed123!');
+      await page.getByLabel(/^确认新密码\s*\*?\s*$/).fill('Changed123!');
+      await page.getByRole('button', { name: '更新密码', exact: true }).click();
       await expect(page).toHaveURL(/#\/auth$/);
+      await expect(
+        page.getByText('密码修改成功，全部设备需重新登录。', { exact: true }),
+      ).toBeVisible();
       const cleared = await page.evaluate(async () => {
         const runtime = await window.tydeDesktop!.getRuntimeConfig();
         if (!runtime.ok) throw new Error(runtime.error.message);

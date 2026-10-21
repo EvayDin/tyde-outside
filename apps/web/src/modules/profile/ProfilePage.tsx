@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import { useForm } from 'react-hook-form';
+import { useNavigate } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   BadgeCheck,
@@ -10,10 +11,9 @@ import {
   Phone,
   ShieldCheck,
   Trash2,
-  Upload,
   UserRound,
 } from 'lucide-react';
-import { passwordPattern, type AuthUser } from '@tyde/shared';
+import { passwordPattern, type AuthUser, type UserProfileUpdateInput } from '@tyde/shared';
 import { UserAvatar } from '@/components/UserAvatar';
 import { ErrorNotice } from '@/components/ErrorNotice';
 import { Alert } from '@/components/ui/alert';
@@ -24,10 +24,12 @@ import { FormField } from '@/components/ui/shared/FormField';
 import AuthPasswordInput from '@/components/ui/shared/AuthPasswordInput';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { SESSION_KEY } from '@/hooks/useSession';
-import { api, type ProfilePreviewInput } from '@/services/api';
+import { api } from '@/services/api';
+import { useAuthFlow } from '@/modules/auth/AuthFlow';
 import { ProfileCharts } from './ProfileCharts';
+import { ProfileOrganization } from './ProfileOrganization';
 
-type ProfileValues = { idCardNo: string; bio: string };
+type ProfileValues = { avatarUrl: string; idCardNo: string; bio: string };
 
 /** 以本人资料为侧栏，概览仅为获准的图表提供明确标注的示例数据。 */
 export function ProfilePage({ user }: { user: AuthUser }) {
@@ -175,7 +177,6 @@ export function ProfilePage({ user }: { user: AuthUser }) {
             <ProfileCharts />
           </TabsContent>
           <TabsContent value="profile" className="m-0 flex-col gap-[20px] data-[state=active]:flex">
-            <ProfilePreviewNotice />
             <div className="rounded-[8px] border bg-card p-[20px] sm:p-[24px]">
               <ProfileDetails
                 user={user}
@@ -189,7 +190,6 @@ export function ProfilePage({ user }: { user: AuthUser }) {
             value="security"
             className="m-0 flex-col gap-[20px] data-[state=active]:flex"
           >
-            <ProfilePreviewNotice />
             <div className="rounded-[8px] border bg-card p-[20px] sm:p-[24px]">
               <PasswordSettings user={user} />
             </div>
@@ -207,69 +207,6 @@ function formatProfileDate(value: string) {
     : null;
 }
 
-function ProfilePreviewNotice() {
-  return (
-    <Alert className="text-[13px] leading-[22px]">
-      当前为前端演示：资料修改仅在本次页面内生效，刷新后恢复；实际登录密码不会改变。
-    </Alert>
-  );
-}
-
-function ProfileOrganization({ organization }: { organization: AuthUser['organization'] }) {
-  if (!organization || typeof organization.name !== 'string' || !organization.name.trim())
-    return null;
-  const name = organization.name.trim();
-  const description =
-    typeof organization.description === 'string' ? organization.description.trim() : '';
-  const logo = typeof organization.logoUrl === 'string' ? organization.logoUrl : null;
-  const position =
-    organization.position === 'OWNER'
-      ? '主管'
-      : organization.position === 'ADMIN'
-        ? '管理员'
-        : organization.position === 'MEMBER'
-          ? '成员'
-          : undefined;
-  const tags = Array.isArray(organization.expertiseTags)
-    ? organization.expertiseTags.filter(
-        (tag): tag is string => typeof tag === 'string' && !!tag.trim(),
-      )
-    : [];
-  return (
-    <section aria-label="所属组织" className="mt-[24px] border-t pt-[20px]">
-      <h3 className="m-0 text-[14px] leading-[22px] font-semibold">所属组织</h3>
-      <div className="mt-[12px] flex items-start gap-[10px]">
-        <UserAvatar url={logo} name={name} className="size-[32px] rounded-[6px] text-[14px]" />
-        <div className="min-w-0">
-          <p className="break-words text-[13px] leading-[20px] font-medium">{name}</p>
-          {position && (
-            <p className="mt-[2px] text-[12px] leading-[18px] text-[var(--color-neutral-strong)]">
-              {position}
-            </p>
-          )}
-        </div>
-      </div>
-      {description && (
-        <p className="mt-[12px] break-words text-[13px] leading-[22px] text-[var(--color-neutral-strong)]">
-          {description}
-        </p>
-      )}
-      {tags.length > 0 && (
-        <div aria-label="组织领域" className="mt-[12px] flex flex-wrap gap-[6px]">
-          {tags.map((tag, index) => (
-            <span
-              key={index}
-              className="rounded-[5px] border bg-card px-[7px] py-[2px] text-[11px] leading-[18px] text-[var(--color-neutral-strong)]"
-            >
-              {tag}
-            </span>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
 function ProfileDetails({
   user,
   editing,
@@ -285,56 +222,72 @@ function ProfileDetails({
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState<unknown>();
-  const [avatar, setAvatar] = useState<{ file: File; preview: string }>();
-  const [clearAvatar, setClearAvatar] = useState(false);
-  const [avatarError, setAvatarError] = useState('');
-  const fileInput = useRef<HTMLInputElement>(null);
+  const [previewAvatar, setPreviewAvatar] = useState(user.avatarUrl);
+  const inFlight = useRef(false);
   const form = useForm<ProfileValues>({
-    defaultValues: { idCardNo: '', bio: user.bio ?? '' },
-    mode: 'onBlur',
+    defaultValues: { avatarUrl: user.avatarUrl ?? '', idCardNo: '', bio: user.bio ?? '' },
+    mode: 'onSubmit',
+    reValidateMode: 'onSubmit',
   });
   const wasEditing = useRef(false);
   useEffect(() => {
     if (editing && !wasEditing.current) {
-      form.reset({ idCardNo: '', bio: user.bio ?? '' });
+      form.reset({ avatarUrl: user.avatarUrl ?? '', idCardNo: '', bio: user.bio ?? '' });
+      setPreviewAvatar(user.avatarUrl);
+      setNotice('');
+      setError(undefined);
       form.setFocus(user.idVerified === 1 ? 'bio' : 'idCardNo');
     }
     wasEditing.current = editing;
-  }, [editing, form, user.bio, user.idVerified]);
-  const preview = avatar?.preview;
-  useEffect(
-    () => () => {
-      if (preview) URL.revokeObjectURL(preview);
-    },
-    [preview],
-  );
+  }, [editing, form, user.avatarUrl, user.bio, user.idVerified]);
 
   function finishEditing() {
     setEditing(false);
-    setAvatar(undefined);
-    setClearAvatar(false);
-    setAvatarError('');
     form.reset();
     requestAnimationFrame(() => editButton.current?.focus());
   }
 
+  function validateAvatarUrl(value: string) {
+    const url = value.trim();
+    if (!url || url === (user.avatarUrl ?? '')) return true;
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === 'https:' && !parsed.username && !parsed.password) return true;
+    } catch {
+      // 无效地址由字段提示处理，不发起图片请求。
+    }
+    return '请输入不含用户名和密码的 HTTPS 图片地址';
+  }
+
   async function save(values: ProfileValues) {
-    if (saving || avatarError) return;
+    if (inFlight.current) return;
+    const input: UserProfileUpdateInput = {};
+    const avatarUrl = values.avatarUrl.trim();
+    const bio = values.bio.trim();
+    const idCardNo = (values.idCardNo ?? '').trim().toUpperCase();
+    if (avatarUrl !== (user.avatarUrl ?? '')) input.avatarUrl = avatarUrl;
+    if (bio !== (user.bio ?? '')) input.bio = bio;
+    if (idCardNo && user.idVerified !== 1) input.idCardNo = idCardNo;
+    if (!Object.keys(input).length) {
+      finishEditing();
+      setNotice('个人资料没有变化');
+      return;
+    }
+    inFlight.current = true;
     setSaving(true);
     setError(undefined);
-    const input: ProfilePreviewInput = { bio: values.bio.trim() };
-    if (values.idCardNo.trim()) input.idCardNo = values.idCardNo.trim().toUpperCase();
-    if (avatar) input.avatar = avatar.file;
-    else if (clearAvatar) input.avatar = null;
     try {
       await cache.cancelQueries({ queryKey: SESSION_KEY });
-      const updated = await api.updateProfilePreview(user, input);
+      const updated = await api.updateProfile(input);
+      await cache.cancelQueries({ queryKey: SESSION_KEY });
+      if (cache.getQueryData<AuthUser | null>(SESSION_KEY)?.id !== user.id) return;
       cache.setQueryData(SESSION_KEY, updated);
       finishEditing();
-      setNotice('个人资料已模拟保存，刷新页面后恢复。');
+      setNotice('个人资料已保存');
     } catch (failure) {
       setError(failure);
     } finally {
+      inFlight.current = false;
       setSaving(false);
     }
   }
@@ -357,74 +310,55 @@ function ProfileDetails({
           <fieldset disabled={saving} className="m-0 min-w-0 space-y-[24px] border-0 p-0">
             <FormField
               labelClassName="text-[13px] leading-[20px] font-medium"
-              controlId="profile-avatar"
-              label="头像"
-              error={avatarError}
-              description="支持 JPG、PNG、GIF、BMP、WebP，大小不超过 2 MB。"
+              controlId="profile-avatar-url"
+              label="头像地址"
+              error={form.formState.errors.avatarUrl?.message}
+              description="仅支持 HTTPS 图片地址；留空可清除头像。暂不支持本地图片上传。"
             >
               {({ invalid, describedBy }) => (
-                <div className="flex flex-wrap items-center gap-[12px]">
-                  <UserAvatar
-                    url={avatar?.preview ?? (clearAvatar ? null : user.avatarUrl)}
-                    name={user.nickname || user.realName}
-                    className="size-[56px] rounded-[12px] text-[24px]"
-                  />
-                  <input
-                    ref={fileInput}
-                    id="profile-avatar"
-                    aria-label="更换头像"
+                <div className="flex flex-col gap-[12px]">
+                  <Input
+                    id="profile-avatar-url"
+                    size="profile"
+                    className="rounded-[8px] bg-card shadow-none"
+                    autoComplete="off"
+                    maxLength={512}
+                    placeholder="https://example.com/avatar.png"
                     aria-invalid={invalid || undefined}
                     aria-describedby={describedBy}
-                    className="sr-only"
-                    type="file"
-                    accept="image/jpeg,image/png,image/gif,image/bmp,image/webp"
-                    onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      event.target.value = '';
-                      if (!file) return;
-                      if (
-                        ![
-                          'image/jpeg',
-                          'image/png',
-                          'image/gif',
-                          'image/bmp',
-                          'image/webp',
-                        ].includes(file.type)
-                      ) {
-                        setAvatarError('请选择 JPG、PNG、GIF、BMP 或 WebP 图片');
-                        return;
-                      }
-                      if (!file.size || file.size > 2 * 1024 * 1024) {
-                        setAvatarError('请选择非空且不超过 2 MB 的头像图片');
-                        return;
-                      }
-                      setAvatarError('');
-                      setAvatar({ file, preview: URL.createObjectURL(file) });
-                      setClearAvatar(false);
-                    }}
+                    {...form.register('avatarUrl', {
+                      maxLength: { value: 512, message: '头像地址不能超过 512 个字符' },
+                      validate: validateAvatarUrl,
+                    })}
                   />
-                  <Button
-                    variant="outline"
-                    size="settings"
-                    onClick={() => fileInput.current?.click()}
-                  >
-                    <Upload className="size-[16px]" aria-hidden />
-                    更换头像
-                  </Button>
-                  {(avatar || (!clearAvatar && user.avatarUrl)) && (
+                  <div className="flex flex-wrap items-center gap-[12px]">
+                    <UserAvatar
+                      url={previewAvatar}
+                      name={user.nickname || user.realName}
+                      className="size-[56px] rounded-[12px] text-[24px]"
+                    />
+                    <Button
+                      variant="outline"
+                      size="settings"
+                      onClick={async () => {
+                        if (await form.trigger('avatarUrl'))
+                          setPreviewAvatar(form.getValues('avatarUrl').trim() || null);
+                      }}
+                    >
+                      预览头像
+                    </Button>
                     <Button
                       variant="ghost"
                       size="settings"
                       onClick={() => {
-                        setAvatar(undefined);
-                        setClearAvatar(true);
-                        setAvatarError('');
+                        form.setValue('avatarUrl', '', { shouldDirty: true, shouldValidate: true });
+                        setPreviewAvatar(null);
                       }}
                     >
                       <Trash2 className="size-[16px]" aria-hidden />
                       清除头像
                     </Button>
-                  )}
+                  </div>
                 </div>
               )}
             </FormField>
@@ -464,18 +398,18 @@ function ProfileDetails({
               controlId="profile-bio"
               label="个人简介"
               error={form.formState.errors.bio?.message}
-              description="选填，最多 200 个字符。"
+              description="选填，最多 1000 个字符。"
             >
               {({ invalid, describedBy }) => (
                 <Textarea
                   id="profile-bio"
                   className="min-h-[120px] rounded-[8px] bg-card px-[12px] py-[10px] text-[13px] leading-[22px] shadow-none"
-                  maxLength={200}
+                  maxLength={1000}
                   placeholder="介绍你的专业背景、擅长领域或协作经验"
                   aria-invalid={invalid || undefined}
                   aria-describedby={describedBy}
                   {...form.register('bio', {
-                    maxLength: { value: 200, message: '个人简介不能超过 200 个字符' },
+                    maxLength: { value: 1000, message: '个人简介不能超过 1000 个字符' },
                   })}
                 />
               )}
@@ -494,13 +428,7 @@ function ProfileDetails({
             >
               取消
             </Button>
-            <Button
-              type="submit"
-              variant="dark"
-              size="settings"
-              loading={saving}
-              disabled={!!avatarError}
-            >
+            <Button type="submit" variant="dark" size="settings" loading={saving}>
               保存修改
             </Button>
           </div>
@@ -556,12 +484,15 @@ function ProfileDetails({
 
 function PasswordSettings({ user }: { user: AuthUser }) {
   const cache = useQueryClient();
+  const navigate = useNavigate();
+  const { passwordChanged } = useAuthFlow();
+  const inFlight = useRef(false);
   const [saving, setSaving] = useState(false);
-  const [notice, setNotice] = useState('');
   const [error, setError] = useState<unknown>();
   const form = useForm<{ newPassword: string; confirmNewPassword: string }>({
     defaultValues: { newPassword: '', confirmNewPassword: '' },
-    mode: 'onBlur',
+    mode: 'onSubmit',
+    reValidateMode: 'onSubmit',
   });
   return (
     <section aria-labelledby="security-title" className="flex flex-col gap-[24px]">
@@ -570,27 +501,30 @@ function PasswordSettings({ user }: { user: AuthUser }) {
           登录密码
         </h2>
         <p className="mt-[6px] text-[13px] leading-[22px] text-[var(--color-neutral-strong)]">
-          当前仅演示密码修改，不改变实际登录密码或登录状态。
+          修改成功后，全部设备需重新登录，包括当前设备。
         </p>
       </div>
-      {notice && <Alert>{notice}</Alert>}
       <form
         noValidate
         className="flex flex-col gap-[24px]"
         onSubmit={form.handleSubmit(async (values) => {
-          if (saving) return;
+          if (inFlight.current) return;
+          inFlight.current = true;
           setSaving(true);
-          setNotice('');
           setError(undefined);
           try {
             await cache.cancelQueries({ queryKey: SESSION_KEY });
-            const updated = await api.updateProfilePreview(user, values);
-            cache.setQueryData(SESSION_KEY, updated);
+            await api.changePassword(values.newPassword, values.confirmNewPassword);
             form.reset();
-            setNotice('已模拟修改，实际登录密码未改变');
+            await cache.cancelQueries();
+            passwordChanged();
+            cache.clear();
+            cache.setQueryData(SESSION_KEY, null);
+            await navigate({ to: '/auth', replace: true });
           } catch (failure) {
             setError(failure);
           } finally {
+            inFlight.current = false;
             setSaving(false);
           }
         })}
