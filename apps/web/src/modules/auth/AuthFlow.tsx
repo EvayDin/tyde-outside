@@ -23,12 +23,13 @@ interface AuthFlow {
   startRegistration: (draft: RegistrationDraft) => void;
   clearRegistration: () => void;
   registrationComplete: (phone: string) => void;
+  passwordChanged: () => void;
   clearLoginFeedback: () => void;
 }
 
 const AuthFlowContext = createContext<AuthFlow | null>(null);
 
-/** 注册凭证与成功提示仅跨当前页面导航保留，刷新后清空。 */
+/** 注册凭证及注册、改密成功提示仅跨当前页面导航保留，刷新后清空。 */
 export function AuthFlowProvider({ children }: PropsWithChildren) {
   const [registration, setRegistration] = useState<RegistrationDraft | null>(null);
   const [loginFeedback, setLoginFeedback] = useState<LoginFeedback | null>(null);
@@ -38,6 +39,10 @@ export function AuthFlowProvider({ children }: PropsWithChildren) {
     setRegistration(null);
     setLoginFeedback({ phone, message: '注册成功，请使用密码登录。' });
   }, []);
+  const passwordChanged = useCallback(() => {
+    setRegistration(null);
+    setLoginFeedback({ phone: '', message: '密码修改成功，全部设备需重新登录。' });
+  }, []);
   const value = useMemo(
     () => ({
       registration,
@@ -45,9 +50,17 @@ export function AuthFlowProvider({ children }: PropsWithChildren) {
       startRegistration: setRegistration,
       clearRegistration,
       registrationComplete,
+      passwordChanged,
       clearLoginFeedback,
     }),
-    [registration, loginFeedback, clearRegistration, registrationComplete, clearLoginFeedback],
+    [
+      registration,
+      loginFeedback,
+      clearRegistration,
+      registrationComplete,
+      passwordChanged,
+      clearLoginFeedback,
+    ],
   );
   return <AuthFlowContext.Provider value={value}>{children}</AuthFlowContext.Provider>;
 }

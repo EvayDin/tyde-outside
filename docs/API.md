@@ -10,42 +10,42 @@
 
 执行 `pnpm dev:web` 后可通过 `http://127.0.0.1:3001/api/v1/docs/` 访问同源文档；`API_PROXY_TARGET` 指向 HTTPS 后端时使用 `https://localhost:3001/api/v1/docs/`。部署包及 Vercel 由同一个 Fastify 服务托管 Web 与 API，数据库状态以 `/api/v1/health/ready` 为准。
 
-| 方法与路径（前缀 `/api/v1`）                                     | 用途                                |
-| ---------------------------------------------------------------- | ----------------------------------- |
-| POST `/auth/sms/send`                                            | 按 `scene` 发送验证码               |
-| POST `/auth/register`                                            | 注册并返回用户资料                  |
-| POST `/auth/login`                                               | 手机号 / 邮箱 / uid + 密码登录      |
-| POST `/auth/sms/login`                                           | 手机号 + 验证码登录或返回注册指引   |
-| POST `/auth/refresh`                                             | 轮换访问和刷新令牌                  |
-| POST `/auth/password/reset`                                      | 验证码重置密码并全端下线            |
-| POST `/auth/logout`                                              | 撤销当前会话                        |
-| GET `/users/me`                                                  | 当前用户资料                        |
-| GET `/users/nickname/check`                                      | 匿名昵称可用性与推荐昵称            |
-| POST `/users/me/update`                                          | 本人资料更新、改密并全端下线        |
-| GET `/organizations`                                             | 指定组织资料（主管/管理员）         |
-| POST `/organizations/update`                                     | 组织简介与Logo部分更新（主管）      |
-| POST `/organizations/members`                                    | 组织人员分页列表（项目分支待接入）  |
-| POST `/organizations/members/update`                             | 编辑成员及版本条件更新              |
-| POST `/organizations/members/position`                           | 组织角色变更与主管转让              |
-| POST `/organizations/members/exit-requests`                      | 本人退出申请或合法代操作退出        |
-| POST `/organizations/approvals/pending`                          | 本人组织待办                        |
-| POST `/organizations/approvals/records`                          | 已处理节点记录                      |
-| POST `/organizations/approvals/process`                          | 双版本审批处理                      |
-| GET `/organizations/member-imports/template`                     | 成员XLSX模板，登录后下载            |
-| POST `/organizations/member-imports/generate`                    | 全量校验并原子导入成员              |
-| GET `/projects/manager-candidates`                               | 本人项目策略官候选（NAVIGATOR）     |
-| POST `/projects/manager-recruitments`                            | 直接招募或更换策略官（NAVIGATOR）   |
-| GET `/projects/production-plan` | 查询生产计划（当前PM主策略官/协作负责人） |
-| POST `/projects/production-plan/confirm` | 确认生产计划（仅当前主策略官，projectId在query） |
-| GET `/projects/{projectId}` | 已发布项目详情（实际创建人/任职/在项成员范围） |
-| GET `/projects/list` | 领航员本人待办卡片（独立NAVIGATOR） |
-| GET `/projects/manager/list` | 当前主策略官/协作负责人待办卡片（独立PM） |
-| GET `/projects/draft/current`                                    | 本人唯一草稿查询                    |
-| POST `/projects/create`                                          | 保存完整草稿或校验并发布项目        |
-| GET `/project-categories`                                        | 项目分类字典（独立NAVIGATOR授权）   |
-| GET `/project-requesters/{requesterType}/{requesterId}/backfill` | 本人需求方回填（独立NAVIGATOR授权） |
-| GET `/health/live`                                               | 存活状态                            |
-| GET `/health/ready`                                              | 数据库就绪状态                      |
+| 方法与路径（前缀 `/api/v1`）                                     | 用途                                             |
+| ---------------------------------------------------------------- | ------------------------------------------------ |
+| POST `/auth/sms/send`                                            | 按 `scene` 发送验证码                            |
+| POST `/auth/register`                                            | 注册并返回用户资料                               |
+| POST `/auth/login`                                               | 手机号 / 邮箱 / uid + 密码登录                   |
+| POST `/auth/sms/login`                                           | 手机号 + 验证码登录或返回注册指引                |
+| POST `/auth/refresh`                                             | 轮换访问和刷新令牌                               |
+| POST `/auth/password/reset`                                      | 验证码重置密码并全端下线                         |
+| POST `/auth/logout`                                              | 撤销当前会话                                     |
+| GET `/users/me`                                                  | 当前用户资料                                     |
+| GET `/users/nickname/check`                                      | 匿名昵称可用性与推荐昵称                         |
+| POST `/users/me/update`                                          | 本人资料更新、改密并全端下线                     |
+| GET `/organizations`                                             | 指定组织资料（主管/管理员）                      |
+| POST `/organizations/update`                                     | 组织简介与Logo部分更新（主管）                   |
+| POST `/organizations/members`                                    | 组织人员分页列表（项目分支待接入）               |
+| POST `/organizations/members/update`                             | 编辑成员及版本条件更新                           |
+| POST `/organizations/members/position`                           | 组织角色变更与主管转让                           |
+| POST `/organizations/members/exit-requests`                      | 本人退出申请或合法代操作退出                     |
+| POST `/organizations/approvals/pending`                          | 本人组织待办                                     |
+| POST `/organizations/approvals/records`                          | 已处理节点记录                                   |
+| POST `/organizations/approvals/process`                          | 双版本审批处理                                   |
+| GET `/organizations/member-imports/template`                     | 成员XLSX模板，登录后下载                         |
+| POST `/organizations/member-imports/generate`                    | 全量校验并原子导入成员                           |
+| GET `/projects/manager-candidates`                               | 本人项目策略官候选（NAVIGATOR）                  |
+| POST `/projects/manager-recruitments`                            | 直接招募或更换策略官（NAVIGATOR）                |
+| GET `/projects/production-plan`                                  | 查询生产计划（当前PM主策略官/协作负责人）        |
+| POST `/projects/production-plan/confirm`                         | 确认生产计划（仅当前主策略官，projectId在query） |
+| GET `/projects/{projectId}`                                      | 已发布项目详情（实际创建人/任职/在项成员范围）   |
+| GET `/projects/list`                                             | 领航员本人待办卡片（独立NAVIGATOR）              |
+| GET `/projects/manager/list`                                     | 当前主策略官/协作负责人待办卡片（独立PM）        |
+| GET `/projects/draft/current`                                    | 本人唯一草稿查询                                 |
+| POST `/projects/create`                                          | 保存完整草稿或校验并发布项目                     |
+| GET `/project-categories`                                        | 项目分类字典（独立NAVIGATOR授权）                |
+| GET `/project-requesters/{requesterType}/{requesterId}/backfill` | 本人需求方回填（独立NAVIGATOR授权）              |
+| GET `/health/live`                                               | 存活状态                                         |
+| GET `/health/ready`                                              | 数据库就绪状态                                   |
 
 认证成功统一 HTTP 200，使用 `{code: 200, message: "操作成功", data: ...}`。登录 data 包含 `accessToken/refreshToken/tokenType/expiresIn`，注册返回 UserDTO，退出与重置返回 null。失败使用 `code/message/data`，限流 HTTP 429 携带 `Retry-After`。健康检查保留原 `status` 结构。
 

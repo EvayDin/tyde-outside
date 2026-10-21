@@ -1,6 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { mkdir } from 'node:fs/promises';
-import type { AuthUser } from '../../packages/shared/src/index';
+import type { AuthUser, OrganizationDetail } from '../../packages/shared/src/index';
 
 const fixtureUser: AuthUser = {
   id: 'profile-fixture',
@@ -25,345 +24,261 @@ const fixtureUser: AuthUser = {
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
-const avatar = {
-  name: 'avatar.png',
-  mimeType: 'image/png',
-  buffer: Buffer.from(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC',
-    'base64',
-  ),
+const organization: OrganizationDetail = {
+  id: '00000000-0000-4000-8000-000000000001',
+  name: '潮汐协作组',
+  unifiedCreditCode: '91310000TEST000001',
+  description: '组织接口返回的介绍',
+  businessLicenseUrl: null,
+  logoUrl: null,
+  expertiseTags: ['数据标注'],
+  verifyStatus: 'APPROVED',
+  status: 'ACTIVE',
+  position: 'OWNER',
+  createdAt: '2026-01-01T00:00:00.000Z',
 };
-interface ProfileRequest {
+interface RecordedRequest {
   path: string;
   method: string;
+  body: Record<string, unknown> | null;
   authenticated: boolean;
 }
-
-/** 接口替身只实现现有资料查询与退出；未约定的写接口一律失败。 */
 async function profileBackend(page: Page, origin: string, signedIn = true) {
-  const state = { signedIn, user: { ...fixtureUser } };
-  const requests: ProfileRequest[] = [];
+  const state = { signedIn, user: { ...fixtureUser }, updateStatus: 200, orgStatus: 200 };
+  const requests: RecordedRequest[] = [];
   const signIn = async () => {
     state.signedIn = true;
-    await page.context().addCookies([
-      {
-        name: 'profile_session',
-        value: 'active',
-        url: origin,
-        httpOnly: true,
-        sameSite: 'Lax',
-      },
-    ]);
+    await page
+      .context()
+      .addCookies([
+        { name: 'profile_session', value: 'active', url: origin, httpOnly: true, sameSite: 'Lax' },
+      ]);
   };
   if (signedIn) await signIn();
+  await page.route('https://avatars.example.test/**', (route) =>
+    route.fulfill({
+      contentType: 'image/png',
+      body: Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC',
+        'base64',
+      ),
+    }),
+  );
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request();
-    const headers = await request.allHeaders();
     const path = new URL(request.url()).pathname;
-    const authenticated = state.signedIn && !!headers.cookie?.includes('profile_session=active');
-    requests.push({ path, method: request.method(), authenticated });
+    const authenticated =
+      state.signedIn && !!(await request.allHeaders()).cookie?.includes('profile_session=active');
+    const body = request.postData() ? (request.postDataJSON() as Record<string, unknown>) : null;
+    requests.push({ path, method: request.method(), body, authenticated });
     const reply = (data: unknown, status = 200, extra = {}) =>
       route.fulfill({
         status,
         headers: extra,
-        json: { code: status, message: status === 200 ? '操作成功' : '请先登录', data },
+        json: {
+          code: status,
+          message:
+            status === 200
+              ? '操作成功'
+              : status === 503
+                ? '资料服务暂不可用'
+                : '请先登录或检查权限',
+          data,
+        },
       });
     if (!authenticated) return reply(null, 401);
-    if (path === '/api/v1/auth/logout' && request.method() === 'POST') {
+    if (path === '/api/v1/auth/logout') {
       state.signedIn = false;
       return reply(null, 200, {
         'Set-Cookie': 'profile_session=; Max-Age=0; HttpOnly; Path=/; SameSite=Lax',
       });
     }
     if (path === '/api/v1/users/me' && request.method() === 'GET') return reply(state.user);
+    if (path === '/api/v1/organizations' && request.method() === 'GET')
+      return reply(organization, state.orgStatus);
+    if (path === '/api/v1/users/me/update' && request.method() === 'POST') {
+      if (state.updateStatus !== 200) return reply(null, state.updateStatus);
+      if (body?.newPassword) {
+        state.signedIn = false;
+        return reply(state.user, 200, {
+          'Set-Cookie': 'profile_session=; Max-Age=0; HttpOnly; Path=/; SameSite=Lax',
+        });
+      }
+      for (const key of ['bio', 'avatarUrl'] as const)
+        if (typeof body?.[key] === 'string') state.user[key] = (body[key] as string).trim() || null;
+      if (typeof body?.idCardNo === 'string')
+        state.user.idCardNo = body.idCardNo.slice(0, 3) + '************' + body.idCardNo.slice(-3);
+      return reply(state.user);
+    }
     return reply(null, 404);
   });
   return { state, requests, signIn };
 }
-
 const openProfile = async (page: Page, origin: string) => {
   await page.goto(`${origin}/#/profile`);
   await expect(page.getByRole('tablist', { name: '个人中心设置', exact: true })).toBeVisible();
 };
-
 async function editProfile(page: Page) {
   await page.getByRole('tab', { name: '个人资料', exact: true }).click();
   await page.getByRole('button', { name: '编辑资料', exact: true }).click();
   await expect(page.getByLabel('个人简介', { exact: true })).toBeEditable();
 }
+const writes = (requests: RecordedRequest[]) =>
+  requests.filter((r) => r.path === '/api/v1/users/me/update');
 
-async function exerciseProfilePreview(page: Page) {
-  await editProfile(page);
-  await expect(
-    page.getByText(
-      '当前为前端演示：资料修改仅在本次页面内生效，刷新后恢复；实际登录密码不会改变。',
-      { exact: true },
-    ),
-  ).toBeVisible();
-  await expect(page.getByLabel('身份证号', { exact: true })).toHaveValue('');
-  await page.getByLabel('个人简介', { exact: true }).fill('取消的草稿');
-  await page.getByRole('button', { name: '取消', exact: true }).click();
-  await editProfile(page);
-  await expect(page.getByLabel('个人简介', { exact: true })).toHaveValue('');
-  await expect(page.getByLabel('个人简介', { exact: true })).toHaveAttribute('maxlength', '200');
-  await page.getByLabel('身份证号', { exact: true }).fill('invalid');
-  await page.getByRole('button', { name: '保存修改', exact: true }).click();
-  await expect(page.getByText('请输入 15 位或 18 位身份证号', { exact: true })).toBeVisible();
-  await page.getByLabel('身份证号', { exact: true }).fill('110101199003077156');
-  await page.getByLabel('个人简介', { exact: true }).fill('  模拟保存的个人简介  ');
-  const upload = page.getByLabel('更换头像', { exact: true });
-  await upload.setInputFiles({
-    name: 'invalid.txt',
-    mimeType: 'text/plain',
-    buffer: Buffer.from('invalid'),
-  });
-  await expect(
-    page.getByText('请选择 JPG、PNG、GIF、BMP 或 WebP 图片', { exact: true }),
-  ).toBeVisible();
-  await upload.setInputFiles({
-    name: 'large.png',
-    mimeType: 'image/png',
-    buffer: Buffer.alloc(2 * 1024 * 1024 + 1),
-  });
-  await expect(page.getByText('请选择非空且不超过 2 MB 的头像图片', { exact: true })).toBeVisible();
-  await upload.setInputFiles(avatar);
-  await expect(page.locator('img[src^="blob:"]').first()).toBeVisible();
-  await page.getByRole('button', { name: '保存修改', exact: true }).click();
-  await expect(
-    page.getByText('个人资料已模拟保存，刷新页面后恢复。', { exact: true }),
-  ).toBeVisible();
-  const profile = page.getByRole('tabpanel', { name: '个人资料', exact: true });
-  await expect(profile.getByText('模拟保存的个人简介', { exact: true })).toBeVisible();
-  await expect(profile.getByText(/^110\*+156$/)).toBeVisible();
-  await expect(
-    page.getByRole('button', { name: '账户菜单', exact: true }).locator('img[src^="blob:"]'),
-  ).toBeVisible();
-  await editProfile(page);
-  await expect(page.getByLabel('身份证号', { exact: true })).toHaveValue('');
-  await page.getByRole('button', { name: '清除头像', exact: true }).click();
-  await page.getByRole('button', { name: '保存修改', exact: true }).click();
-  await expect(page.getByRole('button', { name: '编辑资料', exact: true })).toBeVisible();
-  await expect(page.locator('img[src^="blob:"]')).toHaveCount(0);
-  await expect(profile.getByText(/^110\*+156$/)).toBeVisible();
-  await page.reload();
-  await page.getByRole('tab', { name: '个人资料', exact: true }).click();
-  await expect(profile.getByText(fixtureUser.idCardNo!, { exact: true })).toBeVisible();
-  await expect(page.getByText('模拟保存的个人简介', { exact: true })).toHaveCount(0);
-}
-
-for (const [mode, origin] of [
-  ['生产', 'http://127.0.0.1:5176'],
-  ['DEV', 'http://127.0.0.1:5177'],
+for (const [mode, origin, desktop] of [
+  ['Web 生产', 'http://127.0.0.1:5176', false],
+  ['Web DEV', 'http://127.0.0.1:5177', false],
+  ['Electron 运行配置', 'http://127.0.0.1:5176', true],
 ] as const) {
-  test(`个人中心 Web ${mode} 登录保护与账户菜单的导航、Escape、退出`, async ({ page }) => {
-    const { requests, signIn } = await profileBackend(page, origin, false);
-    await page.goto(`${origin}/#/profile`);
-    await expect(page).toHaveURL(/#\/auth$/);
-    await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
-    await signIn();
-    await page.goto(`${origin}/`);
+  test(`个人中心 ${mode} 真实资料差量保存、失败留稿、头像地址和刷新持久化`, async ({ page }) => {
+    if (desktop)
+      await page.addInitScript((apiBaseUrl) => {
+        window.tydeDesktop = { getRuntimeConfig: async () => ({ ok: true, data: { apiBaseUrl } }) };
+      }, origin);
+    const { state, requests } = await profileBackend(page, origin);
+    await openProfile(page, origin);
+    await editProfile(page);
+    await expect(page.getByLabel('身份证号', { exact: true })).toHaveValue('');
+    await expect(page.getByLabel('个人简介', { exact: true })).toHaveAttribute('maxlength', '1000');
+    await expect(page.locator('input[type=file]')).toHaveCount(0);
+    await page.getByLabel('头像地址', { exact: true }).fill('javascript:alert(1)');
+    await page.getByRole('button', { name: '保存修改', exact: true }).click();
     await expect(
-      page.getByRole('heading', { name: '欢迎，潮汐测试员', exact: true }),
+      page.getByText('请输入不含用户名和密码的 HTTPS 图片地址', { exact: true }),
     ).toBeVisible();
-    const account = page.getByRole('button', { name: '账户菜单', exact: true });
-    await account.click();
-    await expect(page.getByRole('navigation', { name: '账户选项', exact: true })).toBeVisible();
-    await page.keyboard.press('Escape');
-    await expect(page.getByRole('navigation', { name: '账户选项', exact: true })).toHaveCount(0);
-    await expect(account).toBeFocused();
-    await account.press('Enter');
+    expect(writes(requests)).toHaveLength(0);
     await page
-      .getByRole('navigation', { name: '账户选项', exact: true })
-      .getByRole('link', { name: '个人中心', exact: true })
-      .click();
-    await expect(page).toHaveURL(/#\/profile$/);
+      .getByLabel('头像地址', { exact: true })
+      .fill('https://avatars.example.test/avatar.png');
+    await page.getByLabel('个人简介', { exact: true }).fill('  联调后的个人简介  ');
+    state.updateStatus = 503;
+    await page.getByRole('button', { name: '保存修改', exact: true }).click();
+    await expect(page.getByText('资料服务暂不可用', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('个人简介', { exact: true })).toHaveValue('  联调后的个人简介  ');
+    expect(writes(requests)).toHaveLength(1);
+    state.updateStatus = 200;
+    await page.getByRole('button', { name: '保存修改', exact: true }).click();
+    await expect(page.getByText('个人资料已保存', { exact: true })).toBeVisible();
+    expect(writes(requests).at(-1)?.body).toEqual({
+      avatarUrl: 'https://avatars.example.test/avatar.png',
+      bio: '联调后的个人简介',
+    });
+    await page.reload();
+    await page.getByRole('tab', { name: '个人资料', exact: true }).click();
     await expect(
       page
-        .getByRole('complementary', { name: '个人资料摘要', exact: true })
-        .getByText(fixtureUser.idCardNo!, { exact: true }),
+        .getByRole('tabpanel', { name: '个人资料', exact: true })
+        .getByText('联调后的个人简介', { exact: true }),
     ).toBeVisible();
-    await account.click();
-    await page
-      .getByRole('navigation', { name: '账户选项', exact: true })
-      .getByRole('button', { name: '退出登录', exact: true })
-      .click();
-    await expect(page).toHaveURL(/#\/auth$/);
-    await page.reload();
-    await expect(page.getByRole('heading', { name: '登录 / 注册', exact: true })).toBeVisible();
-    expect(requests.filter(({ method }) => method !== 'GET')).toEqual([
-      { path: '/api/v1/auth/logout', method: 'POST', authenticated: true },
-    ]);
+    await editProfile(page);
+    await page.getByRole('button', { name: '保存修改', exact: true }).click();
+    await expect(page.getByText('个人资料没有变化', { exact: true })).toBeVisible();
+    expect(writes(requests)).toHaveLength(2);
+    await editProfile(page);
+    await page.getByRole('button', { name: '清除头像', exact: true }).click();
+    await page.getByRole('button', { name: '保存修改', exact: true }).click();
+    await expect(page.getByText('个人资料已保存', { exact: true })).toBeVisible();
+    expect(writes(requests).at(-1)?.body).toEqual({ avatarUrl: '' });
+    expect(state.user.avatarUrl).toBeNull();
+    expect(requests.some((r) => r.path.includes('/files/'))).toBe(false);
+    expect(requests.every((r) => r.authenticated)).toBe(true);
   });
-
-  test(`个人中心 Web ${mode} 资料与头像模拟保存、校验、取消和刷新恢复，无真实写请求`, async ({
-    page,
-  }) => {
-    const { requests } = await profileBackend(page, origin);
-    await openProfile(page, origin);
-    await exerciseProfilePreview(page);
-    expect(requests.length).toBeGreaterThanOrEqual(2);
-    expect(
-      requests.every(
-        ({ path, method, authenticated }) =>
-          path === '/api/v1/users/me' && method === 'GET' && authenticated,
-      ),
-    ).toBe(true);
-  });
-
-  test(`个人中心 Web ${mode} 概览示例图与组织按数据展示，编辑和改密演示跨视口无横向溢出`, async ({
-    page,
-  }) => {
+  test(`个人中心 ${mode} 改密真实提交且全部会话失效，失败不模拟成功`, async ({ page }) => {
+    if (desktop)
+      await page.addInitScript((apiBaseUrl) => {
+        window.tydeDesktop = { getRuntimeConfig: async () => ({ ok: true, data: { apiBaseUrl } }) };
+      }, origin);
     const { state, requests } = await profileBackend(page, origin);
-    await page.emulateMedia({ reducedMotion: 'reduce' });
     await openProfile(page, origin);
-    await expect(page.getByRole('tab', { name: '概览', exact: true })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
-    const overview = page.getByRole('tabpanel', { name: '概览', exact: true });
-    for (const name of ['考勤与报量', '能力雷达']) {
-      const chart = overview.getByRole('region', { name, exact: true });
-      await expect(chart.getByRole('heading', { name, exact: true })).toBeVisible();
-      await expect(chart.getByText('示例数据', { exact: true })).toBeVisible();
-    }
-    await expect(overview.getByRole('group', { name: /年考勤与报量示例/ })).toBeVisible();
-    await expect(overview.getByRole('img', { name: /能力雷达示例/ })).toBeVisible();
-    for (const name of ['项目', '个人日志', '标签']) {
-      await expect(page.getByRole('heading', { name, exact: true })).toHaveCount(0);
-      await expect(page.getByRole('tab', { name, exact: true })).toHaveCount(0);
-    }
-    await expect(page.getByRole('button', { name: /^(关注|联系|发消息|社交)$/ })).toHaveCount(0);
-    await expect(page.getByRole('region', { name: '所属组织', exact: true })).toHaveCount(0);
-    const summary = page.getByRole('complementary', { name: '个人资料摘要', exact: true });
-    for (const value of [
-      fixtureUser.nickname,
-      fixtureUser.realName,
-      fixtureUser.phone,
-      fixtureUser.uid,
-      '执行专家',
-    ])
-      await expect(summary.getByText(value, { exact: true })).toBeVisible();
-    for (const viewport of [
-      { width: 1280, height: 720 },
-      { width: 375, height: 812 },
-      { width: 812, height: 375 },
-    ]) {
-      await page.setViewportSize(viewport);
-      await page.getByRole('tab', { name: '概览', exact: true }).click();
-      await page.evaluate(() => window.scrollTo(0, 0));
-      await expect(
-        page.getByRole('tablist', { name: '个人中心设置', exact: true }),
-      ).toHaveAttribute('aria-orientation', 'horizontal');
-      expect(
-        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
-      ).toBe(true);
-      await mkdir('artifacts', { recursive: true });
-      await page.screenshot({
-        path: `artifacts/profile-overview-${mode}-${viewport.width}.png`,
-        fullPage: true,
-        animations: 'disabled',
-      });
-      if (mode === '生产' && viewport.width !== 812) {
-        await page
-          .getByRole('heading', { level: 1, name: fixtureUser.nickname, exact: true })
-          .click();
-        await page.evaluate(() => window.scrollTo(0, 0));
-        await page.screenshot({
-          path: `artifacts/profile-overview-final-${viewport.width}.png`,
-          fullPage: true,
-          animations: 'disabled',
-        });
-      }
-      await editProfile(page);
-      await expect(page.getByLabel('身份证号', { exact: true })).toHaveCSS(
-        'height',
-        viewport.width > 640 ? '40px' : '44px',
-      );
-      expect(
-        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
-      ).toBe(true);
-      await page.evaluate(() => window.scrollTo(0, 0));
-      await page.screenshot({
-        path: `artifacts/profile-preview-${mode}-${viewport.width}-edit.png`,
-        fullPage: true,
-        animations: 'disabled',
-      });
-      await page.getByRole('button', { name: '取消', exact: true }).click();
-      await page.getByRole('tab', { name: '账户安全', exact: true }).click();
-      for (const control of [
-        page.getByLabel(/^新密码\s*\*?\s*$/),
-        page.getByLabel(/^确认新密码\s*\*?\s*$/),
-        page.getByRole('button', { name: '更新密码', exact: true }),
-      ])
-        await expect(control).toHaveCSS('height', viewport.width > 640 ? '40px' : '44px');
-      expect(
-        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
-      ).toBe(true);
-      await page.evaluate(() => window.scrollTo(0, 0));
-      await page.screenshot({
-        path: `artifacts/profile-preview-${mode}-${viewport.width}-security.png`,
-        fullPage: true,
-        animations: 'disabled',
-      });
-      await page.getByRole('tab', { name: '个人资料', exact: true }).click();
-    }
     await page.getByRole('tab', { name: '账户安全', exact: true }).click();
+    await expect(
+      page.getByText('修改成功后，全部设备需重新登录，包括当前设备。', { exact: true }),
+    ).toBeVisible();
     const password = page.getByLabel(/^新密码\s*\*?\s*$/);
     const confirmation = page.getByLabel(/^确认新密码\s*\*?\s*$/);
-    const submit = page.getByRole('button', { name: '更新密码', exact: true });
-    await password.fill('short');
-    await confirmation.fill('short');
-    await submit.click();
-    await expect(
-      page.getByText('请输入 8～64 位字母、数字及允许的特殊字符，不能含空格或中文', {
-        exact: true,
-      }),
-    ).toBeVisible();
     await password.fill('NewPassword123!');
     await confirmation.fill('Different123!');
-    await submit.click();
+    await page.getByRole('button', { name: '更新密码', exact: true }).click();
     await expect(page.getByText('两次输入的新密码不一致', { exact: true })).toBeVisible();
+    expect(writes(requests)).toHaveLength(0);
     await confirmation.fill('NewPassword123!');
-    await submit.click();
-    await expect(page.getByText('已模拟修改，实际登录密码未改变', { exact: true })).toBeVisible();
-    await expect(password).toHaveValue('');
-    await expect(confirmation).toHaveValue('');
+    state.updateStatus = 503;
+    await page.getByRole('button', { name: '更新密码', exact: true }).click();
+    await expect(page.getByText('资料服务暂不可用', { exact: true })).toBeVisible();
+    await expect(password).toHaveValue('NewPassword123!');
+    expect(writes(requests)).toHaveLength(1);
+    state.updateStatus = 200;
+    await page.getByRole('button', { name: '更新密码', exact: true }).click();
+    await expect(page).toHaveURL(/#\/auth$/);
+    await expect(
+      page.getByText('密码修改成功，全部设备需重新登录。', { exact: true }),
+    ).toBeVisible();
+    expect(writes(requests).at(-1)?.body).toEqual({
+      newPassword: 'NewPassword123!',
+      confirmNewPassword: 'NewPassword123!',
+    });
+    expect(state.signedIn).toBe(false);
+    await page.goto(`${origin}/#/profile`);
+    await expect(page).toHaveURL(/#\/auth$/);
+    expect(writes(requests)).toHaveLength(2);
+  });
+  test(`个人中心 ${mode} 组织只读查询、权限隔离及失败重试`, async ({ page }) => {
+    if (desktop)
+      await page.addInitScript((apiBaseUrl) => {
+        window.tydeDesktop = { getRuntimeConfig: async () => ({ ok: true, data: { apiBaseUrl } }) };
+      }, origin);
+    const { state, requests } = await profileBackend(page, origin);
     state.user.organization = {
-      name: '潮汐协作组',
-      position: 'ADMIN',
-      description: '协作组的现有介绍',
+      ...organization,
+      description: '当前用户返回的组织摘要',
+      joinStatus: 'ACTIVE',
+    };
+    state.orgStatus = 403;
+    await openProfile(page, origin);
+    const org = page.getByRole('region', { name: '所属组织', exact: true });
+    await expect(org.getByText('当前用户返回的组织摘要', { exact: true })).toBeVisible();
+    await expect(org.getByText(/组织详情未加载/)).toBeVisible();
+    expect(requests.filter((r) => r.path === '/api/v1/organizations')).toHaveLength(1);
+    state.orgStatus = 200;
+    await org.getByRole('button', { name: '重新读取组织信息', exact: true }).click();
+    await expect(org.getByText(organization.description!, { exact: true })).toBeVisible();
+    state.user.organization = {
+      ...organization,
+      position: 'MEMBER',
+      joinStatus: 'ACTIVE',
+      description: '普通成员可见摘要',
     };
     await page.reload();
-    const organization = page.getByRole('region', { name: '所属组织', exact: true });
-    await expect(organization.getByText('潮汐协作组', { exact: true })).toBeVisible();
-    await expect(organization.getByText('管理员', { exact: true })).toBeVisible();
-    await expect(organization.getByText('协作组的现有介绍', { exact: true })).toBeVisible();
-    await expect(organization.getByLabel('组织领域', { exact: true })).toHaveCount(0);
-    expect(
-      requests.every(({ path, method }) => path === '/api/v1/users/me' && method === 'GET'),
-    ).toBe(true);
+    await expect(org.getByText('普通成员可见摘要', { exact: true })).toBeVisible();
+    expect(requests.filter((r) => r.path === '/api/v1/organizations')).toHaveLength(2);
+    expect(requests.every((r) => r.method === 'GET')).toBe(true);
   });
 }
 
-test('个人中心 Electron 运行配置适配使用相同本地资料演示，不发送业务写请求', async ({ page }) => {
+test('个人中心登录保护、概览与资料表单在桌面和手机无横向溢出', async ({ page }) => {
   const origin = 'http://127.0.0.1:5176';
-  const { requests } = await profileBackend(page, origin);
-  await page.addInitScript((apiBaseUrl) => {
-    window.tydeDesktop = {
-      getRuntimeConfig: async () => ({ ok: true, data: { apiBaseUrl } }),
-    };
-  }, origin);
+  const { signIn } = await profileBackend(page, origin, false);
+  await page.goto(`${origin}/#/profile`);
+  await expect(page).toHaveURL(/#\/auth$/);
+  await signIn();
+  await page.reload();
   await openProfile(page, origin);
-  await exerciseProfilePreview(page);
-  await page.getByRole('tab', { name: '账户安全', exact: true }).click();
-  await page.getByLabel(/^新密码\s*\*?\s*$/).fill('NewPassword123!');
-  await page.getByLabel(/^确认新密码\s*\*?\s*$/).fill('NewPassword123!');
-  await page.getByRole('button', { name: '更新密码', exact: true }).click();
-  await expect(page.getByText('已模拟修改，实际登录密码未改变', { exact: true })).toBeVisible();
-  expect(
-    requests.every(
-      ({ path, method, authenticated }) =>
-        path === '/api/v1/users/me' && method === 'GET' && authenticated,
-    ),
-  ).toBe(true);
+  for (const viewport of [
+    { width: 1280, height: 720 },
+    { width: 375, height: 812 },
+    { width: 812, height: 375 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.getByRole('tab', { name: '概览', exact: true }).click();
+    await expect(page.getByText('示例数据', { exact: true })).toHaveCount(2);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(
+      true,
+    );
+    await editProfile(page);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(
+      true,
+    );
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+  }
 });

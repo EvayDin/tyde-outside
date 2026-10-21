@@ -4,6 +4,8 @@ import {
   type AuthApi,
   type ApiFailure,
   type AuthUser,
+  type OrganizationDetail,
+  type UserProfileUpdateInput,
   type RegistrationRequired,
   type VerifyResult,
 } from '@tyde/shared';
@@ -169,6 +171,38 @@ export function createHttpAuth(
       invalidResponse();
     return value as unknown as AuthUser;
   }
+  function organization(value: unknown): OrganizationDetail {
+    if (
+      !record(value) ||
+      !['id', 'name', 'createdAt'].every((key) => typeof value[key] === 'string') ||
+      !['unifiedCreditCode', 'description', 'businessLicenseUrl', 'logoUrl'].every(
+        (key) => value[key] === null || typeof value[key] === 'string',
+      ) ||
+      !Array.isArray(value.expertiseTags) ||
+      !value.expertiseTags.every((tag) => typeof tag === 'string') ||
+      !['PENDING', 'APPROVED', 'REJECTED'].includes(value.verifyStatus as string) ||
+      !['ACTIVE', 'FROZEN', 'DISSOLVED'].includes(value.status as string) ||
+      !['OWNER', 'ADMIN', 'MEMBER'].includes(value.position as string)
+    )
+      invalidResponse();
+    return value as unknown as OrganizationDetail;
+  }
+  function updateProfile(input: UserProfileUpdateInput): Promise<AuthUser> {
+    if (input.newPassword == null)
+      return request('/users/me/update', input, 'POST', true).then(user);
+    const current = generation;
+    return changeSession(async () => {
+      await refreshing?.catch(() => undefined);
+      if (current !== generation)
+        throw new ApiError(401, { code: 'SESSION_CHANGED', message: '登录状态已变化，请重新登录' });
+      const data = await request('/users/me/update', input, 'POST', true);
+      // 改密已由后端撤销全部会话；使迟到查询/刷新失效，再允许后续登录。
+      generation++;
+      refreshToken = undefined;
+      await refreshing?.catch(() => undefined);
+      return user(data);
+    });
+  }
   async function authenticate(path: string, body: unknown): Promise<VerifyResult> {
     const current = ++generation;
     refreshToken = undefined;
@@ -233,6 +267,14 @@ export function createHttpAuth(
     verifyCode: (input) => authenticate('/auth/sms/login', input),
     completeRegistration: async (input) => user(await request('/auth/register', input)),
     getCurrentUser: async () => user(await request('/users/me', undefined, 'GET', true)),
+    updateProfile,
+    changePassword: async (newPassword, confirmNewPassword) => {
+      await updateProfile({ newPassword, confirmNewPassword });
+    },
+    getOrganization: async (orgId) =>
+      organization(
+        await request(`/organizations?${new URLSearchParams({ orgId })}`, undefined, 'GET', true),
+      ),
     logout: async () => {
       generation++;
       refreshToken = undefined;
