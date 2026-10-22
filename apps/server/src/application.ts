@@ -1,3 +1,6 @@
+import { ProjectRecruitmentService } from './modules/projects/project-recruitment.service.js';
+import { ProjectRecruitmentHandlerService } from './modules/projects/project-recruitment-handler.service.js';
+import { ProjectMaterialsService } from './modules/projects/project-materials.service.js';
 import { examAutoCallbackRoutes } from './modules/entrance-exams/exam-auto.routes.js';
 import { ExamAutoService } from './modules/entrance-exams/exam-auto.service.js';
 import { ExamQueryService } from './modules/entrance-exams/exam-query.service.js';
@@ -156,6 +159,9 @@ export async function createApp(
     new ProjectProductionPlanService(db),
     new ProjectQueryService(db),
     new ProjectListService(db),
+    new ProjectMaterialsService(db, files),
+    new ProjectRecruitmentHandlerService(db),
+    new ProjectRecruitmentService(db),
   );
   app.get(
     `${API_PREFIX}/health/live`,
