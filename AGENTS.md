@@ -6,6 +6,8 @@
 
 > 供 Codex 开发新需求时快速定位。按当前实现整理，架构或模块入口变化时同步更新本文。
 
+> 本次本地合并说明（2026-10-22）：后端、shared 认证 DTO 与数据库迁移文件原样同步远端 main；本地 Web/Electron 组织管理、角色视图、个人中心只读业务及头像上传改动保留为未提交。客户端已接入真实会话角色切换与独立组织创建，多组织选择与考试管理接口尚未接入，不将后端历史验收视为本轮前端联调通过。本次未执行数据库操作。
+
 ## 仓库与提交的强制约束
 
 - 严禁在仓库内容或提交内容中包含任何前雇主或第三方组织的非公开信息，以及用户明确禁止出现的组织名称或相关标识。约束文档本身同样适用，不得记录这些名称、标识或其编码形式。
@@ -21,13 +23,19 @@ pnpm Workspace Monorepo，TypeScript + ESM，3 个应用、3 个共享包。
 Web 与 Electron 共用一份 React 前端，连接 Fastify 后端；后端是按业务模块组织的单体。后端部署包包含 Web，由 Fastify 统一托管页面与 API；Vercel 使用现有后端项目统一发布。本地仍可分别启动。
 当前前端：认证入口提供“验证码登录 / 密码登录”双页签，默认验证码登录；认证接口通过平台适配访问现有后端。短信登录按后端结果区分已有账号与待注册账号；待注册账号在内存中携带手机号、一次性注册凭证进入个人资料页，注册成功后返回密码登录。登录、注册页不主动查询当前用户；工作台与个人中心启动时查询。开发与生产均查询真实当前用户，不再叠加固定用户预览；认证写请求和退出仍访问后端，失败不回退为模拟成功。后端现有能力：密码/短信登录、统一注册及登录后独立创建组织、当前会话角色切换、一次性注册凭证、刷新令牌、密码重置、退出、昵称查重、当前用户资料更新，以及上传台账和 OSS 文件接口。真实短信尚未接入；验证规则由后端管理，固定测试码统一定义在 shared 的 `MOCK_SMS_CODE`，后端 `MOCK_CODE` 与前端展示共用该值；页面不另行定义验证码，只在真实发码成功后保留服务端提示并展示测试码，已含验证码时不重复追加。
 
-登录后工作台 `/` 与个人中心 `/profile` 共用 `layouts/WorkspaceLayout.tsx` 顶栏及账户菜单。个人中心分为概览、个人资料与账户安全，默认概览；资料通过 GET `/users/me` 读取，变更字段通过 POST `/users/me/update` 真实保存。头像仅设置/清除 HTTPS 图片地址，现有后端未完成头像上传认领与生命周期，因此不提供本地图片上传。简介最多 1000 字符，身份证不回填脱敏值、留空保留，已认证不可修改；昵称、姓名与手机号只读。改密使用同一真实接口，成功撤销全部会话，清空客户端缓存并回到密码登录；失败保留表单，不模拟成功或自动重放写入。`ProfileOrganization.tsx` 仅为有效组织主管/管理员查询 GET `/organizations`，普通成员显示会话中的真实摘要；失败明确显示详情未加载及只读重试。本次不接组织编辑、成员管理或审批操作。工作台尚未接入项目、排班和申请业务。
+登录后工作台 `/` 与个人中心 `/profile` 共用 `layouts/WorkspaceLayout.tsx` 顶栏及账户菜单。个人中心的资料与账户安全由三种会话角色共用，执行专家额外提供概览业务区，领航员/策略官默认个人资料；资料通过 GET `/users/me` 读取，变更字段通过 POST `/users/me/update` 真实保存。头像编辑集中在同一区域：圆形预览旁提供更换/清除，隐藏原生文件输入；HTTPS 图片链接作为默认收起的备选方式。头像支持本地图片及 HTTPS 图片地址：本地选图先用临时 blob 预览，保存时以 AVATAR 上传并使用 objectKey/avatarUploadToken 调用现有资料接口认领；失败保留草稿与已取得的内存凭证，手动重试不重复上传，取消/换图/清除释放本地预览。支持 JPG/PNG/GIF/BMP/WebP，最大 10 MiB，实际类型/内容/大小仍由后端校验；凭证不持久化。简介最多 1000 字符，身份证不回填脱敏值、留空保留，已认证不可修改；昵称、姓名与手机号只读。改密使用同一真实接口，成功撤销全部会话，清空客户端缓存并回到密码登录；失败保留表单，不模拟成功或自动重放写入。`ProfileOrganization.tsx` 仅为有效组织主管/管理员查询 GET `/organizations`，普通成员显示会话中的真实摘要；失败明确显示详情未加载及只读重试。组织管理已在独立 `/organization` 接入。工作台尚未接入项目、排班和申请业务；个人中心专家概览通过 main 既有接口读取本人项目/分配详情、月考勤/节假日及本人申请，暂不扩展排班写流程。
 
-工作台顶栏高 64px，账户菜单保留 44px 点击区域。个人中心不单独显示“个人中心”标题，内容距顶栏 16px，昵称作为页面主标题，工作台沿用原内容间距。个人中心为最大 1200px 的个人主页布局：桌面左侧 248px 资料栏展示大圆头像、已有个人资料及有数据时的当前组织，右侧使用横向概览/资料/安全导航；手机为上下排列。`modules/profile/ProfileCharts.tsx` 提供标注“示例数据”的考勤/报量热力图与能力雷达，未来日期不编造报量；项目、个人日志、个人标签及社交功能尚未接入，整块隐藏。按钮使用公共 `settings` / `account` 尺寸；全局根字号为 12px，相关布局使用明确 px。
+工作台顶栏高 64px，账户菜单保留 44px 点击区域。个人中心不单独显示“个人中心”标题，内容距顶栏 16px，昵称作为页面主标题，工作台沿用原内容间距。个人中心为最大 1200px 的个人主页布局：桌面左侧 248px 资料栏展示大圆头像、已有个人资料及有数据时的当前组织，右侧使用横向概览/资料/安全导航；手机为上下排列。`modules/profile/ProfileExpertContent.tsx` 仅在执行专家视图且真实身份含 EXPERT 时挂载，提供我的项目、排班考勤、组织与申请三个只读业务页签，仅读取活动页签数据；数据以服务端当前账号范围为准，按账号/组织/筛选隔离缓存。已移除历史示例热力图和雷达；个人日志、标签及社交功能尚未接入，整块隐藏。按钮使用公共 `settings` / `account` 尺寸；全局根字号为 12px，相关布局使用明确 px。
 
 技术栈：Node.js 24、pnpm 11、React 19、Vite、Tailwind CSS 4、shadcn/ui、React Query、TanStack Router、React Hook Form、Electron 38、Fastify 5、Prisma 6、PostgreSQL。精确版本见各 `package.json` 与 `pnpm-lock.yaml`。
 
+组织管理位于 `modules/organizations/`，Web/Electron 共用 `/organization`。仅当前真实会话角色 EXPERT 在顶栏、工作台、账户菜单与个人中心展示组织入口；非 EXPERT 直接访问组织及创建路由返回工作台。有效主管/管理员进入“组织管理”，普通成员查看真实摘要与本人退出，无组织账户展示创建入口且不查询组织详情。`/organization/create` 复用 main 的 `POST /organizations`，名称必填，信用代码、简介、Logo 地址、领域标签及营业执照可选；营业执照先以 BUSINESS_LICENSE 上传并在创建时认领，失败保留表单与内存凭证且不自动重放。创建只允许真实会话角色 EXPERT，其他角色须先通过公共顶栏或窄屏账户菜单切换后进入。成功读取当前用户并进入组织管理，资料读取失败保留已创建结果供手动重试。现阶段仍按单数组织摘要导航，已有组织账户不开放再次创建入口。主管/管理员可查询资料、筛选分页成员、版本编辑、按权限变更角色/转让、退出或移除、待办/审批记录及批量导入。名称/信用代码等只读，仅 ACTIVE 主管更新简介与 HTTPS Logo 地址，不做本地 Logo 上传。写入失败保留草稿，版本冲突提示重读，不自动重放；退出/导入同草稿手动重试复用幂等键，修改内容使用新键；导入 HTTP400 保留完整行错误。审批当前固定筛选 `ORG_MEMBER_EXIT`，考勤接口虽已由 main 提供但尚未接入此面板。请求沿用页面 fetch/Cookie，IPC 仍只返回公开配置；后端、Prisma 模型及迁移以远端 main 为准，不自行修改。多组织选择及退出详情修改/撤回仍是接口缺口。到期退出与项目联动以后端实际状态为准。
+
+当前角色由 GET `/users/me` 的 `selectedRole ?? role` 提供，`WorkspaceViewProvider` 不再保存本地模拟角色。公共顶栏及窄屏账户菜单按后端 `roles` 提供执行专家/领航员/策略官，通过现有 POST `/auth/switch-role` 切换当前会话；成功后取消旧查询并清除业务缓存，按响应同步会话角色，再读取完整本人资料。切换处理中禁用选择，失败显示错误、保留原角色，不自动重放写入；读取完整资料失败也不重复已成功的切换。刷新恢复服务端当前会话角色，跨工作台与个人中心导航保留，共用个人资料草稿及内存上传凭证不因角色切换丢失。组织管理、我的组织及创建入口和页面仅当前 EXPERT 可见，组织页切到其他角色返回工作台。领航员/策略官工作台未接入，明确展示空状态；业务权限仍由服务端按真实会话及业务关系校验，不使用角色请求头。
+
 ## 模块边界与入口
+
+组织管理界面由 `OrganizationPage.tsx` 提供横向组织摘要与全宽工作区；`OrganizationMembers.tsx` 使用常用筛选工具栏、可折叠高级筛选和七列表格，成员身份/联系方式与入离组时间聚合，右侧操作列固定。`OrganizationApprovals.tsx` 使用同一面板风格和结构化审批卡片。筛选仍使用后端既有参数并在服务端分页，折叠后保留已应用数量；不引入当前页过滤或推造统计。
 
 | 路径                                    | 职责与关键入口                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -46,7 +54,9 @@ Web 与 Electron 共用一份 React 前端，连接 Fastify 后端；后端是�
 | `packages/config`                       | 共用 TypeScript / ESLint 配置                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `scripts/`、`deploy/`                   | 本地数据库、验证、打包脚本及 Nginx / systemd 部署模板                                                                                                                                                                                                                                                                                                                                                                              |
 
-04模块：`apps/server/src/modules/management/management.service.ts`按独立授权校验NAVIGATOR/PM，`src/management-grants.ts`供运维维护授权及审计，无授权HTTP。`modules/projects/project-foundation.*`接入分类/需求方回填；`project-creation.service/types/schema.ts`、`project-requester.ts`、`project-time.ts`及`project-attachments.ts`接入草稿发布、本人需求方解析、上海时间和同事务附件同步，由`application.ts`装配。第8迁移授权/字典已有80项集成通过；第9迁移`20261019060000_project_drafts`新增Project/ProjectCategoryRelation/ProjectAttachment，专用库结构已就绪（用户91项集成88通过/3失败）；剩余附件认领500需第10迁移`20261019070000_file_business_identifiers`将UploadedFile.claimedBizId从UUID改为VARCHAR(64)，保留组织UUID和数值项目ID文本，用户回传2026-10-19 18:18:48运行92项集成全部通过（总36.64秒），第9/10专用库结构及附件修复已验证，迁移历史未另查，开发/部署仍待验收。草稿/发布按旧代码只要求有效登录和本人范围，不修改EXPERT注册登录；已认领项目附件仅接回有NAVIGATOR授权的创建人读取，PM读取已在后续批次接回并通过专用库集成，专家/考试仍待回补。成员表基础已在后续批次接入（118项专用库集成已通过），成员写流程及完整卡片尚未实现；生产计划已在后续本批接入（110项专用库集成已通过）；任职/管理主线任务和PENDING事件已在后续本批接入代码，详见[项目草稿与发布](docs/PROJECT_CREATION.md)。
+以下 04 模块及其后续批次为历史实现与验证记录；当前三角色与组织授权以文首统一账号说明及 `docs/UNIFIED_ACCOUNTS.md` 为准，不继续使用历史 ManagementGrant 策略。
+
+04模块：`apps/server/src/modules/management/management.service.ts`历史上按独立授权校验NAVIGATOR/PM，`src/management-grants.ts`供运维维护授权及审计，无授权HTTP。`modules/projects/project-foundation.*`接入分类/需求方回填；`project-creation.service/types/schema.ts`、`project-requester.ts`、`project-time.ts`及`project-attachments.ts`接入草稿发布、本人需求方解析、上海时间和同事务附件同步，由`application.ts`装配。第8迁移授权/字典已有80项集成通过；第9迁移`20261019060000_project_drafts`新增Project/ProjectCategoryRelation/ProjectAttachment，专用库结构已就绪（用户91项集成88通过/3失败）；剩余附件认领500需第10迁移`20261019070000_file_business_identifiers`将UploadedFile.claimedBizId从UUID改为VARCHAR(64)，保留组织UUID和数值项目ID文本，用户回传2026-10-19 18:18:48运行92项集成全部通过（总36.64秒），第9/10专用库结构及附件修复已验证，迁移历史未另查，开发/部署仍待验收。草稿/发布按旧代码只要求有效登录和本人范围，不修改EXPERT注册登录；已认领项目附件仅接回有NAVIGATOR授权的创建人读取，PM读取已在后续批次接回并通过专用库集成，专家/考试仍待回补。成员表基础已在后续批次接入（118项专用库集成已通过），成员写流程及完整卡片尚未实现；生产计划已在后续本批接入（110项专用库集成已通过）；任职/管理主线任务和PENDING事件已在后续本批接入代码，详见[项目草稿与发布](docs/PROJECT_CREATION.md)。
 
 04策略官入口：路由由现有`project-foundation.routes.ts`统一注册，`project-manager.service/schema.ts`接候选/招募，`project-task-rounds.ts`采集管理主线并在项目锁事务中结算轮次、记录ProjectEventOutbox PENDING事实。第11迁移`20261019080000_project_managers`新增ProjectManagerRecruitment/ProjectTaskRound/ProjectEventOutbox及User.creditScore，所需专用库结构已就绪，用户2026-10-20回传102项集成全部通过（总41.38秒），迁移历史未另查；248项单测已通过。本批也接回API-011的独立PM授权+当前主策略官/协作负责人读取。项目卡片聚合/成员清退、支线采集及真实投递仍待后续接入，见[策略官与任务基础](docs/PROJECT_MANAGERS.md)。
 
@@ -60,20 +70,20 @@ React 页面 → services/api → packages/platform
   Electron → 页面 fetch 可信 API 源（独立持久 Cookie）          ┴→ Fastify 路由 → Service → Prisma → PostgreSQL
 ```
 
-- API 前缀 `/api/v1`。当前后端认证接口：POST `/auth/sms/send`、`/auth/register`、`/auth/login`、`/auth/sms/login`、`/auth/refresh`、`/auth/password/reset`、`/auth/logout`；GET `/users/me`、`/users/nickname/check`；POST `/users/me/update`。健康检查：GET `/health/live`、`/health/ready`。
-- main 已提供本人资料更新，注册昵称全局唯一；头像 URL、简介、实名状态与更新人持久化，更新密码会撤销全部会话。个人中心暂未接入这些真实写操作，仍使用上文客户端内存演示。资料接口已补头像台账：AVATAR须登录上传，avatarUrl=objectKey配合avatarUploadToken认领，保存展示URL、替换/清空释放旧头像均与资料同事务；历史外部URL兼容保留，头像字段不授予敏感文件读取权限；登录态改密后保留当前会话的语义仍不具备。
-- 后端认证使用 `code/message/data` 包装；注册返回用户资料，已注册登录返回 `accessToken/refreshToken/tokenType/expiresIn`；未注册手机号短信登录返回 `status=registration_required/registrationToken/expiresAt`，填写资料后使用凭证注册（10 分钟有效，与注册验证码二选一），不提前创建用户或会话。`role/roles` 可省略，服务端固定为 EXPERT；个人/组织账号类型使用 `accountType`。
-- 后端会话使用随机不透明令牌，数据库仅存摘要，默认 30 天。刷新令牌轮换；Web 与桌面会话独立，退出撤销当前会话，重置密码撤销全部会话。
+- API 前缀 `/api/v1`。当前后端认证接口：POST `/auth/sms/send`、`/auth/register`、`/auth/login`、`/auth/sms/login`、`/auth/refresh`、`/auth/password/reset`、`/auth/logout`、`/auth/switch-role`；GET `/users/me`、`/users/nickname/check`；POST `/users/me/update`，登录后可 POST `/organizations` 独立创建组织。当前客户端已接入真实角色切换与组织创建，多组织选择尚未接入。健康检查：GET `/health/live`、`/health/ready`。
+- main 已提供本人资料更新，注册昵称全局唯一；头像 URL、简介、实名状态与更新人持久化，更新密码会撤销全部会话。个人中心已接入既有资料与改密写操作，失败保留草稿，不模拟成功。资料接口已补头像台账：AVATAR须登录上传，avatarUrl=objectKey配合avatarUploadToken认领，保存展示URL、替换/清空释放旧头像均与资料同事务；历史外部URL兼容保留，头像字段不授予敏感文件读取权限；登录态改密后保留当前会话的语义仍不具备。
+- 后端认证使用 `code/message/data` 包装；注册返回用户资料，已注册登录返回 `accessToken/refreshToken/tokenType/expiresIn`；未注册手机号短信登录返回 `status=registration_required/registrationToken/expiresAt`，填写资料后使用凭证注册（10 分钟有效，与注册验证码二选一），不提前创建用户或会话。统一账号注册自动具备 NAVIGATOR/PM/EXPERT，注册不创建组织；`accountType` 仅兼容 INDIVIDUAL，`roles` 输入兼容忽略。登录省略 `role` 默认 EXPERT，也可提交三种业务角色；OPS 不开放。`role` 为真实会话角色，`selectedRole` 在注册响应为 null、查询/更新时为当前角色，`roles` 返回三角色；本人资料新增 `organizations` 数组。当前注册页面仍提交兼容的 `accountType=INDIVIDUAL` 和个人字段，不提供组织创建或真实角色切换。
+- 后端会话使用随机不透明令牌，数据库仅存摘要，默认 30 天。`Session.selectedRole` 保存当前会话角色，`POST /auth/switch-role` 只更新本会话，不换令牌、不影响其他会话，刷新轮换保留角色；不根据客户端请求头授权。Web 与桌面会话独立，退出撤销当前会话，重置密码撤销全部会话。
 - Web 使用 HttpOnly、SameSite=Lax Cookie 与来源校验；远程环境要求 HTTPS + Secure Cookie。可信桌面来源使用 SameSite=None+Secure Cookie、精确凭据 CORS 与 OPTIONS，DESKTOP_ORIGINS 默认 tyde-app://app，开发回环源须显式配置。Chromium 按 API 源隔离持久 Cookie；非浏览器客户端继续使用原有 Bearer 契约及来源限制。
 - 前端平台适配使用上述后端路径及 `code/message/data` 包装。两端页面通过 fetch 使用 HttpOnly 会话 Cookie，登录 JSON 仍包含令牌对；刷新令牌只留在适配器内存，不写页面存储。GET/HEAD 不加自定义客户端头以避免额外预检，写请求使用 X-Tyde-Client: web；IPC 仅返回公开运行配置，不处理认证或业务 HTTP。认证请求遇到 401 最多尝试一次刷新及重试，同一轮刷新合并并发请求；退出不能被晚到刷新重新登录。
-- Web 与 Electron 开发/安装包 F12 Network 可查看真实业务 HTTP。Electron 保持 sandbox/contextIsolation/webSecurity，页面不能调用通用 IPC HTTP、文件系统或完整 ipcRenderer。
+- Web 与 Electron 开发/安装包 F12 Network 可查看真实业务 HTTP。Electron 保持 sandbox/contextIsolation/webSecurity，页面不能调用通用 IPC HTTP、文件系统或完整 ipcRenderer。安装包 CSP 的 img-src 允许 HTTPS 头像与本地 blob 预览，业务 connect-src 仍只允许可信 API 源。
 - 数据表：`User`、`Organization`、`VerificationChallenge`、`RegistrationGrant`、`Session`、`AuthRateLimit`、`UploadedFile`、`UserOrgRel`、`ApprovalProcess`、`ApprovalConfig`、`ApprovalFlow`、`ApprovalNode`、`ApprovalActionLog`、`OrganizationDeparture`、`MemberImportReceipt`。`RegistrationGrant` 复用于一次性注册凭证并保留历史数据，新凭证摘要带用途隔离。验证码消费、注册、刷新与重置依赖事务和数据库锁。
 - 03已接入组织资料、成员列表/编辑/角色接口；`UserOrgRel`是组织权限来源，版本条件更新与角色转让在组织行锁事务内。认证资料从有效多组织关系中选OWNER优先/最早加入的组织，营业执照也按指定组织成员关系授权。`hasExpertManagementRole`当前仅实现OWNER分支，组织项目负责人待07。成员列表项目统计/筛选已在04回补代码（2026-10-21），按userOrgRelId下ACTIVE行计数，无关联0；projectId为32位JSON整数，筛选在分页前生效，当前页批量统计。278项单测通过，用户2026-10-21回传122项集成全部通过（总54.60秒），原测试库阻塞解除，无新增迁移。`20261019020000_organization_memberships`已应用专用测试库，第6个迁移20261019030000_approvals也已应用专用库；既有203项单测通过（本次未重跑）；用户已应用第7迁移20261019040000_member_imports至专用测试库，2026-10-19 16:26:59复跑74项集成全部通过（总23.77秒），03已交接04；用户随后也已在开发库应用全部7个迁移；部署库迁移和兼容验收仍待完成。
 - 退出/审批API-021—024已接入，流程/节点双版本与成员/日志同事务；主管转让不自动转派已有待办。LEFT同事务写OrganizationDeparture PENDING记录，项目清退/负责人/人员变动/事件待04/07/12/14，API-021/024保留部分迁移。到期组织离职命令为 `pnpm --filter @tyde/server organizations:departures`，部署用编译入口dist/organizations-departures.js；每日上海零点调度未配置。
 - 成员模板GET `/organizations/member-imports/template`和multipart导入POST `/organizations/member-imports/generate`已接入：SheetJS官方0.20.3支持XLS/XLSX，CSV/文本支持旧字段与中文/英文值；最多500人、全量错误HTTP400保留data。MemberImportReceipt提供24小时事务幂等，新增迁移20261019040000_member_imports已由用户应用专用测试库，74项集成复测全部通过，当前入口已交接04；开发库也已由用户迁移，部署库尚待迁移。导入/登录锁顺序为手机号升序→组织升序→关系；首次密码/SMS成功登录条件激活并版本+1，失败回滚且不发令牌，刷新/重置不激活。
-- 组织注册营业执照通过上传台账一次性认领，与验证码消费、组织和用户创建同事务；`businessLicenseUrl` 返回 objectKey，未提交为 null。文件存储默认关闭；启用 OSS 时服务端读写使用 `OSS_ENDPOINT`，客户端下载使用 `OSS_PUBLIC_ENDPOINT`，对象统一设为私有且禁止覆盖。独立存储验证命令：`pnpm --filter @tyde/server storage:verify`。已认领项目附件仅接回有NAVIGATOR授权的创建人读取；PM主策略官/协作负责人读取代码已在本批接回（102项专用库集成已通过），专家及考试附件仍待回补。详情见 `docs/API.md`、`docs/AUTH_BACKEND.md` 与部署说明。
+- 登录后独立创建组织时，营业执照通过上传台账一次性认领，与组织和本人 OWNER 关系创建同事务；账号注册不创建组织。`businessLicenseUrl` 返回 objectKey，未提交为 null。文件存储默认关闭；启用 OSS 时服务端读写使用 `OSS_ENDPOINT`，客户端下载使用 `OSS_PUBLIC_ENDPOINT`，对象统一设为私有且禁止覆盖。独立存储验证命令：`pnpm --filter @tyde/server storage:verify`。已认领项目附件仅接回有NAVIGATOR授权的创建人读取；PM主策略官/协作负责人读取代码已在本批接回（102项专用库集成已通过），专家及考试附件仍待回补。详情见 `docs/API.md`、`docs/AUTH_BACKEND.md` 与部署说明。
 
-- 本次同步保留 main 的 `20261019010000_user_profile`、`20261019020000_organization_memberships`、`20261019030000_approvals`、`20261019040000_member_imports` 四项迁移文件；仅同步源码不执行数据库迁移，部署或联调须另行确认目标库已应用。
+- 当前后端源码、shared 认证 DTO、Prisma 模型和迁移以 `origin/main@0e88da7` 为准。本次仅合并源码，新增迁移文件未执行，未连接或修改数据库。此前“开发库 16 项迁移已核对”仅为 2026-10-21 的历史记录，不代表已核对本次新增的第 17—19 项迁移或当前目标库状态。后续 UI 联调不自行调整后端或数据库；发现缺口交后端维护，客户端按现有契约接入。
 
 本地提交前联调补充：2026-10-19重新运行203项单测及服务端类型/ESLint检查通过；组织注册500由开发库Organization.verifyStatus缺列引起，用户应用全部7个迁移并重启后，41项业务HTTP复测全部符合预期，故障已消除。详细证据和外部提交规则缺失遗留见根目录03任务记录；该历史批次入口为04，当前入口以根目录05链接为准。
 
@@ -89,7 +99,7 @@ React 页面 → services/api → packages/platform
 
 ## 开发新需求时
 
-- 当前 UI 任务只负责 Web、Electron 和必要客户端适配；同步 main 已有后端代码不属于自行扩展业务。以后端现有 API 和 shared DTO/schema 为准；不得自行新增后端业务接口、修改 Prisma schema 或数据库迁移。用户已授权的后端例外仅为支撑 Electron 页面直接 HTTP 的最小来源/CORS/Cookie 适配，不扩展个人资料业务。已有接口按当前契约对接，剩余语义缺口先列清单并与后端确认，不提前把设计写成已实现契约。个人中心已授权接入现有资料、改密和组织读取接口；仅扩展 shared 客户端能力接口，不修改后端 DTO/schema。
+- 当前 UI 任务只负责 Web、Electron 和必要客户端适配；同步 main 已有后端代码不属于自行扩展业务。以后端现有 API 和 shared DTO/schema 为准；不得自行新增后端业务接口、修改 Prisma schema 或数据库迁移。用户已授权的后端例外为支撑 Electron 页面直接 HTTP 的最小来源/CORS/Cookie 适配，不扩展个人资料业务。已有接口按当前契约对接，剩余语义缺口先列清单并与后端确认，不提前把设计写成已实现契约。个人中心已授权接入现有资料、改密和组织读取接口；仅扩展 shared 客户端能力接口，不修改后端 DTO/schema。
 - UI 放 `apps/web/src/modules/<业务>/`，路由接入 `app/App.tsx`；后端模块放 `apps/server/src/modules/<业务>/`，在 `application.ts` 装配。
 - Swagger UI 为 `/api/v1/docs/`，JSON/YAML 在其下的 `/json`、`/yaml`；插件必须先于业务路由注册。新增接口补齐 summary、operationId、tags、请求与响应 schema，认证请求 schema 位于 `packages/shared/src/auth.ts`，响应 schema 位于 `auth.schema.ts`；维护说明见 `docs/API.md`。
 - Swagger 字段说明是新增/修改接口的必交付项：所有请求、响应、嵌套对象、数组项及参数均需中文 `description`，枚举逐值解释，说明条件必填/默认行为/单位/格式/null，并提供真实可校验示例；未接入和占位能力如实标注。常规枚举使用 `type: string` + `enum`，避免无必要的 `anyOf`。完整规则和验收要求见 `docs/API.md` 的“Swagger 文档标准”。
@@ -106,7 +116,7 @@ React 页面 → services/api → packages/platform
 - 当前后端 API 是唯一联调契约，不依赖原 tyde-web 的 Java 服务；未实现的业务接口先与后端同学约定 shared 类型/schema，再实现双端适配，不接入旧后端，认证及个人资料写入失败均不模拟成功。
 - IPC 仅用于公开运行配置和已实现的桌面系统能力，不转发业务 HTTP；保留来源及参数校验，不暴露通用 HTTP / 任意 URL 能力。preload 的 IPC 常量从 `@tyde/shared/ipc` 导入。
 - 保持 `sandbox: true`、`contextIsolation: true`、`nodeIntegration: false`；不向 renderer 暴露任意 URL 请求、文件系统或完整 `ipcRenderer`。
-- 数据结构变更同时更新 Prisma schema 与迁移。服务端密钥留在后端 `.env`，不进入前端构建、桌面资源或日志。
+- 后端负责人提供的数据结构变更应同时包含 Prisma schema 与迁移；当前 UI 任务只同步远端已有文件，不自行修改或执行数据库迁移。服务端密钥留在后端 `.env`，不进入前端构建、桌面资源或日志。
 - 开发和生产前端共用平台适配，当前用户与个人资料均访问真实接口；已移除固定当前用户与个人资料内存演示，不再使用 VITE_MOCK_CURRENT_USER。后端当前仅允许开发/测试 mock 短信，`security.ts` 的 `MOCK_CODE` 引用 shared 的 `MOCK_SMS_CODE`，页面发码成功后展示同一测试码；后端 `production` 模式被配置校验阻止启动。短信提供方由后端配置决定，接入真实短信需同时调整 provider、配置校验并移除测试码提示。
 
 ## 常用命令与验证
@@ -128,7 +138,7 @@ React 页面 → services/api → packages/platform
 
 `pnpm build:server` 统一构建 Web 到 `apps/server/public` 并构建后端；`pnpm package:server` 将两者放进同一个后端包。独立入口 `main.ts` 与 Vercel 入口 `app.ts` 均通过 `web.ts` 托管页面；本地未构建 Web 时仅提供 API。HTTPS 部署可使用 `deploy/nginx-server.conf.example` 将全部路径转发至后端。
 
-`dev:local` 使用忽略的 `apps/server/.env` 数据库配置，文件中的值覆盖 shell 同名配置，支持远程开发库并拒绝 `_test` 库；不启动本机 PostgreSQL、不初始化数据库或自动迁移，目标库迁移由维护者另行执行。后端端口必须空闲，避免复用连接旧库的服务；切换配置先停止原启动命令并退出 Electron，再重启。PostgreSQL 工具支持显式 `PG_BIN` / `PSQL_BIN`，否则查找 Postgres.app、Homebrew PostgreSQL 18 与 PATH。macOS 再次启动 Electron 会重开已关闭窗口或恢复隐藏、最小化窗口；并发启动只创建一个主窗口。
+`dev:local` 使用忽略的 `apps/server/.env` 数据库配置，文件中的值覆盖 shell 同名配置，支持远程开发库并拒绝 `_test` 库；不启动本机 PostgreSQL、不初始化数据库或自动迁移，目标库迁移由维护者另行执行。后端端口必须空闲，避免复用连接旧库的服务；切换配置先停止原启动命令并退出 Electron，再重启。PostgreSQL 工具支持显式 `PG_BIN` / `PSQL_BIN`，否则查找 Postgres.app、Homebrew PostgreSQL 18 与 PATH。macOS 再次启动 Electron 会重开已关闭窗口或恢复隐藏、最小化窗口；并发启动只创建一个主窗口。`dev:electron` 的桌面进程正常退出或转交现有实例时，本次启动的页面服务保留到 Ctrl+C，避免关闭现有窗口依赖的 Vite；异常退出仍清理本次进程。
 
 Electron 的 `package:mac` / `package:win` 通过 `scripts/prepare-electron.mjs` 将可信 API 源写入安装包运行配置，默认 `https://aact.pw`，可用 `TYDE_API_BASE_URL` 覆盖。本地开发仍默认连接本机后端。
 
