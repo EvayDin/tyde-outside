@@ -17,7 +17,7 @@ const apiBaseUrl =
 const url = 'http://127.0.0.1:5174/';
 const children = new Set();
 let stopping = false;
-function start(args, env = {}) {
+function start(args, env = {}, desktop = false) {
   if (stopping) return;
   const child = spawn('npm', args, {
     stdio: 'inherit',
@@ -31,8 +31,12 @@ function start(args, env = {}) {
     stop(1);
   });
   child.on('exit', (code) => {
+    if (!stopping) {
+      if (desktop && code === 0)
+        console.info('[桌面开发] Electron 已退出或已在运行；页面服务保留，Ctrl+C 停止。');
+      else stop(code ?? 1);
+    }
     children.delete(child);
-    if (!stopping) stop(code ?? 1);
   });
   return child;
 }
@@ -77,7 +81,7 @@ try {
   }
   const devScript = process.argv.includes('--inspect') ? 'dev:inspect' : 'dev';
   if (!stopping)
-    start(['--prefix', 'apps/electron', 'run', devScript], { TYDE_API_BASE_URL: apiBaseUrl });
+    start(['--prefix', 'apps/electron', 'run', devScript], { TYDE_API_BASE_URL: apiBaseUrl }, true);
 } catch (error) {
   console.error(error.message);
   stop(1);
