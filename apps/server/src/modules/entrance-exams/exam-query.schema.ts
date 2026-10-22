@@ -61,6 +61,7 @@ const files = snapshots(
   '附件快照，未配置为null；保留历史JSON。文件实际读取仍须业务授权，字段不等于公开可读。',
   fileSnapshot,
 );
+export { files as examFileSnapshots };
 const reviewers = snapshots(
   '人工阅卷人快照数组；未配置为null，用户不存在/ID异常保留历史值。',
   reviewerSnapshot,

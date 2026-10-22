@@ -12,7 +12,7 @@ import {
   managementTaskTypes,
 } from '../projects/project-task-rounds.js';
 import { requireExamManager } from './exam-access.js';
-import { requireProjectExam, type ExamLocator } from './exam-query.service.js';
+import { requireProjectExam, type ExamLocator } from './exam-access.js';
 import { prepareExamConfig } from './exam-config.js';
 import type { ExamConfigInput, ExamEditInput, ExamFileInput } from './exam-config.types.js';
 const bad = (message: string) => new AuthError(400, 'VALIDATION_ERROR', message);

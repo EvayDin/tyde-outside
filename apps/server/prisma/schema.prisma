@@ -915,7 +915,9 @@ model EntranceExamAttempt {
   paper              EntranceExamPaper?   @relation(fields: [paperId, examVersionId], references: [id, examVersionId], onDelete: Restrict)
 
   gradingRecords EntranceExamGradingRecord[]
+  answers        EntranceExamAnswer[]
 
+  @@unique([id, paperId])
   @@unique([id, examVersionId])
   @@index([candidateUserId, examId])
 }
@@ -978,6 +980,9 @@ model EntranceExamQuestion {
   createdAt          DateTime          @default(now()) @db.Timestamptz(3)
   paper              EntranceExamPaper @relation(fields: [paperId], references: [id], onDelete: Restrict)
 
+  answers EntranceExamAnswer[]
+
+  @@unique([id, paperId])
   @@unique([paperId, sequenceNo])
 }
 
@@ -990,6 +995,7 @@ model EntranceExamGradingRecord {
   status            String                   @default("PENDING") @db.VarChar(16)
   reviewerUserId    String?                  @db.Uuid
   toolTraceId       String?                  @db.VarChar(128)
+  callbackDigest    String?                  @db.VarChar(64)
   score             Decimal?                 @db.Decimal(10, 2)
   roundResult       String?                  @db.VarChar(16)
   conclusionSummary String?                  @db.Text
@@ -1004,8 +1010,50 @@ model EntranceExamGradingRecord {
   gradingRound      EntranceExamGradingRound @relation(fields: [gradingRoundId, examVersionId], references: [id, examVersionId], onDelete: Restrict)
   reviewer          User?                    @relation(fields: [reviewerUserId], references: [id], onDelete: Restrict)
 
+  items EntranceExamGradingItem[]
+
+  @@unique([id, attemptId])
   @@unique([attemptId, gradingRoundId])
   @@index([reviewerUserId, status, createdAt])
   @@index([gradingRoundId, status, createdAt])
   @@index([status, attemptId])
+}
+
+// 逐题答案绑定应试试卷；本批只建来源结构及只读接口，交卷写入口归08。
+model EntranceExamAnswer {
+  id              Int                       @id @default(autoincrement())
+  attemptId       Int
+  paperId         Int
+  questionId      Int
+  answerContent   String?                   @db.Text
+  answerFilesJson Json?
+  answeredFlag    Boolean                   @default(false)
+  createdBy       String                    @db.VarChar(36)
+  createdAt       DateTime                  @default(now()) @db.Timestamptz(3)
+  attempt         EntranceExamAttempt       @relation(fields: [attemptId, paperId], references: [id, paperId], onDelete: Restrict)
+  question        EntranceExamQuestion      @relation(fields: [questionId, paperId], references: [id, paperId], onDelete: Restrict)
+  gradingItems    EntranceExamGradingItem[]
+
+  @@unique([attemptId, questionId])
+  @@unique([id, attemptId, questionId])
+}
+
+// answer与record须为同一应试记录，question须与answer一致；禁止跨人/跨题判卷。
+model EntranceExamGradingItem {
+  id              Int                       @id @default(autoincrement())
+  gradingRecordId Int
+  attemptId       Int
+  questionId      Int
+  answerId        Int
+  correctness     String                    @default("PENDING") @db.VarChar(16)
+  gradingOpinion  String?                   @db.Text
+  createdBy       String                    @db.VarChar(36)
+  updatedBy       String?                   @db.VarChar(36)
+  createdAt       DateTime                  @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime                  @updatedAt @db.Timestamptz(3)
+  gradingRecord   EntranceExamGradingRecord @relation(fields: [gradingRecordId, attemptId], references: [id, attemptId], onDelete: Restrict)
+  answer          EntranceExamAnswer        @relation(fields: [answerId, attemptId, questionId], references: [id, attemptId, questionId], onDelete: Restrict)
+
+  @@unique([gradingRecordId, questionId])
+  @@index([answerId, attemptId, questionId])
 }

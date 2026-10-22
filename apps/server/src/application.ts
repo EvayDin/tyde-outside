@@ -1,4 +1,7 @@
+import { examAutoCallbackRoutes } from './modules/entrance-exams/exam-auto.routes.js';
+import { ExamAutoService } from './modules/entrance-exams/exam-auto.service.js';
 import { ExamQueryService } from './modules/entrance-exams/exam-query.service.js';
+import { ExamGradingCommandService } from './modules/entrance-exams/exam-grading-command.service.js';
 import { ExamImportService } from './modules/entrance-exams/exam-import.service.js';
 import { ExamCommandService } from './modules/entrance-exams/exam-command.service.js';
 import { examManagementRoutes } from './modules/entrance-exams/exam-management.routes.js';
@@ -40,6 +43,7 @@ export function fastifyOptions(config: Config): FastifyServerOptions {
       level: config.logLevel,
       redact: [
         'req.headers.authorization',
+        'req.headers["x-agent-signature"]',
         'req.headers.cookie',
         'res.headers["set-cookie"]',
         '*.code',
@@ -86,7 +90,8 @@ export async function createApp(
       req.url.startsWith(`${API_PREFIX}/project-requesters`) ||
       req.url.startsWith(`${API_PREFIX}/projects/`) ||
       req.url.startsWith(`${API_PREFIX}/expert-assignments/`) ||
-      req.url.startsWith(`${API_PREFIX}/entrance-exams/`);
+      req.url.startsWith(`${API_PREFIX}/entrance-exams/`) ||
+      req.url.startsWith(`${API_PREFIX}/integrations/agents/entrance-exam-grading/`);
     const failure = (status: number, code: string, message: string) =>
       legacy
         ? { code: status === 429 ? 4292 : status, message, data: null }
@@ -126,6 +131,8 @@ export async function createApp(
   await personalApplicationRoutes(app, new PersonalApplicationService(db), auth, config);
   await attendanceRoutes(app, new AttendanceService(db), auth, config);
   await expertAssignmentRoutes(app, new ExpertAssignmentService(db), auth, config);
+  const gradings = new ExamGradingCommandService(db);
+  await examAutoCallbackRoutes(app, gradings, config);
   await examManagementRoutes(
     app,
     new ExamManagementService(db),
@@ -134,6 +141,8 @@ export async function createApp(
     new ExamImportService(db, new FileService(files)),
     new ExamCommandService(db, files),
     new ExamQueryService(db),
+    gradings,
+    new ExamAutoService(db),
   );
   await fileRoutes(app, new FileService(files), auth, config);
   await organizationRoutes(app, new OrganizationService(db), auth, config);
