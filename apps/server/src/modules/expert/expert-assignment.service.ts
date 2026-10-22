@@ -1,3 +1,4 @@
+import { queryExpertTasks, validateTaskQuery, type ExpertTaskQuery } from './expert-task-query.js';
 import {
   Prisma,
   type PrismaClient,
@@ -73,6 +74,66 @@ export class ExpertAssignmentService {
         organization: { deleted: false },
       },
     });
+  }
+  async myTasks(query: ExpertTaskQuery, principal: AuthPrincipal) {
+    this.requireExpert(principal);
+    validateTaskQuery(query);
+    return this.db.$transaction((tx) => queryExpertTasks(tx, query, principal), {
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+    });
+  }
+  async projectOwnerCandidates(assignmentId: number, principal: AuthPrincipal) {
+    this.requireExpert(principal);
+    if (!Number.isInteger(assignmentId) || assignmentId < 1 || assignmentId > 2147483647)
+      throw new AuthError(400, 'VALIDATION_ERROR', 'assignmentId必须为32位正整数');
+    return this.db.$transaction(
+      async (tx) => {
+        const assignment = await tx.projectExpertAssignment.findFirst({
+          where: { id: assignmentId, subjectType: 'ORGANIZATION', project: { deleted: false } },
+          include: { owners: true },
+        });
+        if (!assignment || !assignment.organizationId)
+          throw new AuthError(404, 'NOT_FOUND', '组织执行专家任务不存在');
+        const owner = await tx.userOrgRel.findFirst({
+          where: {
+            orgId: assignment.organizationId,
+            userId: principal.userId,
+            position: 'OWNER',
+            joinStatus: { in: participatingStatuses },
+            organization: { deleted: false },
+          },
+        });
+        if (!owner) throw new AuthError(403, 'FORBIDDEN', '只有该组织主管可以执行此操作');
+        const members = await tx.userOrgRel.findMany({
+          where: {
+            orgId: assignment.organizationId,
+            joinStatus: { in: participatingStatuses },
+            user: { status: 'ACTIVE' },
+          },
+          include: { user: true },
+          orderBy: [{ position: 'asc' }, { id: 'asc' }],
+        });
+        // 关系表存在任何历史即禁用旧单值回退；仅已接单任务具有现任负责人。
+        const ownerIds = new Set(
+          assignment.status !== 'ACCEPTED'
+            ? []
+            : assignment.owners.length
+              ? assignment.owners.filter((o) => o.status === 'ACTIVE').map((o) => o.userId)
+              : assignment.projectOwnerUserId
+                ? [assignment.projectOwnerUserId]
+                : [],
+        );
+        return members.map(({ user, position }) => ({
+          userId: user.id,
+          uid: user.uid,
+          name: displayName(user.displayName, user.realName, user.uid),
+          avatarUrl: user.avatarUrl,
+          position,
+          projectOwner: ownerIds.has(user.id),
+        }));
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
   }
   async myProjects(keyword: string | undefined, principal: AuthPrincipal) {
     this.requireExpert(principal);

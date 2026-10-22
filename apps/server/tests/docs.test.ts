@@ -53,6 +53,8 @@ test('OpenAPI preserves legacy auth names, request fields, Result and token resp
       '/api/v1/entrance-exams/roster',
       '/api/v1/expert-assignments/detail',
       '/api/v1/expert-assignments/my-projects',
+      '/api/v1/expert-assignments/my-tasks',
+      '/api/v1/expert-assignments/project-owner-candidates',
       '/api/v1/files',
       '/api/v1/files/access-url',
       '/api/v1/files/upload',
