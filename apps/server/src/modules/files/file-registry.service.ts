@@ -130,6 +130,67 @@ export class FileRegistryService {
       ownerUid,
     );
   }
+  /** 调用方持有本人认证锁；认领、资料写入与旧头像释放必须在同一事务。 */
+  async syncAvatar(tx: Tx, userId: string, ownerUid: string, value: string, token?: string | null) {
+    let key: string | null = value.startsWith('avatar/') ? validObjectKey(value) : null;
+    // 兼容上传响应URL。只识别服务端实际签发的同源对象地址，不接受任意主机伪装。
+    if (!key && /^https?:\/\//i.test(value)) {
+      let url: URL;
+      try {
+        url = new URL(value);
+      } catch {
+        throw new AuthError(400, 'BAD_REQUEST', '头像URL格式不正确');
+      }
+      const candidate = url.pathname.replace(/^\/(?:tyde\/)?/, '');
+      if (candidate.startsWith('avatar/')) {
+        const normalized = validObjectKey(candidate);
+        const expected = new URL(this.storage.accessUrl(normalized, 2147483647));
+        if (url.origin === expected.origin && url.pathname === expected.pathname) key = normalized;
+      }
+    }
+    let avatarUrl: string | null = value || null;
+    if (key) {
+      const record = await this.locked(tx, key);
+      if (
+        record?.status === 'CLAIMED' &&
+        record.bizType === 'AVATAR' &&
+        record.claimedBizType === 'USER_AVATAR' &&
+        record.claimedBizId === userId &&
+        record.ownerUid === ownerUid
+      ) {
+        // 已认领的本人头像重放无需再次消费token。
+      } else {
+        const upload = this.validateClaim(record, 'AVATAR', token ?? '', ownerUid);
+        await this.verifyObject(upload);
+        await tx.uploadedFile.update({
+          where: { id: upload.id },
+          data: {
+            status: 'CLAIMED',
+            claimedBizType: 'USER_AVATAR',
+            claimedBizId: userId,
+            claimedAt: new Date(),
+            expiresAt: null,
+          },
+        });
+      }
+      avatarUrl = this.storage.accessUrl(key, 2147483647);
+    } else if (token != null) {
+      throw new AuthError(400, 'BAD_REQUEST', '头像上传凭证必须与AVATAR文件objectKey一起提交');
+    }
+    await tx.uploadedFile.updateMany({
+      where: {
+        status: 'CLAIMED',
+        claimedBizType: 'USER_AVATAR',
+        claimedBizId: userId,
+        ...(key ? { objectKey: { not: key } } : {}),
+      },
+      data: {
+        status: 'RELEASED',
+        expiresAt: new Date(Date.now() + this.config.releasedExpireSeconds * 1000),
+      },
+    });
+    return avatarUrl;
+  }
   claimForEntranceExam(tx: Tx, key: string, token: string, ownerUid: string, examId: string) {
     return this.claim(
       tx,

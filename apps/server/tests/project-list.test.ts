@@ -16,7 +16,7 @@ import { readConfig } from '../src/config/index.js';
 const principal: AuthPrincipal = {
   userId: '00000000-0000-4000-8000-000000000001',
   uid: 'creator',
-  role: 'EXPERT',
+  role: 'PM',
   sessionId: 'session',
   clientType: 'desktop',
 };
@@ -106,15 +106,17 @@ test('historical null nodes fall back without changing source records', () => {
 test('grant failure and actual empty candidates avoid all enrichment; no login role grants management', async () => {
   const { tx, service } = setup([]);
   tx.managementGrant.findFirst.mockResolvedValueOnce(null as never);
-  await expect(service.list('PM', principal)).rejects.toMatchObject({ status: 403 });
+  await expect(service.list('PM', { ...principal, role: 'EXPERT' })).rejects.toMatchObject({
+    status: 403,
+  });
   expect(tx.$queryRaw).not.toHaveBeenCalled();
-  expect(await service.list('NAVIGATOR', principal)).toEqual([]);
+  expect(await service.list('NAVIGATOR', { ...principal, role: 'NAVIGATOR' })).toEqual([]);
   expect(tx.projectCategoryRelation.findMany).not.toHaveBeenCalled();
   expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
 });
 test('list SQL binds identity, scopes snapshot by perspective, and reads actual reviewer sources', async () => {
   const { tx, service } = setup([]);
-  await service.list('NAVIGATOR', { ...principal, uid: "creator' OR true--" });
+  await service.list('NAVIGATOR', { ...principal, role: 'NAVIGATOR', uid: "creator' OR true--" });
   const sql = tx.$queryRaw.mock.calls[0]![0] as Prisma.Sql;
   expect(sql.text).not.toContain("creator' OR true--");
   expect(sql.values).toContain("creator' OR true--");
@@ -163,7 +165,7 @@ test('owner query retains any-row suppression of legacy fallback and query error
 });
 test('navigator presentation omits manager flags and recruitment handler never inherits a recruit button from a legacy node', async () => {
   const { service } = setup([{ ...row, currentNodeCode: null, projectManagerId: null }]);
-  const result = await service.list('NAVIGATOR', principal);
+  const result = await service.list('NAVIGATOR', { ...principal, role: 'NAVIGATOR' });
   expect(result[0]).toMatchObject({
     workbenchStatus: 'PENDING',
     currentAction: 'RECRUIT_PROJECT_MANAGER',

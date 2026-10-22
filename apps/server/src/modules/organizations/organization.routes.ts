@@ -239,7 +239,7 @@ export async function organizationRoutes(
           ...organizationSchema(
             'processApproval',
             '处理组织审批',
-            '仅当前组织主管且为该节点实际审批人可处理ORG_MEMBER_EXIT。组织→流程→节点加锁，流程和节点双版本检查，节点/流程/成员状态/动作日志同事务。驳回意见必填。主管转让不会自动转派已有待办（沿旧Service）；项目清退/负责人/实时事件待04/07/12回补，到期组织离职须运行维护命令。',
+            '仅当前组织主管且为该节点实际审批人可处理ORG_MEMBER_EXIT、ATTENDANCE_LEAVE或ATTENDANCE_CORRECTION，考勤申请禁止自审；通过时复查申请人有效关系及排班/日考勤版本，批准后变更日考勤并追加修正审计，驳回不写考勤。组织→流程→节点加锁，流程和节点双版本检查，节点/流程/成员状态/动作日志同事务。驳回意见必填。主管转让不会自动转派已有待办（沿旧Service）；项目清退/负责人/实时事件待04/07/12回补，到期组织离职须运行维护命令。',
             processResponse,
           ),
           body: processBody,

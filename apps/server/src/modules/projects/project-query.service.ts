@@ -15,7 +15,7 @@ export class ProjectQueryService {
           include: projectDetailInclude,
         });
         if (!project) throw new AuthError(404, 'NOT_FOUND', '已发布项目不存在');
-        // 独立授权与实际关系共同决定管理访问；不从固定EXPERT或User.role推导。
+        // 当前会话角色与实际项目关系共同决定访问范围。
         const creator =
           project.createdBy === principal.uid &&
           (await hasManagementRole(tx, principal, 'NAVIGATOR'));
@@ -38,6 +38,7 @@ export class ProjectQueryService {
         const expert =
           !creator &&
           !manager &&
+          principal.role === 'EXPERT' &&
           Boolean(
             await tx.projectMember.findFirst({
               where: {

@@ -8,45 +8,52 @@ datasource db {
 }
 
 model User {
-  id                     String                         @id @default(uuid()) @db.Uuid
-  phoneE164              String                         @unique @db.VarChar(16)
-  phoneRegion            String                         @db.VarChar(2)
-  username               String                         @unique @db.VarChar(32)
-  displayName            String                         @unique @db.VarChar(320)
-  avatarUrl              String?                        @db.VarChar(512)
-  bio                    String?                        @db.VarChar(1000)
-  idVerified             Int                            @default(0) @db.SmallInt
-  updatedBy              String?                        @db.VarChar(36)
-  createdAt              DateTime                       @default(now()) @db.Timestamptz(3)
-  updatedAt              DateTime                       @updatedAt @db.Timestamptz(3)
+  id                     String                          @id @default(uuid()) @db.Uuid
+  phoneE164              String                          @unique @db.VarChar(16)
+  phoneRegion            String                          @db.VarChar(2)
+  username               String                          @unique @db.VarChar(32)
+  displayName            String                          @unique @db.VarChar(320)
+  avatarUrl              String?                         @db.VarChar(512)
+  bio                    String?                         @db.VarChar(1000)
+  idVerified             Int                             @default(0) @db.SmallInt
+  updatedBy              String?                         @db.VarChar(36)
+  createdAt              DateTime                        @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime                        @updatedAt @db.Timestamptz(3)
   sessions               Session[]
-  uid                    String                         @unique @default(uuid()) @db.VarChar(36)
-  accountType            String                         @default("INDIVIDUAL") @db.VarChar(16)
-  passwordHash           String?                        @db.VarChar(256)
-  email                  String?                        @unique @db.VarChar(128)
-  realName               String?                        @db.VarChar(64)
-  idCardNo               String?                        @unique @db.VarChar(32)
-  role                   String                         @default("EXPERT") @db.VarChar(16)
-  status                 String                         @default("ACTIVE") @db.VarChar(16)
-  lastLoginAt            DateTime?                      @db.Timestamptz(3)
-  lastLoginIp            String?                        @db.VarChar(64)
-  organizationId         String?                        @db.Uuid
-  orgPosition            String?                        @db.VarChar(16)
-  organization           Organization?                  @relation(fields: [organizationId], references: [id])
+  uid                    String                          @unique @default(uuid()) @db.VarChar(36)
+  accountType            String                          @default("INDIVIDUAL") @db.VarChar(16)
+  passwordHash           String?                         @db.VarChar(256)
+  email                  String?                         @unique @db.VarChar(128)
+  realName               String?                         @db.VarChar(64)
+  idCardNo               String?                         @unique @db.VarChar(32)
+  role                   String                          @default("EXPERT") @db.VarChar(16)
+  status                 String                          @default("ACTIVE") @db.VarChar(16)
+  lastLoginAt            DateTime?                       @db.Timestamptz(3)
+  lastLoginIp            String?                         @db.VarChar(64)
+  organizationId         String?                         @db.Uuid
+  orgPosition            String?                         @db.VarChar(16)
+  organization           Organization?                   @relation(fields: [organizationId], references: [id])
   memberships            UserOrgRel[]
-  creditScore            Int?                           @default(100)
-  managerRecruitments    ProjectManagerRecruitment[]    @relation("ManagerCandidate")
-  handlerRecruitments    ProjectManagerRecruitment[]    @relation("RecruitmentHandler")
-  previousRecruitments   ProjectManagerRecruitment[]    @relation("PreviousManager")
+  creditScore            Int?                            @default(100)
+  managerRecruitments    ProjectManagerRecruitment[]     @relation("ManagerCandidate")
+  handlerRecruitments    ProjectManagerRecruitment[]     @relation("RecruitmentHandler")
+  previousRecruitments   ProjectManagerRecruitment[]     @relation("PreviousManager")
   projectMembers         ProjectMember[]
   projectTaskRounds      ProjectTaskRound[]
   requestedProjects      Project[]
   managementGrants       ManagementGrant[]
   managementGrantAudits  ManagementGrantAudit[]
   roleNodeSnapshots      ProjectRoleNodeSnapshot[]
-  expertAssignments      ProjectExpertAssignment[]      @relation("AssignedExpert")
-  legacyOwnerAssignments ProjectExpertAssignment[]      @relation("LegacyAssignmentOwner")
+  expertAssignments      ProjectExpertAssignment[]       @relation("AssignedExpert")
+  legacyOwnerAssignments ProjectExpertAssignment[]       @relation("LegacyAssignmentOwner")
   assignmentOwners       ProjectExpertAssignmentOwner[]
+  attendanceSchedules    OrgMemberSchedule[]
+  attendanceDays         OrgAttendanceDaily[]
+  scheduleReceipts       PersonalScheduleReceipt[]
+  assignmentResponses    ProjectExpertAssignmentMember[]
+  examAttempts           EntranceExamAttempt[]
+  reviewedExamRounds     EntranceExamGradingRecord[]
+  attendanceCorrections  OrgAttendanceAdjustment[]
 }
 
 model VerificationChallenge {
@@ -80,6 +87,7 @@ model Session {
   id               String    @id @default(uuid()) @db.Uuid
   tokenDigest      String    @unique @db.VarChar(64)
   userId           String    @db.Uuid
+  selectedRole     String    @default("EXPERT") @db.VarChar(16)
   clientType       String    @db.VarChar(16)
   expiresAt        DateTime  @db.Timestamptz(3)
   refreshDigest    String?   @unique @db.VarChar(64)
@@ -101,23 +109,26 @@ model AuthRateLimit {
 }
 
 model Organization {
-  id                 String                    @id @default(uuid()) @db.Uuid
-  name               String                    @unique @db.VarChar(128)
-  unifiedCreditCode  String?                   @unique @db.VarChar(32)
-  description        String?                   @db.VarChar(1024)
-  logoUrl            String?                   @db.VarChar(512)
-  businessLicenseKey String?                   @db.VarChar(512)
-  expertiseTags      String[]
-  createdAt          DateTime                  @default(now()) @db.Timestamptz(3)
-  users              User[]
-  memberships        UserOrgRel[]
-  verifyStatus       String                    @default("PENDING") @db.VarChar(16)
-  status             String                    @default("ACTIVE") @db.VarChar(16)
-  deleted            Boolean                   @default(false)
-  updatedBy          String?                   @db.VarChar(36)
-  updatedAt          DateTime                  @default(now()) @updatedAt @db.Timestamptz(3)
-  projectMembers     ProjectMember[]
-  expertAssignments  ProjectExpertAssignment[]
+  id                  String                    @id @default(uuid()) @db.Uuid
+  name                String                    @unique @db.VarChar(128)
+  unifiedCreditCode   String?                   @unique @db.VarChar(32)
+  description         String?                   @db.VarChar(1024)
+  logoUrl             String?                   @db.VarChar(512)
+  businessLicenseKey  String?                   @db.VarChar(512)
+  expertiseTags       String[]
+  createdAt           DateTime                  @default(now()) @db.Timestamptz(3)
+  users               User[]
+  memberships         UserOrgRel[]
+  verifyStatus        String                    @default("APPROVED") @db.VarChar(16)
+  status              String                    @default("ACTIVE") @db.VarChar(16)
+  deleted             Boolean                   @default(false)
+  updatedBy           String?                   @db.VarChar(36)
+  updatedAt           DateTime                  @default(now()) @updatedAt @db.Timestamptz(3)
+  projectMembers      ProjectMember[]
+  expertAssignments   ProjectExpertAssignment[]
+  attendanceSchedules OrgMemberSchedule[]
+  attendanceDays      OrgAttendanceDaily[]
+  examAttempts        EntranceExamAttempt[]
 }
 
 model UploadedFile {
@@ -150,25 +161,30 @@ model UploadedFile {
 
 // 多组织成员关系是组织权限来源；User.organizationId/orgPosition 暂留资料兼容。
 model UserOrgRel {
-  id               String          @id @default(uuid()) @db.Uuid
-  userId           String          @db.Uuid
-  uid              String          @db.VarChar(36)
-  orgId            String          @db.Uuid
-  position         String          @default("MEMBER") @db.VarChar(16)
-  employmentType   String?         @db.VarChar(16)
-  joinStatus       String          @default("ACTIVE") @db.VarChar(24)
-  joinedAt         DateTime?       @default(now()) @db.Timestamptz(3)
-  plannedLeaveDate DateTime?       @db.Date
-  leftAt           DateTime?       @db.Timestamptz(3)
-  versionNo        Int             @default(0)
-  createdBy        String?         @db.VarChar(36)
-  updatedBy        String?         @db.VarChar(36)
-  createdAt        DateTime        @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime        @updatedAt @db.Timestamptz(3)
-  user             User            @relation(fields: [userId], references: [id])
-  organization     Organization    @relation(fields: [orgId], references: [id])
-  projectMembers   ProjectMember[]
+  id                  String                          @id @default(uuid()) @db.Uuid
+  userId              String                          @db.Uuid
+  uid                 String                          @db.VarChar(36)
+  orgId               String                          @db.Uuid
+  position            String                          @default("MEMBER") @db.VarChar(16)
+  employmentType      String?                         @db.VarChar(16)
+  joinStatus          String                          @default("ACTIVE") @db.VarChar(24)
+  joinedAt            DateTime?                       @default(now()) @db.Timestamptz(3)
+  plannedLeaveDate    DateTime?                       @db.Date
+  leftAt              DateTime?                       @db.Timestamptz(3)
+  versionNo           Int                             @default(0)
+  createdBy           String?                         @db.VarChar(36)
+  updatedBy           String?                         @db.VarChar(36)
+  createdAt           DateTime                        @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime                        @updatedAt @db.Timestamptz(3)
+  user                User                            @relation(fields: [userId], references: [id])
+  organization        Organization                    @relation(fields: [orgId], references: [id])
+  projectMembers      ProjectMember[]
+  attendanceSchedules OrgMemberSchedule[]
+  attendanceDays      OrgAttendanceDaily[]
+  assignmentResponses ProjectExpertAssignmentMember[]
+  examAttempts        EntranceExamAttempt[]
 
+  @@unique([id, userId, orgId])
   @@unique([userId, orgId])
   @@index([orgId, joinStatus])
   @@index([uid])
@@ -618,6 +634,7 @@ model ProjectMember {
   organizationMembership      UserOrgRel?              @relation(fields: [userOrgRelId], references: [id], onDelete: Restrict)
   organization                Organization?            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   expertAssignment            ProjectExpertAssignment? @relation(fields: [expertAssignmentId], references: [id], onDelete: Restrict)
+  admissionAttempt            EntranceExamAttempt?     @relation(fields: [admissionAttemptId], references: [id], onDelete: Restrict)
 
   @@index([userId, status])
   @@index([userOrgRelId, status])
@@ -649,33 +666,34 @@ model ProjectRoleNodeSnapshot {
 
 // 04列表读取前置；接单写流程及容量/组织校验归07，不能由本表存在推导业务已迁移。
 model ProjectExpertAssignment {
-  id                    Int                            @id @default(autoincrement())
-  assignmentNo          String                         @unique @db.VarChar(64)
+  id                    Int                             @id @default(autoincrement())
+  assignmentNo          String                          @unique @db.VarChar(64)
   projectId             Int
-  subjectType           String                         @db.VarChar(24)
-  organizationId        String?                        @db.Uuid
-  expertUserId          String?                        @db.Uuid
-  projectOwnerUserId    String?                        @db.Uuid
+  subjectType           String                          @db.VarChar(24)
+  organizationId        String?                         @db.Uuid
+  expertUserId          String?                         @db.Uuid
+  projectOwnerUserId    String?                         @db.Uuid
   previousAssignmentId  Int?
-  productionRequirement Decimal?                       @db.Decimal(20, 4)
+  productionRequirement Decimal?                        @db.Decimal(20, 4)
   operatorHeadcount     Int?
   inspectorHeadcount    Int?
-  status                String                         @default("PENDING_ACCEPTANCE") @db.VarChar(24)
-  acceptedAt            DateTime?                      @db.Timestamptz(3)
-  rejectedAt            DateTime?                      @db.Timestamptz(3)
+  status                String                          @default("PENDING_ACCEPTANCE") @db.VarChar(24)
+  acceptedAt            DateTime?                       @db.Timestamptz(3)
+  rejectedAt            DateTime?                       @db.Timestamptz(3)
   rejectReason          String?
-  createdBy             String                         @db.VarChar(36)
-  updatedBy             String?                        @db.VarChar(36)
-  createdAt             DateTime                       @default(now()) @db.Timestamptz(3)
-  updatedAt             DateTime                       @updatedAt @db.Timestamptz(3)
-  project               Project                        @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  organization          Organization?                  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  expert                User?                          @relation("AssignedExpert", fields: [expertUserId], references: [id], onDelete: Restrict)
-  legacyOwner           User?                          @relation("LegacyAssignmentOwner", fields: [projectOwnerUserId], references: [id], onDelete: Restrict)
+  createdBy             String                          @db.VarChar(36)
+  updatedBy             String?                         @db.VarChar(36)
+  createdAt             DateTime                        @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime                        @updatedAt @db.Timestamptz(3)
+  project               Project                         @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  organization          Organization?                   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  expert                User?                           @relation("AssignedExpert", fields: [expertUserId], references: [id], onDelete: Restrict)
+  legacyOwner           User?                           @relation("LegacyAssignmentOwner", fields: [projectOwnerUserId], references: [id], onDelete: Restrict)
   owners                ProjectExpertAssignmentOwner[]
   members               ProjectMember[]
-  previousAssignment    ProjectExpertAssignment?       @relation("PreviousAssignment", fields: [previousAssignmentId], references: [id], onDelete: Restrict)
-  replacements          ProjectExpertAssignment[]      @relation("PreviousAssignment")
+  previousAssignment    ProjectExpertAssignment?        @relation("PreviousAssignment", fields: [previousAssignmentId], references: [id], onDelete: Restrict)
+  replacements          ProjectExpertAssignment[]       @relation("PreviousAssignment")
+  memberResponses       ProjectExpertAssignmentMember[]
 
   @@index([projectId, status])
 }
@@ -700,21 +718,24 @@ model ProjectExpertAssignmentOwner {
 
 // 仅04列表协助阅卷来源读取；05落地配置版本后补版本外键及全部考试写流程。
 model ProjectEntranceExam {
-  id               Int       @id @default(autoincrement())
-  examNo           String    @unique @db.VarChar(64)
+  id               Int                   @id @default(autoincrement())
+  examNo           String                @unique @db.VarChar(64)
   projectId        Int
-  examName         String    @db.VarChar(128)
-  status           String    @default("ACTIVE") @db.VarChar(16)
+  examName         String                @db.VarChar(128)
+  status           String                @default("ACTIVE") @db.VarChar(16)
   currentVersionId Int?
-  closedBy         String?   @db.VarChar(36)
-  closedAt         DateTime? @db.Timestamptz(3)
-  closeReason      String?   @db.VarChar(500)
-  createdBy        String    @db.VarChar(36)
-  updatedBy        String?   @db.VarChar(36)
-  deleted          Boolean   @default(false)
-  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime  @updatedAt @db.Timestamptz(3)
-  project          Project   @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  closedBy         String?               @db.VarChar(36)
+  closedAt         DateTime?             @db.Timestamptz(3)
+  closeReason      String?               @db.VarChar(500)
+  createdBy        String                @db.VarChar(36)
+  updatedBy        String?               @db.VarChar(36)
+  deleted          Boolean               @default(false)
+  createdAt        DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime              @updatedAt @db.Timestamptz(3)
+  project          Project               @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  attempts         EntranceExamAttempt[]
+  versions         EntranceExamVersion[] @relation("ExamVersions")
+  currentVersion   EntranceExamVersion?  @relation("ExamCurrentVersion", fields: [currentVersionId, id], references: [id, examId], onDelete: Restrict)
 
   @@index([projectId, status, deleted, createdAt])
 }
@@ -731,5 +752,260 @@ model EntranceExamGradingRound {
   createdBy      String   @db.VarChar(36)
   createdAt      DateTime @default(now()) @db.Timestamptz(3)
 
-  @@index([examVersionId, roundNo])
+  version EntranceExamVersion         @relation(fields: [examVersionId], references: [id], onDelete: Restrict)
+  records EntranceExamGradingRecord[]
+
+  @@unique([examVersionId, roundNo])
+  @@unique([id, examVersionId])
+}
+
+// scopeKey=PERSONAL或orgId；避免PostgreSQL可空唯一键导致个人作用域重复。
+model OrgMemberSchedule {
+  id           Int                  @id @default(autoincrement())
+  scopeKey     String               @db.VarChar(36)
+  orgId        String?              @db.Uuid
+  userOrgRelId String?              @db.Uuid
+  userId       String               @db.Uuid
+  scheduleDate DateTime             @db.Date
+  dayType      String               @db.VarChar(8)
+  shiftStartAt DateTime?            @db.Timestamp(3)
+  shiftEndAt   DateTime?            @db.Timestamp(3)
+  timezone     String               @default("Asia/Shanghai") @db.VarChar(64)
+  sourceType   String               @default("MANUAL") @db.VarChar(16)
+  batchNo      String?              @db.VarChar(64)
+  status       String               @default("ACTIVE") @db.VarChar(16)
+  versionNo    Int                  @default(0)
+  createdBy    String               @db.VarChar(36)
+  updatedBy    String               @db.VarChar(36)
+  createdAt    DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime             @updatedAt @db.Timestamptz(3)
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Restrict)
+  organization Organization?        @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  membership   UserOrgRel?          @relation(fields: [userOrgRelId, userId, orgId], references: [id, userId, orgId], onDelete: Restrict)
+  days         OrgAttendanceDaily[]
+
+  @@unique([scopeKey, userId, scheduleDate])
+  @@index([orgId, scheduleDate])
+}
+
+model OrgAttendanceDaily {
+  id                Int                       @id @default(autoincrement())
+  scopeKey          String                    @db.VarChar(36)
+  orgId             String?                   @db.Uuid
+  userOrgRelId      String?                   @db.Uuid
+  userId            String                    @db.Uuid
+  attendanceDate    DateTime                  @db.Date
+  scheduleId        Int?
+  expectedStartAt   DateTime?                 @db.Timestamp(3)
+  expectedEndAt     DateTime?                 @db.Timestamp(3)
+  firstClockInAt    DateTime?                 @db.Timestamp(3)
+  lastClockOutAt    DateTime?                 @db.Timestamp(3)
+  autoStatus        String?                   @db.VarChar(24)
+  finalStatus       String?                   @db.VarChar(24)
+  lateMinutes       Int                       @default(0)
+  earlyLeaveMinutes Int                       @default(0)
+  workedMinutes     Int                       @default(0)
+  reviewRequired    Boolean                   @default(false)
+  reviewReason      String?                   @db.VarChar(1000)
+  manualOverride    Boolean                   @default(false)
+  manualRemark      String?                   @db.VarChar(1000)
+  correctedBy       String?                   @db.VarChar(36)
+  correctedAt       DateTime?                 @db.Timestamptz(3)
+  calculatedAt      DateTime?                 @db.Timestamptz(3)
+  versionNo         Int                       @default(0)
+  createdBy         String                    @db.VarChar(36)
+  updatedBy         String                    @db.VarChar(36)
+  createdAt         DateTime                  @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime                  @updatedAt @db.Timestamptz(3)
+  user              User                      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  organization      Organization?             @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  membership        UserOrgRel?               @relation(fields: [userOrgRelId, userId, orgId], references: [id, userId, orgId], onDelete: Restrict)
+  schedule          OrgMemberSchedule?        @relation(fields: [scheduleId], references: [id], onDelete: Restrict)
+  adjustments       OrgAttendanceAdjustment[]
+
+  @@unique([scopeKey, userId, attendanceDate])
+  @@index([orgId, attendanceDate])
+}
+
+model OrgAttendanceAdjustment {
+  id                Int                @id @default(autoincrement())
+  attendanceDailyId Int
+  beforeStatus      String?            @db.VarChar(24)
+  afterStatus       String             @db.VarChar(24)
+  beforeRemark      String?            @db.VarChar(1000)
+  afterRemark       String?            @db.VarChar(1000)
+  reason            String             @db.VarChar(1000)
+  operatorUserId    String             @db.Uuid
+  operatorName      String             @db.VarChar(200)
+  createdBy         String             @db.VarChar(36)
+  createdAt         DateTime           @default(now()) @db.Timestamptz(3)
+  daily             OrgAttendanceDaily @relation(fields: [attendanceDailyId], references: [id], onDelete: Restrict)
+  operator          User               @relation(fields: [operatorUserId], references: [id], onDelete: Restrict)
+
+  @@index([attendanceDailyId, createdAt])
+}
+
+model PersonalScheduleReceipt {
+  id          Int      @id @default(autoincrement())
+  userId      String   @db.Uuid
+  key         String   @db.VarChar(128)
+  requestHash String   @db.VarChar(64)
+  response    Json
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, key])
+}
+
+// 本人项目查询前置。接单写流程由07接入，不由读取接口伪造响应记录。
+model ProjectExpertAssignmentMember {
+  id           Int                     @id @default(autoincrement())
+  assignmentId Int
+  userId       String                  @db.Uuid
+  userOrgRelId String                  @db.Uuid
+  status       String                  @db.VarChar(16)
+  rejectReason String?                 @db.VarChar(500)
+  respondedAt  DateTime?               @db.Timestamptz(3)
+  createdBy    String                  @db.VarChar(36)
+  updatedBy    String?                 @db.VarChar(36)
+  createdAt    DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime                @updatedAt @db.Timestamptz(3)
+  assignment   ProjectExpertAssignment @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
+  user         User                    @relation(fields: [userId], references: [id], onDelete: Restrict)
+  membership   UserOrgRel              @relation(fields: [userOrgRelId], references: [id], onDelete: Restrict)
+
+  @@unique([assignmentId, userId])
+  @@index([userId, status])
+}
+
+// 应试事实复用；05已准备配置版本/试卷外键，第17迁移待应用；08接考试写入口。
+model EntranceExamAttempt {
+  id                 Int                  @id @default(autoincrement())
+  attemptNo          String               @unique @db.VarChar(64)
+  examId             Int
+  examVersionId      Int?
+  paperId            Int?
+  candidateUserId    String               @db.Uuid
+  candidateUid       String               @db.VarChar(36)
+  candidateName      String               @db.VarChar(200)
+  userOrgRelId       String?              @db.Uuid
+  organizationId     String?              @db.Uuid
+  organizationName   String?              @db.VarChar(128)
+  sourceBizType      String               @default("EXPERT_ORDER") @db.VarChar(64)
+  sourceBizId        Int?
+  gradingStatus      String               @default("NOT_STARTED") @db.VarChar(24)
+  finalResult        String               @default("PENDING") @db.VarChar(16)
+  enteredAt          DateTime?            @db.Timestamptz(3)
+  answerDeadlineAt   DateTime?            @db.Timestamptz(3)
+  integritySignedAt  DateTime?            @db.Timestamptz(3)
+  submittedAt        DateTime?            @db.Timestamptz(3)
+  cancelledAt        DateTime?            @db.Timestamptz(3)
+  finalDecidedAt     DateTime?            @db.Timestamptz(3)
+  decisionDetailJson Json?
+  createdBy          String               @db.VarChar(36)
+  updatedBy          String?              @db.VarChar(36)
+  createdAt          DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime             @updatedAt @db.Timestamptz(3)
+  exam               ProjectEntranceExam  @relation(fields: [examId], references: [id], onDelete: Restrict)
+  candidate          User                 @relation(fields: [candidateUserId], references: [id], onDelete: Restrict)
+  organization       Organization?        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  membership         UserOrgRel?          @relation(fields: [userOrgRelId], references: [id], onDelete: Restrict)
+  admittedMember     ProjectMember?
+  version            EntranceExamVersion? @relation(fields: [examVersionId, examId], references: [id, examId], onDelete: Restrict)
+  paper              EntranceExamPaper?   @relation(fields: [paperId, examVersionId], references: [id, examVersionId], onDelete: Restrict)
+
+  gradingRecords EntranceExamGradingRecord[]
+
+  @@unique([id, examVersionId])
+  @@index([candidateUserId, examId])
+}
+
+// 配置以版本保存，发布/编辑新增版本而非覆盖历史。
+model EntranceExamVersion {
+  id                   Int                        @id @default(autoincrement())
+  examId               Int
+  versionNo            Int
+  examNameSnapshot     String                     @db.VarChar(128)
+  durationMinutes      Int?
+  registrationDeadline DateTime                   @db.Timestamptz(3)
+  fullScore            Decimal                    @db.Decimal(10, 2)
+  passScore            Decimal                    @db.Decimal(10, 2)
+  decisionRule         String                     @default("MAJORITY") @db.VarChar(24)
+  tieBreakRule         String?                    @db.VarChar(16)
+  publishedBy          String                     @db.VarChar(36)
+  publishedAt          DateTime                   @db.Timestamptz(3)
+  createdBy            String                     @db.VarChar(36)
+  createdAt            DateTime                   @default(now()) @db.Timestamptz(3)
+  exam                 ProjectEntranceExam        @relation("ExamVersions", fields: [examId], references: [id], onDelete: Restrict)
+  currentFor           ProjectEntranceExam[]      @relation("ExamCurrentVersion")
+  papers               EntranceExamPaper[]
+  gradingRounds        EntranceExamGradingRound[]
+  attempts             EntranceExamAttempt[]
+
+  @@unique([examId, versionNo])
+  @@unique([id, examId])
+  @@index([examId, publishedAt])
+}
+
+model EntranceExamPaper {
+  id            Int                    @id @default(autoincrement())
+  examVersionId Int
+  sequenceNo    Int
+  paperName     String?                @db.VarChar(100)
+  totalScore    Decimal                @db.Decimal(10, 2)
+  createdBy     String                 @db.VarChar(36)
+  createdAt     DateTime               @default(now()) @db.Timestamptz(3)
+  version       EntranceExamVersion    @relation(fields: [examVersionId], references: [id], onDelete: Restrict)
+  questions     EntranceExamQuestion[]
+  attempts      EntranceExamAttempt[]
+
+  @@unique([examVersionId, sequenceNo])
+  @@unique([id, examVersionId])
+}
+
+model EntranceExamQuestion {
+  id                 Int               @id @default(autoincrement())
+  paperId            Int
+  sequenceNo         Int
+  questionContent    String?           @db.Text
+  questionFilesJson  Json?
+  requiredFlag       Boolean           @default(true)
+  score              Decimal           @db.Decimal(10, 2)
+  scoreSource        String            @default("AUTO") @db.VarChar(16)
+  referenceAnswer    String?           @db.Text
+  referenceFilesJson Json?
+  createdBy          String            @db.VarChar(36)
+  createdAt          DateTime          @default(now()) @db.Timestamptz(3)
+  paper              EntranceExamPaper @relation(fields: [paperId], references: [id], onDelete: Restrict)
+
+  @@unique([paperId, sequenceNo])
+}
+
+// 逐轮执行/汇总结果，记录只绑定考生进入时的同版本轮次；写入/派发流程后续接入。
+model EntranceExamGradingRecord {
+  id                Int                      @id @default(autoincrement())
+  attemptId         Int
+  gradingRoundId    Int
+  examVersionId     Int
+  status            String                   @default("PENDING") @db.VarChar(16)
+  reviewerUserId    String?                  @db.Uuid
+  toolTraceId       String?                  @db.VarChar(128)
+  score             Decimal?                 @db.Decimal(10, 2)
+  roundResult       String?                  @db.VarChar(16)
+  conclusionSummary String?                  @db.Text
+  errorMessage      String?                  @db.VarChar(1000)
+  startedAt         DateTime?                @db.Timestamptz(3)
+  completedAt       DateTime?                @db.Timestamptz(3)
+  createdBy         String                   @db.VarChar(36)
+  updatedBy         String?                  @db.VarChar(36)
+  createdAt         DateTime                 @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime                 @updatedAt @db.Timestamptz(3)
+  attempt           EntranceExamAttempt      @relation(fields: [attemptId, examVersionId], references: [id, examVersionId], onDelete: Restrict)
+  gradingRound      EntranceExamGradingRound @relation(fields: [gradingRoundId, examVersionId], references: [id, examVersionId], onDelete: Restrict)
+  reviewer          User?                    @relation(fields: [reviewerUserId], references: [id], onDelete: Restrict)
+
+  @@unique([attemptId, gradingRoundId])
+  @@index([reviewerUserId, status, createdAt])
+  @@index([gradingRoundId, status, createdAt])
+  @@index([status, attemptId])
 }

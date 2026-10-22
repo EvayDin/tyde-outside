@@ -50,7 +50,7 @@ function setup() {
 test('NAVIGATOR detail requires both creator relationship and live independent grant; reads a consistent snapshot without a plan query', async () => {
   const { tx, db, service } = setup();
   tx.managementGrant.findFirst.mockResolvedValue({ userId: principal.userId } as never);
-  const result = await service.detail(3001, principal);
+  const result = await service.detail(3001, { ...principal, role: 'NAVIGATOR' });
   expect(result).toMatchObject({
     creatorName: '新昵称(新姓名)',
     requesterName: '新昵称(新姓名)',
@@ -73,7 +73,9 @@ test('current PM/handler relation plus grant permits management scope; an unrela
   project.createdBy = 'other';
   tx.managementGrant.findFirst.mockResolvedValue({ userId: principal.userId } as never);
   tx.projectManagerRecruitment.findFirst.mockResolvedValue({ id: 1 } as never);
-  expect(await service.detail(3001, principal)).not.toHaveProperty('productionRequirements');
+  expect(await service.detail(3001, { ...principal, role: 'PM' })).not.toHaveProperty(
+    'productionRequirements',
+  );
   expect(tx.projectManagerRecruitment.findFirst).toHaveBeenCalledWith({
     where: {
       projectId: 3001,
@@ -143,7 +145,7 @@ test('management relationship takes priority for a user also holding an expert m
   tx.managementGrant.findFirst.mockResolvedValue({ userId: principal.userId } as never);
   tx.projectMember.findFirst.mockResolvedValue({ id: 1 } as never);
   tx.user.findUnique.mockResolvedValue({ displayName: ' ', realName: null } as never);
-  const result = await service.detail(3001, principal);
+  const result = await service.detail(3001, { ...principal, role: 'NAVIGATOR' });
   expect(result).toMatchObject({ requesterName: '组织快照', creatorName: '组织快照' });
   expect(result).not.toHaveProperty('productionRequirements');
   expect(tx.projectMember.findFirst).not.toHaveBeenCalled();

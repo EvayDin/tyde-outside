@@ -1,3 +1,5 @@
+import { AttendanceApplicationService } from '../attendance/attendance-application.service.js';
+import { isAttendanceBusiness } from '../attendance/attendance-application.domain.js';
 import { createHash } from 'node:crypto';
 import { Prisma, type PrismaClient, type ApprovalFlow, type User } from '@prisma/client';
 import { AuthError } from '../auth/auth.error.js';
@@ -180,11 +182,12 @@ export class OrganizationApprovalService {
       if (input.action === 'REJECT' && !comment) throw invalid('驳回时actionComment不能为空');
       const flow = await lockFlow(tx, input.flowNo.trim());
       if (flow.applicantOrgId !== input.orgId) throw forbidden('审批流程不属于当前组织');
-      if (flow.businessType !== 'ORG_MEMBER_EXIT') throw invalid('当前接口仅支持组织成员退出审批');
+      if (flow.businessType !== 'ORG_MEMBER_EXIT' && !isAttendanceBusiness(flow.businessType))
+        throw invalid('当前接口仅支持组织成员退出、请假及考勤修正审批');
       if (flow.status !== 'PENDING' || flow.versionNo !== input.flowVersionNo)
         throw approvalConflict();
       if (flow.totalNodes !== 1 || flow.currentNode !== 1)
-        throw invalid('组织成员退出审批流程节点配置不正确');
+        throw invalid('审批流程单节点配置不正确');
       await tx.$queryRaw`SELECT "id" FROM "ApprovalNode" WHERE "id" = ${input.nodeId}::uuid FOR UPDATE`;
       const node = await tx.approvalNode.findUnique({ where: { id: input.nodeId } });
       if (!node) throw new AuthError(404, 'NOT_FOUND', '审批节点不存在');
@@ -194,6 +197,8 @@ export class OrganizationApprovalService {
       if (node.nodeStatus !== 'PENDING' || node.versionNo !== input.nodeVersionNo)
         throw approvalConflict();
       if (node.nodeSeq !== flow.currentNode) throw invalid('审批节点不是流程当前节点');
+      if (isAttendanceBusiness(flow.businessType))
+        return new AttendanceApplicationService(this.db).process(tx, flow, node, input, principal);
       const snapshot = form(flow);
       if (typeof snapshot.targetMemberId !== 'string' || !uuid.test(snapshot.targetMemberId))
         throw malformed('审批表单targetMemberId不合法');
@@ -414,8 +419,7 @@ export class OrganizationApprovalService {
     const rel = await tx.userOrgRel.findUnique({ where: { userId_orgId: { userId, orgId } } });
     if (!rel || !participatingStatuses.includes(rel.joinStatus))
       throw forbidden('当前用户不属于该组织');
-    if (mode === 'OWNER' && rel.position !== 'OWNER')
-      throw forbidden('仅组织主管可处理成员退出审批');
+    if (mode === 'OWNER' && rel.position !== 'OWNER') throw forbidden('仅组织主管可处理审批');
     if (mode === 'MANAGER' && !['OWNER', 'ADMIN'].includes(rel.position))
       throw forbidden('仅组织主管或管理员可访问组织审批');
     return rel;

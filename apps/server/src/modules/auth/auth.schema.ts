@@ -32,8 +32,8 @@ const organizationResponse = {
       examples: [['图像标注']],
     },
     verifyStatus: text(
-      '组织审核状态，读取数据库：PENDING=待审核、APPROVED=通过、REJECTED=拒绝；审核写操作尚未迁移。',
-      'PENDING',
+      '组织生效状态，新建固定APPROVED，表示创建即生效、不代表人工审核；PENDING/REJECTED仅为历史枚举。',
+      'APPROVED',
     ),
     status: text('组织状态，读取数据库：ACTIVE=正常、FROZEN=冻结、DISSOLVED=解散。', 'ACTIVE'),
     position: {
@@ -63,7 +63,7 @@ const userExample = {
   avatarUrl: null,
   bio: null,
   role: 'EXPERT',
-  roles: ['EXPERT'],
+  roles: ['NAVIGATOR', 'PM', 'EXPERT'],
   selectedRole: null,
   hasExpertManagementRole: false,
   status: 'ACTIVE',
@@ -71,6 +71,7 @@ const userExample = {
   lastLoginAt: null,
   lastLoginIp: null,
   organization: null,
+  organizations: [],
   createdAt: '2026-10-16T08:00:00.000Z',
   updatedAt: '2026-10-16T08:00:00.000Z',
 };
@@ -87,7 +88,7 @@ export const userResponse = {
     ),
     accountType: {
       ...text(
-        '账号类型：INDIVIDUAL=个人，ORGANIZATION=组织；与 EXPERT 业务角色不同。',
+        '兼容字段，新注册统一INDIVIDUAL；组织身份由成员关系表达，不以此字段决定权限。',
         'INDIVIDUAL',
       ),
       enum: ['INDIVIDUAL', 'ORGANIZATION'],
@@ -103,30 +104,39 @@ export const userResponse = {
       examples: [0],
     },
     avatarUrl: text(
-      '头像地址或objectKey，未填写/清空时为null；只存字符串，不代表拥有文件读取权限。',
+      '头像展示URL，未填写/清空为null；新上传AVATAR经本人一次性认领后返回签名URL；历史外部URL/objectKey兼容保留，不代表敏感文件读取权限。',
       null,
       true,
     ),
     bio: text('个人简介，未填写或清空时为null。', null, true),
-    role: { ...text('账号主角色，固定为 EXPERT（执行专家）。', 'EXPERT'), enum: ['EXPERT'] },
+    role: {
+      ...text(
+        '当前会话角色；无会话的注册响应默认EXPERT。NAVIGATOR=领航员、PM=策略官、EXPERT=执行专家。',
+        'EXPERT',
+      ),
+      enum: ['NAVIGATOR', 'PM', 'EXPERT'],
+    },
     roles: {
       type: 'array',
-      description: '账号已授予的角色列表，当前固定为 [EXPERT]。',
-      items: { ...text('角色代码，EXPERT=执行专家。', 'EXPERT'), enum: ['EXPERT'] },
-      examples: [['EXPERT']],
+      description: '账号注册自带角色列表，固定NAVIGATOR、PM、EXPERT；不含OPS。',
+      items: {
+        ...text('角色代码：NAVIGATOR=领航员、PM=策略官、EXPERT=执行专家。', 'EXPERT'),
+        enum: ['NAVIGATOR', 'PM', 'EXPERT'],
+      },
+      examples: [['NAVIGATOR', 'PM', 'EXPERT']],
     },
     selectedRole: {
       ...text(
-        '当前会话角色：查询 /users/me 时为 EXPERT；注册及资料更新响应为 null（沿用旧更新服务返回资料的语义）。',
+        '当前服务端会话角色，首次登录默认EXPERT；查询及资料更新返回实际角色；无登录会话的注册响应null。',
         null,
         true,
       ),
-      enum: ['EXPERT', null],
+      enum: ['NAVIGATOR', 'PM', 'EXPERT', null],
     },
     hasExpertManagementRole: {
       type: 'boolean',
       description:
-        '当前会话是否具备执行专家管理职责；查询本人资料时按有效多组织关系判断，OWNER为true；旧SQL还包括组织项目负责人，该分支待07迁移，ADMIN本身不代表执行专家管理职责。注册及资料更新响应为 false；不作为业务权限凭据。',
+        '当前会话是否具备执行专家管理职责；查询本人资料时按有效多组织关系判断，OWNER为true；旧SQL还包括组织项目负责人，该分支待07迁移，ADMIN本身不代表执行专家管理职责。注册响应为false，其他响应只在当前EXPERT且存在有效OWNER关系时为true；不作为业务权限凭据。',
       examples: [false],
     },
     status: text(
@@ -145,6 +155,25 @@ export const userResponse = {
     ),
     lastLoginIp: text('最近一次密码或短信登录的客户端 IP；尚未登录时为 null。', null, true),
     organization: organizationResponse,
+    organizations: {
+      type: 'array',
+      description:
+        '本人全部有效组织关系，按组织ID排序；无组织为空数组。与当前角色无关，不作为组织管理授权凭据。',
+      items: {
+        type: 'object',
+        description: '单个有效组织关系摘要。',
+        required: ['id', 'name', 'position', 'joinStatus', 'status', 'verifyStatus'],
+        properties: {
+          id: organizationResponse.properties.id,
+          name: organizationResponse.properties.name,
+          position: organizationResponse.properties.position,
+          joinStatus: organizationResponse.properties.joinStatus,
+          status: organizationResponse.properties.status,
+          verifyStatus: organizationResponse.properties.verifyStatus,
+        },
+      },
+      examples: [[]],
+    },
     createdAt: text('账号创建时间，ISO 8601 UTC 时间字符串。', userExample.createdAt),
     updatedAt: text('账号最近更新时间，ISO 8601 UTC 时间字符串。', userExample.updatedAt),
   },
@@ -267,21 +296,25 @@ const operationDescriptions: Record<string, string> = {
   checkNickname:
     '可匿名调用，无请求体，必填查询参数nickname；trim后检查唯一性，按数字后缀给出建议。不预留昵称，注册冲突仍返回409。新库按大小写敏感精确匹配，旧MySQL排序规则兼容性待验收。',
   updateCurrentUser:
-    '仅更新当前有效会话本人，无目标用户参数；未传/null保持，头像/简介/未认证身份证空白可清空。姓名、邮箱及昵称不在旧更新字段中。已认证证件更改403、重复证件409。密码必须成对一致，更新与全部会话撤销同事务；成功清除Web/Electron Cookie并须重新登录。roles沿用固定EXPERT兼容策略，忽略已知角色选择。响应selectedRole=null、hasExpertManagementRole=false，与旧更新服务返回资料语义一致。多组织资料已按有效关系选取；在线状态/实时通知及完整项目管理能力待后续回补。',
+    '仅更新当前有效会话本人，无目标用户参数；AVATAR须登录上传，新关联传avatarUrl=objectKey和avatarUploadToken=uploadToken，认领、替换/清空释放旧头像与资料同事务；重复保存本人已认领头像无需再次消费凭证。未传/null保持，头像/简介/未认证身份证空白可清空。姓名、邮箱及昵称不在旧更新字段中。已认证证件更改403、重复证件409。密码必须成对一致，更新与全部会话撤销同事务；成功清除Web/Electron Cookie并须重新登录。roles兼容字段不改三角色资格，响应返回实际会话角色及组织管理展示标志。多组织资料已按有效关系选取；在线状态/实时通知及完整项目管理能力待后续回补。',
   sendCode:
     '按 scene 发送验证码。不同场景独立验证，手机号跨场景共用 60 秒发送冷却；验证码 5 分钟有效，错误尝试最多 5 次。当前开发/测试仅 mock，不实际发短信，验证码为字符串 095270。',
   register:
-    '使用 scene=register 的验证码或短信登录返回的 registrationToken 注册个人或组织账号（两者必须且只能提交一个），固定 EXPERT；成功返回用户资料，不自动登录。ORGANIZATION 必须填写 organization.name；个人账号不创建组织。可选营业执照须先通过文件上传获取 BUSINESS_LICENSE 的 objectKey/uploadToken；认领、验证码消费和注册同事务，失败回滚。',
+    '使用 scene=register 的验证码或短信登录返回的 registrationToken 注册统一账号（两者必须且只能提交一个），自带NAVIGATOR/PM/EXPERT；成功返回用户资料，不自动登录，不创建组织。组织资料请登录后调用POST /organizations。',
   login:
-    '通过手机号、备用邮箱或 uid 与密码登录，固定 EXPERT。成功签发前在同一事务激活所有PENDING_ACTIVATION（待激活）组织关系并递增版本；激活失败整体回滚，不签发令牌。随后签发访问/刷新令牌并更新最近登录时间/IP；密码错误或无账号返回 401，禁用账号返回 403。',
+    '通过手机号、备用邮箱或 uid 与密码登录，默认EXPERT，允许提交记住的NAVIGATOR/PM/EXPERT；OPS禁止。成功签发前在同一事务激活所有PENDING_ACTIVATION（待激活）组织关系并递增版本；激活失败整体回滚，不签发令牌。随后签发访问/刷新令牌并更新最近登录时间/IP；密码错误或无账号返回 401，禁用账号返回 403。',
   loginBySms:
-    '使用 scene=login 的验证码验证手机号，固定 EXPERT。已注册账号先在同一事务激活待激活组织关系（版本递增），激活失败回滚验证码消费且不签发令牌；随后签发登录令牌。未注册返回 HTTP 200、status=registration_required、registrationToken 和 expiresAt，客户端展示注册表单。凭证绑定手机号、10 分钟有效且一次性，再次验证同手机号后旧凭证失效；未提交注册不创建用户或会话。验证码成功使用后失效。',
+    '使用 scene=login 的验证码验证手机号，默认EXPERT，允许提交记住的NAVIGATOR/PM/EXPERT；OPS禁止。已注册账号先在同一事务激活待激活组织关系（版本递增），激活失败回滚验证码消费且不签发令牌；随后签发登录令牌。未注册返回 HTTP 200、status=registration_required、registrationToken 和 expiresAt，客户端展示注册表单。凭证绑定手机号、10 分钟有效且一次性，再次验证同手机号后旧凭证失效；未提交注册不创建用户或会话。验证码成功使用后失效。',
   refresh:
     '提交 refreshToken 换取新令牌对；原访问令牌及刷新令牌失效，重复使用返回 401。客户端类型必须与原登录一致；刷新不会更新最近登录时间/IP。',
   resetPassword:
     '使用 scene=reset_password 的验证码修改密码。成功后撤销该账号全部客户端的访问与刷新令牌，须重新登录；成功 data 为 null。',
   getCurrentUser:
-    '根据当前有效会话返回用户资料，selectedRole=EXPERT；没有有效会话返回 401。组织资料按真实多组织关系选择；实名和项目管理能力尚待迁移，当前占位字段见响应说明。',
+    '根据当前有效会话返回用户资料，selectedRole为实际会话角色；没有有效会话返回 401。组织资料按真实多组织关系选择；实名和项目管理能力尚待迁移，当前占位字段见响应说明。',
+  switchRole:
+    '只修改当前有效会话的selectedRole，不重新签发令牌，不影响其他会话；刷新令牌保留角色。',
+  createOrganization:
+    '须有效登录且当前角色EXPERT。组织、本人ACTIVE/OWNER关系及可选营业执照认领同事务；创建即ACTIVE/APPROVED，无人工审核；允许多组织。名称或信用代码重复409，失败全部回滚；重复同名提交不会重复创建。',
   logout:
     '撤销当前访问令牌对应的会话及其刷新令牌，Web/Electron 页面同时清除登录 Cookie；不影响其他客户端会话。没有会话也成功，data 为 null。',
 };
@@ -307,7 +340,7 @@ export function authSchema(
     operationId,
     summary,
     tags: ['Auth'],
-    description: `${operationDescriptions[operationId] ?? summary}\n\n沿用旧字段与 code/message/data 包装。role/roles 可省略；即使传入其他已知角色仍固定 EXPERT。Web/Electron 页面使用 HttpOnly Cookie，写请求声明 X-Tyde-Client: web，Origin 须精确匹配 WEB_ORIGINS 或 DESKTOP_ORIGINS。普通 Web 使用 SameSite=Lax；桌面来源使用 SameSite=None、Secure，跨源 fetch 须使用 credentials: include。CORS 允许 Content-Type、X-Tyde-Client、Idempotency-Key，并暴露 Retry-After、Content-Disposition。仅非浏览器 API 客户端使用 X-Tyde-Client: desktop 和 Bearer，禁止 Origin、Cookie、sec-fetch-*；无这些浏览器头、Cookie 和客户端声明的 API 调试请求自动按 Bearer 客户端处理。不要混用 Cookie 与 Authorization。`,
+    description: `${operationDescriptions[operationId] ?? summary}\n\n沿用旧字段与 code/message/data 包装。role/roles 可省略；即使传入其他已知角色仍默认EXPERT，允许提交记住的NAVIGATOR/PM/EXPERT；OPS禁止。Web/Electron 页面使用 HttpOnly Cookie，写请求声明 X-Tyde-Client: web，Origin 须精确匹配 WEB_ORIGINS 或 DESKTOP_ORIGINS。普通 Web 使用 SameSite=Lax；桌面来源使用 SameSite=None、Secure，跨源 fetch 须使用 credentials: include。CORS 允许 Content-Type、X-Tyde-Client、Idempotency-Key，并暴露 Retry-After、Content-Disposition。仅非浏览器 API 客户端使用 X-Tyde-Client: desktop 和 Bearer，禁止 Origin、Cookie、sec-fetch-*；无这些浏览器头、Cookie 和客户端声明的 API 调试请求自动按 Bearer 客户端处理。不要混用 Cookie 与 Authorization。`,
     security: protectedRoute ? [{ webSession: [] }, { desktopSession: [] }] : [],
     response: {
       200: response,

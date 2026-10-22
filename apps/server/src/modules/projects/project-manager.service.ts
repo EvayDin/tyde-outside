@@ -70,9 +70,7 @@ export class ProjectManagerService {
         SELECT "candidateUserId", COUNT(*) AS "count" FROM "ProjectManagerRecruitment"
         WHERE "status" = 'ASSIGNED' GROUP BY "candidateUserId"
       ) load ON load."candidateUserId" = u."id"
-      WHERE (u."id" = ${current}::uuid OR (u."status" = 'ACTIVE' AND EXISTS (
-        SELECT 1 FROM "ManagementGrant" g WHERE g."userId" = u."id" AND g."role" = 'PM' AND g."revokedAt" IS NULL
-      ))) ${keywordFilter} ${idFilter}
+      WHERE (u."id" = ${current}::uuid OR u."status" = 'ACTIVE' ) ${keywordFilter} ${idFilter}
       ORDER BY CASE WHEN u."id" = ${current}::uuid THEN 0 ELSE 1 END,
         COALESCE(load."count", 0), u."creditScore" DESC NULLS LAST, u."id" ASC`);
   }

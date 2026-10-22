@@ -97,11 +97,7 @@ export class ProjectCreationService {
             select: { id: true },
           }))
         )
-          throw conflict(
-            requester.requesterType === 'ORGANIZATION'
-              ? '组织内已有同名项目，请确认或修改名称'
-              : '已有同名项目，请确认或修改名称',
-          );
+          throw conflict('已有同名项目，请确认或修改名称');
         const state = {
           status: publishing ? 'PUBLISHED' : 'DRAFT',
           currentNodeCode: publishing ? 'RECRUIT_PROJECT_MANAGER' : null,

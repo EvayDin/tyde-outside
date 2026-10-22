@@ -28,7 +28,7 @@ export const uploadResponse = {
       uploadExample.objectKey,
     ),
     uploadToken: text(
-      '256 位随机一次性认领凭证，仅本次返回；默认 24 小时有效，可由服务端配置。组织注册使用 BUSINESS_LICENSE，业务附件由对应业务认领；不能代替登录或作为查看凭据。',
+      '256 位随机一次性认领凭证，仅本次返回；默认 24 小时有效，可由服务端配置。组织创建使用 BUSINESS_LICENSE；头像使用AVATAR，保存资料时以avatarUrl=objectKey及avatarUploadToken=uploadToken关联；业务附件由对应业务认领；不能代替登录或作为查看凭据。',
       uploadExample.uploadToken,
     ),
     url: {
@@ -81,7 +81,7 @@ export function uploadBody(batch: boolean) {
         : file,
       bizType: {
         ...text(
-          '业务类型，大小写不敏感；省略或空白为 COMMON。BUSINESS_LICENSE=营业执照、ID_CARD=身份证、ORG_LOGO=组织标志、AVATAR=头像、IMAGE=图片、VIDEO=视频、DOCUMENT=文档、EXCEL=表格、JSON=JSON数据、PROJECT_ATTACHMENT=项目附件、ENTRANCE_EXAM_ATTACHMENT=准入考试附件、COMMON=通用文件。除 COMMON 外大类固定，不能用 category 放宽；两种业务附件须登录。',
+          '业务类型，大小写不敏感；省略或空白为 COMMON。BUSINESS_LICENSE=营业执照、ID_CARD=身份证、ORG_LOGO=组织标志、AVATAR=头像、IMAGE=图片、VIDEO=视频、DOCUMENT=文档、EXCEL=表格、JSON=JSON数据、PROJECT_ATTACHMENT=项目附件、ENTRANCE_EXAM_ATTACHMENT=准入考试附件、COMMON=通用文件。除 COMMON 外大类固定，不能用 category 放宽；头像与两种业务附件须登录，关联头像需将objectKey及uploadToken作为avatarUrl和avatarUploadToken提交/users/me/update。',
           'BUSINESS_LICENSE',
         ),
         enum: Object.keys(businesses),
@@ -131,7 +131,7 @@ export function fileSchema(
   const errors: Record<number, string> = {
     400: '请求格式、字段、文件类型或内容不正确。',
     401: '必须登录，或会话已失效。',
-    403: '无文件权限、敏感文件不允许签名链接或请求来源不可信；已认领项目附件须存活项目/附件关系，并具备创建人NAVIGATOR或当前主策略官/协作负责人PM授权；专家及考试附件权限仍待接入。',
+    403: '无文件权限、敏感文件不允许签名链接或请求来源不可信；已认领项目附件须存活项目/附件关系，并具备创建人NAVIGATOR或当前主策略官/协作负责人PM授权；专家项目附件须真实接单及准入条件；考试附件管理端须当前PM角色且为主策略官/协作负责人或当前NAVIGATOR角色且为需求方/创建人，考生与组织职责分支待07/08。',
     404: '文件不存在。',
     413: '文件、数量或整个 multipart 请求超过服务端限制。',
     500: '内部处理失败。',

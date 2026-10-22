@@ -1,5 +1,7 @@
 # 生产计划查询与确认
 
+> 2026-10-22现行规则：当前PM+当前ASSIGNED主策略官可确认，协作负责人只读；不再要求独立PM授权。注册自带三角色，切换不替代任职和项目数据范围。详见[统一账号与组织创建](UNIFIED_ACCOUNTS.md)。本轮证据见[插队任务](../../backend-migration/priority-unified-accounts/todoTask.md)。
+
 API-036 `GET /api/v1/projects/production-plan`、API-037 `POST /api/v1/projects/production-plan/confirm`已接入本后端。两入口的projectId都在URL查询参数中；POST请求体保持旧字段。第12迁移`20261020000000_project_production_plans`新增ProjectProductionPlan、ProjectProductionCrowd和ProjectProductionStage，不修改已应用迁移、不创建计划或授权。当前267项单测已通过；用户2026-10-20回传110项集成全部通过（总46.38秒），第12所需专用库结构及新增8项业务用例已验证，原缺表阻塞解除；迁移历史未另查，开发/部署及兼容仍待验收。
 
 ## 权限与范围

@@ -82,7 +82,8 @@ export const requesterParams = {
     requesterType: {
       type: 'string',
       enum: ['INDIVIDUAL', 'ORGANIZATION'],
-      description: '需求方账号类型，必填：INDIVIDUAL=个人、ORGANIZATION=组织，必须与当前账号一致。',
+      description:
+        '需求方账号类型，必填：INDIVIDUAL=个人、ORGANIZATION=组织，统一账号仅支持INDIVIDUAL本人；ORGANIZATION选择未开放，返回400。',
       examples: ['INDIVIDUAL'],
     },
     requesterId: {
@@ -93,10 +94,7 @@ export const requesterParams = {
       examples: [userId],
     },
   },
-  examples: [
-    { requesterType: 'INDIVIDUAL', requesterId: userId },
-    { requesterType: 'ORGANIZATION', requesterId: userId },
-  ],
+  examples: [{ requesterType: 'INDIVIDUAL', requesterId: userId }],
 };
 export const requesterResponse = {
   type: 'object',
@@ -136,13 +134,6 @@ export const requesterResponse = {
       orgId: null,
       orgVerifyStatus: null,
     },
-    {
-      requesterType: 'ORGANIZATION',
-      requesterId: userId,
-      requesterName: '示例标注团队',
-      orgId,
-      orgVerifyStatus: 'PENDING',
-    },
   ],
 };
 export function projectFoundationSchema(
@@ -163,7 +154,7 @@ export function projectFoundationSchema(
     operationId,
     summary,
     tags: ['Project'],
-    description: `${description} 无请求体，只读无副作用。须有效登录及独立NAVIGATOR管理授权，不从User.role、注册参数或客户端角色声明推导。注册/登录身份仍固定EXPERT。Web用会话Cookie并遵循来源校验；桌面/无浏览器头的普通API客户端用Bearer，不得混用Cookie与Authorization。`,
+    description: `${description} 无请求体，只读无副作用。须有效登录及服务端当前NAVIGATOR角色，不从User.role、注册参数或客户端角色声明推导。注册自带三角色，登录默认EXPERT。Web用会话Cookie并遵循来源校验；桌面/无浏览器头的普通API客户端用Bearer，不得混用Cookie与Authorization。`,
     security: [{ webSession: [] }, { desktopSession: [] }],
     response: {
       200: resultSchema(response),

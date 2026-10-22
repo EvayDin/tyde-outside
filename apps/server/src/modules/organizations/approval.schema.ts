@@ -1,3 +1,8 @@
+import {
+  attendanceFormProperties,
+  attendanceProcessFields,
+  attendanceProcessExample,
+} from '../attendance/attendance-application.schema.js';
 import { orgIdField } from './organization.schema.js';
 type Schema = Record<string, unknown>;
 const orgId = '00000000-0000-4000-8000-000000000002';
@@ -117,7 +122,7 @@ const queryProperties = {
   orgId: orgIdField,
   businessType: {
     ...text(
-      '可选业务类型精确筛选；trim后空白/null不筛选。ORG_MEMBER_EXIT=组织成员退出，其他业务查询可保留，处理接口仅支持退出。',
+      '可选业务类型精确筛选；trim后空白/null不筛选。ORG_MEMBER_EXIT=组织成员退出，其他业务查询可保留，处理接口支持退出、ATTENDANCE_LEAVE=请假、ATTENDANCE_CORRECTION=考勤修正。',
       'ORG_MEMBER_EXIT',
       true,
     ),
@@ -226,10 +231,13 @@ export const exitResponse = object(
 const commonProperties = {
   flowNo: text('审批流程编号。', flowNo),
   businessType: text(
-    '业务类型，当前创建ORG_MEMBER_EXIT，其他业务由后续模块接入。',
+    '业务类型：ORG_MEMBER_EXIT=退出组织、ATTENDANCE_LEAVE=请假、ATTENDANCE_CORRECTION=考勤修正；其余类型沿实际业务值返回。',
     'ORG_MEMBER_EXIT',
   ),
-  businessId: text('业务主键；退出业务为成员关系ID。', memberId),
+  businessId: text(
+    '业务主键；退出为成员关系UUID，考勤为申请人UUID:yyyy-MM-dd，须结合业务类型及组织解释。',
+    memberId,
+  ),
   businessNo: text('业务单号，无则null。', null, true),
   title: text('申请标题快照。', '小张(张三)退出组织'),
   applicantName: text(
@@ -261,12 +269,17 @@ const commonExample = {
   appliedAt: '2026-10-19T06:00:00.000Z',
 };
 const formData = {
-  ...object('完整表单快照；本阶段组织退出的字段如下，后续业务可扩展JSON字段，不包含登录凭据。', {
-    targetMemberId: id('退出目标组织关系ID', memberId),
-    targetMemberName: text('目标显示名创建时快照。', '小张(张三)'),
-    plannedLeaveDate: date('申请拟离职日期'),
-    joinStatus,
-  }),
+  ...object(
+    '完整业务表单快照，按businessType解释：退出使用拟离职日期/成员状态，考勤使用日期/目标状态/时段/版本。仅业务自身字段存在，不强制其他业务字段；不包含登录凭据。',
+    {
+      targetMemberId: id('退出目标组织关系ID', memberId),
+      targetMemberName: text('目标显示名创建时快照。', '小张(张三)'),
+      plannedLeaveDate: date('申请拟离职日期'),
+      joinStatus,
+      ...attendanceFormProperties,
+    },
+  ),
+  required: [],
   nullable: true,
   additionalProperties: true,
 };
@@ -365,6 +378,38 @@ export const pendingResponse = page(
   pendingExample,
   '仅组织内当前审批人PENDING节点且流程PENDING的待办分页；按申请时间升序。',
 );
+const attendancePendingExample = {
+  ...pendingExample,
+  flowNo: 'ATAEXAMPLE',
+  businessType: 'ATTENDANCE_CORRECTION',
+  businessId: `${userId}:2020-01-01`,
+  title: '小张考勤修正申请',
+  plannedLeaveDate: null,
+  formData: {
+    schemaVersion: 1,
+    orgId,
+    attendanceDate: '2020-01-01',
+    applicationType: 'CORRECTION',
+    finalStatus: 'PRESENT',
+    reason: '补充出勤说明',
+    versionNo: null,
+    dailyId: null,
+    targetMemberId: memberId,
+    targetMemberName: '小张(张三)',
+    scheduleId: 1,
+    scheduleVersionNo: 0,
+    timezone: 'Asia/Shanghai',
+    leaveStartAt: null,
+    leaveEndAt: null,
+  },
+};
+(pendingResponse.examples as unknown[]).push({
+  total: 1,
+  pages: 1,
+  current: 1,
+  size: 20,
+  records: [attendancePendingExample],
+});
 export const recordsResponse = page(
   recordProperties,
   recordExample,
@@ -382,7 +427,7 @@ export const processExample = {
   processedAt: '2026-10-19T06:00:00.000Z',
   finishedAt: '2026-10-19T06:00:00.000Z',
 };
-export const processResponse = object(
+const exitProcessResponse = object(
   '节点/流程/成员状态同事务结果；审批通过日已到立即LEFT并留项目补偿记录，未来日期PENDING_LEAVE；驳回恢复ACTIVE并清空拟离职日。',
   {
     flowNo: text('处理的流程编号。', flowNo),
@@ -394,7 +439,7 @@ export const processResponse = object(
     flowStatus,
     currentNode: {
       type: ['integer', 'null'],
-      description: '下一节点序号；当前退出单节点终结固定null。',
+      description: '下一节点序号；当前单节点审批终结固定null。',
       examples: [null],
     },
     joinStatus,
@@ -405,3 +450,19 @@ export const processResponse = object(
   undefined,
   processExample,
 );
+
+export const processResponse = {
+  ...exitProcessResponse,
+  description:
+    '退出或考勤单节点审批结果，全部状态及副作用同事务；退出返回成员状态，考勤分支成员状态/离职日期为null，并返回日考勤与流程版本。',
+  properties: {
+    ...(exitProcessResponse.properties as Record<string, Schema>),
+    ...attendanceProcessFields,
+    joinStatus: {
+      ...joinStatus,
+      description: String(joinStatus.description) + '考勤审批固定null，不变更组织成员状态。',
+    },
+    plannedLeaveDate: date('退出审批通过时的拟离职日期；驳回或考勤审批固定null', true),
+  },
+  examples: [processExample, attendanceProcessExample],
+};

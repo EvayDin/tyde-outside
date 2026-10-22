@@ -1,5 +1,7 @@
 # 项目草稿与发布
 
+> 2026-10-22现行规则：统一账号的新项目需求方固定本人INDIVIDUAL，组织成员关系不自动改成组织需求方；ORGANIZATION选择未开放返回400。草稿/发布仍保持登录+本人范围。管理读取/文件按服务端当前NAVIGATOR/PM/EXPERT及实际关系判断，不依赖独立授权表。详见[统一账号与组织创建](UNIFIED_ACCOUNTS.md)。本轮证据见[插队任务](../../backend-migration/priority-unified-accounts/todoTask.md)。
+
 04本批接入API-029 `GET /api/v1/projects/draft/current`和API-030 `POST /api/v1/projects/create`。项目、分类关联及附件模型由第9个迁移`20261019060000_project_drafts`创建；第10个迁移`20261019070000_file_business_identifiers`将上传台账claimedBizId从UUID改为VARCHAR(64)，兼容组织UUID与数值项目ID文本。项目/附件/分类关联ID为新库32位正整数，保持旧JSON数值类型；需求方用户ID继续采用新库UUID。新旧数据库及标识不互通，旧Long范围、排序/大小写和JSON极大数字精度仍待兼容验收。
 
 ## 认证与范围

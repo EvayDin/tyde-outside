@@ -292,7 +292,7 @@ export function productionPlanSchema(write: boolean): FastifySchema {
   const errors = {
     400: '参数、日期或数值不合法，或生产计划已确认。',
     401: '未登录或会话失效。',
-    403: '缺独立PM授权、非当前任职范围、协作负责人尝试确认或来源不可信。',
+    403: '缺当前PM角色、非当前任职范围、协作负责人尝试确认或来源不可信。',
     404: '项目不存在/已删除；查询草稿也返回404。',
     409: '生产计划唯一约束或节点更新发生并发冲突。',
     500: '内部处理失败。',
@@ -305,7 +305,7 @@ export function productionPlanSchema(write: boolean): FastifySchema {
     security: [{ webSession: [] }, { desktopSession: [] }],
     querystring: productionPlanQuery,
     description:
-      '须独立PM授权及当前ASSIGNED主策略官关系；GET亦允许当前招募协作负责人只读。注册登录固定EXPERT，User.role不授予权限。沿用Cookie/Bearer和写请求来源校验。' +
+      '须当前PM角色及当前ASSIGNED主策略官关系；GET亦允许当前招募协作负责人只读。注册自带三角色，登录默认EXPERT，User.role不授予权限。沿用Cookie/Bearer和写请求来源校验。' +
       (write
         ? 'projectId在URL查询参数，body为完整计划；锁项目后重新校验任职，只可确认一次，重复400；不同并发请求串行，唯一冲突409。主表、人群、阶段、节点与管理主线轮次同事务；只推进节点不回退、不清空项目表单。不新增实时事件（旧动作显式关闭），支线采集及考试/培训执行待后续。'
         : '无请求体；无计划返回默认项，已确认只读；实时参考字段来自项目。'),

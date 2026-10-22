@@ -1,3 +1,14 @@
+import { ExamQueryService } from './modules/entrance-exams/exam-query.service.js';
+import { ExamImportService } from './modules/entrance-exams/exam-import.service.js';
+import { ExamCommandService } from './modules/entrance-exams/exam-command.service.js';
+import { examManagementRoutes } from './modules/entrance-exams/exam-management.routes.js';
+import { ExamManagementService } from './modules/entrance-exams/exam-management.service.js';
+import { expertAssignmentRoutes } from './modules/expert/expert-assignment.routes.js';
+import { ExpertAssignmentService } from './modules/expert/expert-assignment.service.js';
+import { attendanceRoutes } from './modules/attendance/attendance.routes.js';
+import { AttendanceService } from './modules/attendance/attendance.service.js';
+import { personalApplicationRoutes } from './modules/users/personal-application.routes.js';
+import { PersonalApplicationService } from './modules/users/personal-application.service.js';
 import { ProjectListService } from './modules/projects/project-list.service.js';
 import { ProjectQueryService } from './modules/projects/project-query.service.js';
 import { ProjectProductionPlanService } from './modules/projects/project-production-plan.service.js';
@@ -42,6 +53,7 @@ export function fastifyOptions(config: Config): FastifyServerOptions {
         '*.accessToken',
         '*.refreshToken',
         '*.uploadToken',
+        '*.avatarUploadToken',
         '*.claimTokenHash',
       ],
     },
@@ -72,7 +84,9 @@ export async function createApp(
       req.url.startsWith(`${API_PREFIX}/organizations`) ||
       req.url.startsWith(`${API_PREFIX}/project-categories`) ||
       req.url.startsWith(`${API_PREFIX}/project-requesters`) ||
-      req.url.startsWith(`${API_PREFIX}/projects/`);
+      req.url.startsWith(`${API_PREFIX}/projects/`) ||
+      req.url.startsWith(`${API_PREFIX}/expert-assignments/`) ||
+      req.url.startsWith(`${API_PREFIX}/entrance-exams/`);
     const failure = (status: number, code: string, message: string) =>
       legacy
         ? { code: status === 429 ? 4292 : status, message, data: null }
@@ -109,6 +123,18 @@ export async function createApp(
   const files = new FileRegistryService(db, storage, config.files);
   const auth = new AuthService(db, config, undefined, files);
   await authRoutes(app, auth, config);
+  await personalApplicationRoutes(app, new PersonalApplicationService(db), auth, config);
+  await attendanceRoutes(app, new AttendanceService(db), auth, config);
+  await expertAssignmentRoutes(app, new ExpertAssignmentService(db), auth, config);
+  await examManagementRoutes(
+    app,
+    new ExamManagementService(db),
+    auth,
+    config,
+    new ExamImportService(db, new FileService(files)),
+    new ExamCommandService(db, files),
+    new ExamQueryService(db),
+  );
   await fileRoutes(app, new FileService(files), auth, config);
   await organizationRoutes(app, new OrganizationService(db), auth, config);
   await projectFoundationRoutes(

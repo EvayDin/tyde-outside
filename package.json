@@ -46,7 +46,8 @@
     "db:generate": "pnpm --filter @tyde/server db:generate",
     "db:migrate": "pnpm --filter @tyde/server db:migrate",
     "db:deploy": "pnpm --filter @tyde/server db:deploy",
-    "db:cleanup": "pnpm --filter @tyde/server db:cleanup"
+    "db:cleanup": "pnpm --filter @tyde/server db:cleanup",
+    "db:deploy:test": "node scripts/migrate-test.mjs"
   },
   "lint-staged": {
     "*.{js,cjs,mjs,jsx,ts,tsx}": "eslint --max-warnings 0 --no-warn-ignored",
