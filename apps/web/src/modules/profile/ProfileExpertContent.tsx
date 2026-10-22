@@ -1,0 +1,646 @@
+import { useState, type FormEvent } from 'react';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { Link } from '@tanstack/react-router';
+import { ApiError, type AuthUser, type WorkbenchAttendanceCalendarStatus } from '@tyde/shared';
+import { BriefcaseBusiness, Building2, CalendarCheck2 } from 'lucide-react';
+import { ErrorNotice } from '@/components/ErrorNotice';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { SESSION_KEY } from '@/hooks/useSession';
+import { joinStatusLabels, positionLabels, shanghaiToday } from '@/modules/organizations/common';
+import { api } from '@/services/api';
+
+const panelClass = 'min-w-0 space-y-[20px] rounded-[8px] border bg-card p-[16px] sm:p-[24px]';
+const quietClass = 'text-[13px] leading-[22px] text-[var(--color-neutral-strong)]';
+const flowLabels = {
+  PENDING: '待审批',
+  APPROVED: '已通过',
+  REJECTED: '已驳回',
+  WITHDRAWN: '已撤回',
+  CANCELED: '已取消',
+};
+const nodeLabels: Record<string, string> = {
+  ENTRANCE_EXAM: '准入考试',
+  STANDARD_TRAINING: '标准与培训',
+  PRODUCTION_TASK: '生产任务',
+  OUTPUT_DATA_REVIEW: '检查数据',
+  MEMBER_MOVEMENT_APPROVAL: '人员变动审批',
+  MEMBER_ENTRY_CONFIRM: '确认入项时间',
+};
+const admissionLabels = {
+  PASSED: '已通过准入',
+  PENDING: '待阅卷',
+  NOT_PASSED: '未通过准入',
+  NOT_EXAMINED: '未参加考试',
+};
+const profileScope = (user: AuthUser) => [
+  'profile-workbench',
+  user.id,
+  user.organization?.id,
+  user.organization?.position,
+  user.organization?.joinStatus,
+];
+const attendanceMeta: Record<
+  WorkbenchAttendanceCalendarStatus,
+  { label: string; short: string; color: string }
+> = {
+  PRESENT: {
+    label: '正常出勤',
+    short: '勤',
+    color: 'bg-accent text-[var(--color-primary-strong)]',
+  },
+  LATE: {
+    label: '迟到',
+    short: '迟',
+    color: 'bg-[var(--color-warning-soft)] text-[var(--color-warning-hover)]',
+  },
+  EARLY_LEAVE: {
+    label: '早退',
+    short: '早',
+    color: 'bg-[var(--color-warning-soft)] text-[var(--color-warning-hover)]',
+  },
+  LATE_EARLY: {
+    label: '迟到且早退',
+    short: '迟早',
+    color: 'bg-[var(--color-warning-soft)] text-[var(--color-warning-hover)]',
+  },
+  LEAVE: { label: '请假', short: '假', color: 'bg-accent text-[var(--color-primary-strong)]' },
+  ABSENT: {
+    label: '缺勤',
+    short: '缺',
+    color: 'bg-[var(--color-danger-soft)] text-[var(--color-danger-strong)]',
+  },
+  REST: { label: '休息', short: '休', color: 'bg-muted text-muted-foreground' },
+  UNSCHEDULED: { label: '未排班', short: '—', color: 'bg-card text-muted-foreground' },
+  REVIEW_REQUIRED: {
+    label: '需人工复核',
+    short: '复',
+    color: 'bg-[var(--color-danger-soft)] text-[var(--color-danger-strong)]',
+  },
+  PENDING_ATTENDANCE: {
+    label: '待出勤',
+    short: '待',
+    color: 'bg-accent text-[var(--color-primary-strong)]',
+  },
+};
+
+/** 业务读取失去会话时让公共会话边界重新确认身份，不将业务错误当作登录成功。 */
+async function readProfile<T>(request: Promise<T>, cache: QueryClient): Promise<T> {
+  try {
+    return await request;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401)
+      await cache.invalidateQueries({ queryKey: SESSION_KEY });
+    throw error;
+  }
+}
+
+/** 只有执行专家视图挂载本人业务；角色切换卸载读取，资料与安全由外层共用。 */
+export function ProfileExpertContent({ user }: { user: AuthUser }) {
+  const [tab, setTab] = useState('projects');
+  const scope = profileScope(user);
+  return (
+    <Tabs value={tab} onValueChange={setTab} className="min-w-0">
+      <h2 className="sr-only">执行专家业务</h2>
+      <TabsList
+        variant="business"
+        aria-label="执行专家个人中心业务"
+        className="flex w-full gap-[4px]"
+      >
+        {[
+          { value: 'projects', label: '我的项目', Icon: BriefcaseBusiness },
+          { value: 'attendance', label: '排班考勤', Icon: CalendarCheck2 },
+          { value: 'organization', label: '组织与申请', Icon: Building2 },
+        ].map(({ value, label, Icon }) => (
+          <TabsTrigger
+            key={value}
+            variant="business"
+            value={value}
+            className="h-[44px] min-w-0 flex-1 px-[6px] text-[12px] sm:px-[12px]"
+          >
+            <Icon className="hidden size-[16px] shrink-0 sm:block" aria-hidden />
+            {label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+      <TabsContent value="projects" className="m-0 min-w-0">
+        {tab === 'projects' && <ExpertProjects key={scope.join(':')} user={user} />}
+      </TabsContent>
+      <TabsContent value="attendance" className="m-0 min-w-0">
+        {tab === 'attendance' && <ExpertAttendance key={scope.join(':')} user={user} />}
+      </TabsContent>
+      <TabsContent value="organization" className="m-0 min-w-0">
+        {tab === 'organization' && <ExpertApplications key={scope.join(':')} user={user} />}
+      </TabsContent>
+    </Tabs>
+  );
+}
+
+function ExpertProjects({ user }: { user: AuthUser }) {
+  const cache = useQueryClient();
+  const [keyword, setKeyword] = useState('');
+  const [search, setSearch] = useState('');
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const projects = useQuery({
+    queryKey: [...profileScope(user), 'projects', search],
+    queryFn: () => readProfile(api.getMyExpertProjects(search || undefined), cache),
+  });
+  const selectedProject = projects.isSuccess
+    ? projects.data.find((project) => project.assignmentId === selectedId)
+    : undefined;
+  const detail = useQuery({
+    queryKey: [...profileScope(user), 'project-detail', selectedProject?.assignmentId],
+    queryFn: () => readProfile(api.getExpertAssignmentDetail(selectedProject!.assignmentId), cache),
+    enabled: !!selectedProject,
+  });
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    setSelectedId(null);
+    if (search === keyword.trim()) void projects.refetch();
+    else setSearch(keyword.trim());
+  }
+  return (
+    <section aria-label="我的项目" className={panelClass}>
+      <div>
+        <h3 className="text-[17px] leading-[26px] font-semibold">我的项目</h3>
+        <p className={`mt-[6px] ${quietClass}`}>
+          查看本人已接单项目与当前履约节点，参与范围以服务端实际分配为准。
+        </p>
+      </div>
+      <form onSubmit={submit} className="flex min-w-0 flex-wrap items-end gap-[8px]">
+        <label className="min-w-0 flex-1 basis-[180px] text-[12px] leading-[20px]">
+          搜索我的项目
+          <Input
+            size="profile"
+            className="mt-[6px]"
+            maxLength={100}
+            value={keyword}
+            placeholder="项目名称、需求方或节点"
+            onChange={(event) => setKeyword(event.target.value)}
+          />
+        </label>
+        <Button type="submit" variant="outline" size="settings" loading={projects.isFetching}>
+          查询项目
+        </Button>
+      </form>
+      {projects.isPending && (
+        <p role="status" className={quietClass}>
+          正在读取我的项目…
+        </p>
+      )}
+      {projects.isError && (
+        <div className="space-y-[8px]">
+          <ErrorNotice error={projects.error} />
+          <Button variant="outline" size="settings" onClick={() => void projects.refetch()}>
+            重新读取项目
+          </Button>
+        </div>
+      )}
+      {projects.isSuccess && projects.data.length === 0 && (
+        <p className={`${quietClass} py-[24px] text-center`}>暂无符合执行专家参与范围的项目</p>
+      )}
+      {projects.isSuccess && projects.data.length > 0 && (
+        <ul aria-label="我的项目列表" className="grid min-w-0 gap-[10px] sm:grid-cols-2">
+          {projects.data.map((project) => (
+            <li key={project.assignmentId} className="min-w-0">
+              <button
+                type="button"
+                aria-pressed={selectedId === project.assignmentId}
+                onClick={() => setSelectedId(project.assignmentId)}
+                className="flex min-h-[100px] w-full min-w-0 flex-col items-start gap-[6px] rounded-[8px] border p-[14px] text-left text-[13px] leading-[20px] transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-pressed:border-primary aria-pressed:bg-accent"
+              >
+                <span className="max-w-full break-words font-semibold [overflow-wrap:anywhere]">
+                  {project.projectName || `项目 ${project.projectId}`}
+                </span>
+                <span className="max-w-full break-words text-muted-foreground [overflow-wrap:anywhere]">
+                  需求方：{project.requesterName || '未提供'}
+                </span>
+                <span className="flex max-w-full flex-wrap gap-x-[12px] gap-y-[4px] text-[12px]">
+                  <span>{nodeLabels[project.currentNodeCode] || project.currentNodeCode}</span>
+                  {project.needWrittenExam && (
+                    <span>{admissionLabels[project.admissionStatus]}</span>
+                  )}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {selectedProject && (
+        <section aria-label="项目详情" className="space-y-[16px] border-t pt-[20px]">
+          <h3 className="text-[16px] font-semibold">项目详情</h3>
+          {detail.isPending && (
+            <p role="status" className={quietClass}>
+              正在读取项目详情…
+            </p>
+          )}
+          {detail.isError && (
+            <div className="space-y-[8px]">
+              <ErrorNotice error={detail.error} />
+              <Button variant="outline" size="settings" onClick={() => void detail.refetch()}>
+                重新读取项目详情
+              </Button>
+            </div>
+          )}
+          {detail.isSuccess && (
+            <>
+              <h4 className="break-words text-[15px] font-semibold [overflow-wrap:anywhere]">
+                {detail.data.projectDetail.projectName || `项目 ${selectedProject.projectId}`}
+              </h4>
+              <dl className="grid min-w-0 gap-[16px] text-[13px] leading-[22px] sm:grid-cols-2 [&_dd]:break-words [&_dd]:[overflow-wrap:anywhere] [&_dt]:mb-[4px] [&_dt]:text-muted-foreground">
+                <div>
+                  <dt>需求方</dt>
+                  <dd>{detail.data.projectDetail.requesterName || '未提供'}</dd>
+                </div>
+                <div>
+                  <dt>截止时间（上海时间）</dt>
+                  <dd>{detail.data.projectDetail.deadline || '未设置'}</dd>
+                </div>
+                <div>
+                  <dt>本人当前节点</dt>
+                  <dd>
+                    {nodeLabels[selectedProject.currentNodeCode] || selectedProject.currentNodeCode}
+                  </dd>
+                </div>
+                <div>
+                  <dt>生产量级</dt>
+                  <dd>
+                    {detail.data.productionPlan.totalExpectedOutput ?? '未配置'}{' '}
+                    {detail.data.productionPlan.totalExpectedOutput != null &&
+                      detail.data.projectDetail.quantityUnit}
+                  </dd>
+                </div>
+                <div>
+                  <dt>作业人数要求</dt>
+                  <dd>{detail.data.productionPlan.operatorHeadcount ?? '未配置'}</dd>
+                </div>
+                <div>
+                  <dt>质检人数要求</dt>
+                  <dd>{detail.data.productionPlan.inspectorHeadcount ?? '未配置'}</dd>
+                </div>
+                <div className="sm:col-span-2">
+                  <dt>项目说明</dt>
+                  <dd className="whitespace-pre-wrap">
+                    {detail.data.projectDetail.projectDescription || '未提供'}
+                  </dd>
+                </div>
+                <div className="sm:col-span-2">
+                  <dt>作业标准</dt>
+                  <dd className="whitespace-pre-wrap">
+                    {detail.data.projectDetail.standardContent || '未提供'}
+                  </dd>
+                </div>
+              </dl>
+              <p className={quietClass}>当前提供只读详情，接单、考试和生产操作尚未接入。</p>
+            </>
+          )}
+        </section>
+      )}
+    </section>
+  );
+}
+
+function ExpertAttendance({ user }: { user: AuthUser }) {
+  const cache = useQueryClient();
+  const [month, setMonth] = useState(() => shanghaiToday().slice(0, 7));
+  const [queryMonth, setQueryMonth] = useState(month);
+  const [monthError, setMonthError] = useState('');
+  const organization = user.organization;
+  const orgId = typeof organization?.id === 'string' ? organization.id : undefined;
+  const canRead =
+    !organization ||
+    (!!orgId &&
+      ['ACTIVE', 'EXIT_APPROVING', 'PENDING_LEAVE'].includes(String(organization.joinStatus)));
+  const input = { month: queryMonth, ...(orgId ? { orgId } : {}) };
+  const attendance = useQuery({
+    queryKey: [...profileScope(user), 'attendance', input],
+    queryFn: () => readProfile(api.getMyAttendance(input), cache),
+    enabled: canRead,
+  });
+  const holidays = useQuery({
+    queryKey: [...profileScope(user), 'holidays', queryMonth],
+    queryFn: () => readProfile(api.getAttendanceHolidays({ month: queryMonth }), cache),
+  });
+  const firstWeekday = (new Date(`${queryMonth}-01T00:00:00Z`).getUTCDay() + 6) % 7;
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month) || Number(month.slice(0, 4)) < 1900) {
+      setMonthError('请选择 1900 年起的有效月份');
+      return;
+    }
+    setMonthError('');
+    if (queryMonth === month) {
+      if (canRead) void attendance.refetch();
+      void holidays.refetch();
+    } else setQueryMonth(month);
+  }
+  return (
+    <section aria-label="我的排班考勤" className={panelClass}>
+      <div>
+        <h3 className="text-[17px] leading-[26px] font-semibold">我的排班考勤</h3>
+        <p className={`mt-[6px] ${quietClass}`}>读取本人的真实月历与考勤汇总，当前仅供查看。</p>
+      </div>
+      <form onSubmit={submit} className="flex min-w-0 flex-wrap items-end gap-[8px]">
+        <label className="min-w-0 flex-1 basis-[160px] text-[12px] leading-[20px]">
+          考勤月份
+          <Input
+            size="profile"
+            type="month"
+            min="1900-01"
+            max="9999-12"
+            value={month}
+            className="mt-[6px]"
+            aria-invalid={!!monthError}
+            aria-describedby={monthError ? 'profile-month-error' : undefined}
+            onChange={(event) => setMonth(event.target.value)}
+          />
+        </label>
+        <Button
+          type="submit"
+          variant="outline"
+          size="settings"
+          loading={attendance.isFetching || holidays.isFetching}
+        >
+          查询考勤
+        </Button>
+      </form>
+      {monthError && (
+        <p id="profile-month-error" role="alert" className="text-[13px] text-[var(--color-danger)]">
+          {monthError}
+        </p>
+      )}
+      {!canRead && (
+        <p className={quietClass}>当前组织关系暂不能读取考勤，请在我的组织中核对入组状态。</p>
+      )}
+      {canRead && attendance.isPending && (
+        <p role="status" className={quietClass}>
+          正在读取本人考勤…
+        </p>
+      )}
+      {attendance.isError && (
+        <div className="space-y-[8px]">
+          <ErrorNotice error={attendance.error} />
+          <Button variant="outline" size="settings" onClick={() => void attendance.refetch()}>
+            重新读取考勤
+          </Button>
+        </div>
+      )}
+      {attendance.isSuccess && (
+        <>
+          <dl
+            aria-label="月度考勤汇总"
+            className="grid grid-cols-2 gap-[12px] text-[13px] sm:grid-cols-5"
+          >
+            {[
+              ['正常出勤', attendance.data.summary.presentCount],
+              ['迟到', attendance.data.summary.lateCount],
+              ['早退', attendance.data.summary.earlyLeaveCount],
+              ['请假', attendance.data.summary.leaveCount],
+              ['缺勤', attendance.data.summary.absentCount],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-[8px] bg-muted p-[12px]">
+                <dt className="text-muted-foreground">{label}</dt>
+                <dd className="mt-[4px] text-[18px] font-semibold">
+                  {value}
+                  <span className="ml-[4px] text-[12px] font-normal">天</span>
+                </dd>
+              </div>
+            ))}
+          </dl>
+          {attendance.data.days.every((day) => day.calendarStatus === 'UNSCHEDULED') && (
+            <p className={quietClass}>本月暂无排班记录</p>
+          )}
+          <div aria-label={`${queryMonth} 本人考勤月历`}>
+            <div
+              className="mb-[6px] grid grid-cols-7 gap-[4px] text-center text-[12px] text-muted-foreground"
+              aria-hidden
+            >
+              {['一', '二', '三', '四', '五', '六', '日'].map((day) => (
+                <span key={day}>{day}</span>
+              ))}
+            </div>
+            <ul className="grid grid-cols-7 gap-[4px]">
+              {Array.from({ length: firstWeekday }, (_, index) => (
+                <li key={`empty-${index}`} aria-hidden />
+              ))}
+              {attendance.data.days.map((day) => {
+                const meta = attendanceMeta[day.calendarStatus];
+                return (
+                  <li
+                    key={day.scheduleDate}
+                    aria-label={`${day.scheduleDate} ${meta.label}`}
+                    className={`flex min-h-[64px] min-w-0 flex-col items-center justify-center gap-[5px] rounded-[6px] border px-[2px] py-[8px] text-[12px] ${meta.color}`}
+                  >
+                    <time dateTime={day.scheduleDate}>{Number(day.scheduleDate.slice(-2))}</time>
+                    <span aria-hidden>{meta.short}</span>
+                    <span className="sr-only">{meta.label}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+          <ul
+            aria-label="考勤状态图例"
+            className="flex flex-wrap gap-x-[14px] gap-y-[8px] text-[12px] leading-[20px] text-muted-foreground"
+          >
+            {[...new Set(attendance.data.days.map((day) => day.calendarStatus))].map((status) => (
+              <li key={status}>
+                {attendanceMeta[status].short} · {attendanceMeta[status].label}
+              </li>
+            ))}
+          </ul>
+          <details className="rounded-[8px] border p-[12px]">
+            <summary className="flex min-h-[44px] cursor-pointer items-center text-[13px] font-medium">
+              查看每日班次与打卡明细
+            </summary>
+            <ul className="mt-[8px] divide-y text-[12px] leading-[20px]">
+              {attendance.data.days.map((day) => (
+                <li
+                  key={day.scheduleDate}
+                  className="space-y-[4px] py-[12px] [overflow-wrap:anywhere]"
+                >
+                  <p className="font-medium">
+                    {day.scheduleDate} · {attendanceMeta[day.calendarStatus].label}
+                  </p>
+                  <p className="text-muted-foreground">
+                    班次：
+                    {day.shiftStartAt && day.shiftEndAt
+                      ? `${day.shiftStartAt.slice(11)} — ${day.shiftEndAt.slice(11)}（${day.timezone}）`
+                      : '无有效工作班次'}
+                  </p>
+                  <p className="text-muted-foreground">
+                    上班打卡：{day.firstClockInAt || '无记录'}；下班打卡：
+                    {day.lastClockOutAt || '无记录'}
+                  </p>
+                  {day.reviewReason && <p>复核说明：{day.reviewReason}</p>}
+                  {day.application && (
+                    <p>
+                      考勤申请：{day.application.applicationType === 'LEAVE' ? '请假' : '考勤修正'}{' '}
+                      · {flowLabels[day.application.status]}
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </details>
+        </>
+      )}
+      <section aria-label="节假日安排" className="space-y-[10px] border-t pt-[16px]">
+        <h4 className="text-[14px] font-semibold">节假日安排</h4>
+        {holidays.isPending && (
+          <p role="status" className={quietClass}>
+            正在读取节假日日历…
+          </p>
+        )}
+        {holidays.isError && (
+          <div className="space-y-[8px]">
+            <ErrorNotice error={holidays.error} />
+            <Button variant="outline" size="settings" onClick={() => void holidays.refetch()}>
+              重新读取节假日
+            </Button>
+          </div>
+        )}
+        {holidays.isSuccess &&
+          (holidays.data.days.length ? (
+            <ul className="space-y-[8px] text-[12px] leading-[20px]">
+              {holidays.data.days.map((day) => (
+                <li key={day.date} className="break-words">
+                  {day.date} · {day.holidayName} ·{' '}
+                  {day.calendarDayType === 'PUBLIC_HOLIDAY' ? '法定放假日' : '调休工作日'}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className={quietClass}>本月没有已公布的特殊放假或调休安排。</p>
+          ))}
+        <p className={quietClass}>
+          节假日安排与实际排班分别展示，不据此推算出勤。迟到且早退会同时计入两项汇总。
+        </p>
+      </section>
+    </section>
+  );
+}
+
+function ExpertApplications({ user }: { user: AuthUser }) {
+  const cache = useQueryClient();
+  const [current, setCurrent] = useState(1);
+  const applications = useQuery({
+    queryKey: [...profileScope(user), 'applications', current],
+    queryFn: () =>
+      readProfile(api.listMyApplications({ businessType: null, current, size: 10 }), cache),
+  });
+  const org = user.organization;
+  const position =
+    typeof org?.position === 'string'
+      ? positionLabels[org.position as keyof typeof positionLabels]
+      : '';
+  const joinStatus =
+    typeof org?.joinStatus === 'string'
+      ? joinStatusLabels[org.joinStatus as keyof typeof joinStatusLabels]
+      : '';
+  return (
+    <section aria-label="组织与申请" className={panelClass}>
+      <div>
+        <h3 className="text-[17px] leading-[26px] font-semibold">组织与申请</h3>
+        <p className={`mt-[6px] ${quietClass}`}>
+          组织身份来自真实成员关系，申请记录只查询本人发起的流程。
+        </p>
+      </div>
+      <div className="space-y-[12px] rounded-[8px] border p-[16px]">
+        <h4 className="text-[14px] font-semibold">我的组织</h4>
+        {org ? (
+          <>
+            <p className="break-words text-[14px] leading-[22px] font-medium">
+              {typeof org.name === 'string' ? org.name : '所属组织'}
+            </p>
+            <p className={quietClass}>
+              {[position, joinStatus].filter(Boolean).join(' · ') || '查看成员关系详情'}
+            </p>
+            <Button asChild variant="outline" size="settings">
+              <Link to="/organization">查看组织信息与可用操作</Link>
+            </Button>
+          </>
+        ) : (
+          <p className={quietClass}>当前未加入组织</p>
+        )}
+      </div>
+      <section aria-label="我的申请" className="space-y-[16px]">
+        <h4 className="text-[15px] font-semibold">我的申请</h4>
+        {applications.isPending && (
+          <p role="status" className={quietClass}>
+            正在读取我的申请…
+          </p>
+        )}
+        {applications.isError && (
+          <div className="space-y-[8px]">
+            <ErrorNotice error={applications.error} />
+            <Button variant="outline" size="settings" onClick={() => void applications.refetch()}>
+              重新读取申请
+            </Button>
+          </div>
+        )}
+        {applications.isSuccess &&
+          (applications.data.records.length ? (
+            <ul className="space-y-[12px]">
+              {applications.data.records.map((application) => (
+                <li
+                  key={application.applicationId}
+                  className="min-w-0 space-y-[8px] rounded-[8px] border p-[14px] text-[13px] leading-[22px] [overflow-wrap:anywhere]"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-[8px]">
+                    <h5 className="min-w-0 flex-1 font-medium">{application.title}</h5>
+                    <span className="rounded-[5px] bg-muted px-[8px] py-[2px] text-[12px]">
+                      {flowLabels[application.status]}
+                    </span>
+                  </div>
+                  <p className="text-[12px] text-muted-foreground">
+                    申请时间：{application.appliedAt}（上海时间）
+                  </p>
+                  {application.applicantOrgName && <p>所属组织：{application.applicantOrgName}</p>}
+                  {application.applyReason && (
+                    <p className="whitespace-pre-wrap">申请原因：{application.applyReason}</p>
+                  )}
+                  {application.targetMemberName && <p>目标成员：{application.targetMemberName}</p>}
+                  {application.plannedLeaveDate && <p>计划离组：{application.plannedLeaveDate}</p>}
+                  {application.finishedAt && <p>结束时间：{application.finishedAt}（上海时间）</p>}
+                  <p className="text-[12px] text-muted-foreground">流水号：{application.flowNo}</p>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className={`${quietClass} py-[20px] text-center`}>暂无申请记录</p>
+          ))}
+        {applications.isSuccess && (
+          <nav
+            aria-label="申请分页"
+            className="flex flex-wrap items-center justify-between gap-[12px] border-t pt-[16px] text-[12px] text-muted-foreground"
+          >
+            <span>
+              共 {applications.data.total} 条 · 第 {current} /{' '}
+              {Math.max(1, applications.data.pages)} 页
+            </span>
+            <div className="flex gap-[8px]">
+              <Button
+                variant="outline"
+                size="settings"
+                disabled={current <= 1 || applications.isFetching}
+                onClick={() => setCurrent((page) => page - 1)}
+              >
+                上一页
+              </Button>
+              <Button
+                variant="outline"
+                size="settings"
+                disabled={current >= applications.data.pages || applications.isFetching}
+                onClick={() => setCurrent((page) => page + 1)}
+              >
+                下一页
+              </Button>
+            </div>
+          </nav>
+        )}
+      </section>
+    </section>
+  );
+}

@@ -47,7 +47,7 @@ if (!app.requestSingleInstanceLock()) {
           const headers = new Headers(response.headers);
           headers.set(
             'Content-Security-Policy',
-            `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src ${config.apiBaseUrl}; object-src 'none'; base-uri 'none'; frame-src 'none'`,
+            `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src ${config.apiBaseUrl}; object-src 'none'; base-uri 'none'; frame-src 'none'`,
           );
           return new Response(response.body, { status: response.status, headers });
         } catch {

@@ -9,6 +9,7 @@ export default defineConfig({
     'organizations.spec.ts',
     'organization-create.spec.ts',
     'organization-electron.spec.ts',
+    'workspace-views.spec.ts',
   ],
   workers: 1,
   timeout: 30_000,
