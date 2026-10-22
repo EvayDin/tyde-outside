@@ -38,11 +38,8 @@ const member = object('导入成功成员；已有账号保留资料，响应手
   userId: text('用户UUID。', userId),
   uid: text('用户公开UID，可用作登录账号。', '00000000000040008000000000000001'),
   accountType: {
-    ...text(
-      '新账号固定INDIVIDUAL=个人；复用已有账号保留原INDIVIDUAL或ORGANIZATION=组织账号类型。',
-      'INDIVIDUAL',
-    ),
-    enum: ['INDIVIDUAL', 'ORGANIZATION'],
+    ...text('统一账号兼容类型，固定INDIVIDUAL；组织身份由当前成员关系表达。', 'INDIVIDUAL'),
+    enum: ['INDIVIDUAL'],
   },
   phoneMasked: text('脱敏大陆手机号，仅显示前三和后四位。', '138****5678', true),
   realName: text('沿旧字段名，内容为当前昵称(真实姓名)，缺失回退已有名称或UID。', '小张(张三)'),
@@ -73,7 +70,7 @@ const rowError = object('行级错误；同一行可有多条，手机号始终�
   value: text('错误原始值或null；手机号脱敏，不返回整行原文。', '138****5678', true),
   errorCode: {
     ...text(
-      'REQUIRED_MISSING=缺必填、ACCOUNT_REGISTERED=已在本组织、FORMAT_INVALID=格式错、ALREADY_JOINED_OTHER_ORGANIZATION=有其他有效组织、DUPLICATE_IN_BATCH=批内重复、LIMIT_EXCEEDED=数量/管理员上限。',
+      'REQUIRED_MISSING=缺必填、ACCOUNT_REGISTERED=已在本组织、FORMAT_INVALID=格式错、ALREADY_JOINED_OTHER_ORGANIZATION=历史保留码（允许跨组织任职后不再产生）、DUPLICATE_IN_BATCH=批内重复、LIMIT_EXCEEDED=数量/管理员上限。',
       'DUPLICATE_IN_BATCH',
     ),
     enum: [
@@ -204,7 +201,7 @@ export function importSchema() {
   const base = organizationSchema(
     'generateMemberAccounts',
     '批量导入组织成员',
-    '有效组织主管/管理员可导入。最多500人，先全量校验，任一错误不创建成员。新账号EXPERT、无默认密码、关系待激活；旧账号无任何有效组织关系才可直接入组，保留资料，历史LEFT/REMOVED关系复用并递增版本。5名有效管理员上限含待激活。手机号锁排序→组织锁，整批成员和幂等结果同数据库事务。首次成功登录先激活再发令牌。模板首行说明、次行表头；XLSX声明解压总量限100MiB/1024项，工作表物理范围最多10万行，超限不导入；Excel公式/错误单元格、非法UTF-8不接受。',
+    '有效组织主管/管理员可导入。最多500人，先全量校验，任一错误不创建成员。新账号自带NAVIGATOR/PM/EXPERT、无默认密码、关系待激活；已有账号即使属于其他组织也可加入当前组织，仅拒绝当前组织有效重复关系，保留资料，历史LEFT/REMOVED关系复用并递增版本。5名有效管理员上限含待激活。手机号锁排序→组织锁，整批成员和幂等结果同数据库事务。首次成功登录先激活再发令牌。模板首行说明、次行表头；XLSX声明解压总量限100MiB/1024项，工作表物理范围最多10万行，超限不导入；Excel公式/错误单元格、非法UTF-8不接受。',
     importResponse,
   );
   return {

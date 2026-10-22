@@ -94,7 +94,12 @@ test('verified identity blocks changes, null keeps fields and roles never grant 
     idCardNo: '11010119900101001x',
     roles: ['OPS', 'PM'],
   });
-  expect(result).toMatchObject({ bio: '简介', idVerified: 1, role: 'EXPERT', roles: ['EXPERT'] });
+  expect(result).toMatchObject({
+    bio: '简介',
+    idVerified: 1,
+    role: 'EXPERT',
+    roles: ['NAVIGATOR', 'PM', 'EXPERT'],
+  });
   const data = update.mock.calls[0]![0].data;
   expect(data).toMatchObject({ bio: '简介', idCardNo: '11010119900101001X' });
   expect(data).not.toHaveProperty('avatarUrl');
@@ -128,7 +133,7 @@ test('profile OpenAPI, examples, response serialization and transport use the le
     ...userResponse.examples[0],
     accountType: 'INDIVIDUAL',
     role: 'EXPERT',
-    roles: ['EXPERT'],
+    roles: ['NAVIGATOR', 'PM', 'EXPERT'],
     selectedRole: null,
     avatarUrl: 'common/avatar.png',
     bio: '简介',

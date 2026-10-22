@@ -110,18 +110,6 @@ export class MemberImportService {
             if (!user) continue;
             const rels = relations.filter((rel) => rel.userId === user.id);
             if (
-              rels.some((rel) => rel.orgId !== orgId && effectiveStatuses.includes(rel.joinStatus))
-            )
-              errors.push(
-                rowError(
-                  row.rowNo,
-                  'phone',
-                  maskImportPhone(row.phone),
-                  'ALREADY_JOINED_OTHER_ORGANIZATION',
-                  '该用户已加入其他组织',
-                ),
-              );
-            else if (
               rels.some((rel) => rel.orgId === orgId && effectiveStatuses.includes(rel.joinStatus))
             )
               errors.push(
@@ -214,7 +202,7 @@ export class MemberImportService {
                 memberId: rel.id,
                 userId: user.id,
                 uid: user.uid,
-                accountType: user.accountType,
+                accountType: 'INDIVIDUAL',
                 phoneMasked: maskImportPhone(row.phone),
                 realName:
                   nickname && realName

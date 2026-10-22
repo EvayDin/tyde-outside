@@ -4,10 +4,7 @@ import { createApp } from '../src/application.js';
 import { readConfig } from '../src/config/index.js';
 import { AuthService, type AuthPrincipal } from '../src/modules/auth/auth.service.js';
 import { AuthError } from '../src/modules/auth/auth.error.js';
-import {
-  ManagementService,
-  type GrantChange,
-} from '../src/modules/management/management.service.js';
+import { ManagementService } from '../src/modules/management/management.service.js';
 import { ProjectFoundationService } from '../src/modules/projects/project-foundation.service.js';
 import {
   categoryItem,
@@ -29,7 +26,7 @@ const principal: AuthPrincipal = {
   userId: requesterParams.examples[0]!.requesterId,
   uid: 'uid',
   sessionId: 'session',
-  role: 'EXPERT',
+  role: 'NAVIGATOR',
   clientType: 'desktop',
 };
 afterEach(() => vi.restoreAllMocks());
@@ -66,30 +63,16 @@ function setup(granted = true) {
     management: new ManagementService(db),
   };
 }
-test('management authorization is independent from login identity and rechecked after revocation', async () => {
-  const { service, tx } = setup();
-  await expect(service.categories({}, principal)).resolves.toEqual(categoryItem.examples);
-  expect(tx.managementGrant.findFirst).toHaveBeenCalledWith({
-    where: {
-      userId: principal.userId,
-      role: 'NAVIGATOR',
-      revokedAt: null,
-      user: { status: 'ACTIVE' },
-    },
-    select: { userId: true },
-  });
-  tx.managementGrant.findFirst.mockResolvedValueOnce(null);
-  await expect(service.categories({}, principal)).rejects.toMatchObject({ status: 403 });
-  expect(tx.projectCategory.findMany).toHaveBeenCalledTimes(1);
-});
-test('ordinary EXPERT without grants cannot query categories or any requester', async () => {
+test('NAVIGATOR uses categories without independent grants; EXPERT cannot impersonate NAVIGATOR', async () => {
   const { service, tx } = setup(false);
-  await expect(service.categories({}, principal)).rejects.toMatchObject({ status: 403 });
-  await expect(service.requester(requesterParams.examples[0]!, principal)).rejects.toMatchObject({
+  await expect(service.categories({}, principal)).resolves.toEqual(categoryItem.examples);
+  expect(tx.managementGrant.findFirst).not.toHaveBeenCalled();
+  await expect(service.categories({}, { ...principal, role: 'EXPERT' })).rejects.toMatchObject({
     status: 403,
   });
-  expect(tx.user.findUnique).not.toHaveBeenCalled();
-  expect(tx.projectCategory.findMany).not.toHaveBeenCalled();
+  await expect(
+    service.requester(requesterParams.examples[0]!, { ...principal, role: 'EXPERT' }),
+  ).rejects.toMatchObject({ status: 403 });
 });
 test('category query filters only enabled independent levels, trims search and projects public fields', async () => {
   const { service, tx } = setup();
@@ -129,41 +112,17 @@ test('requester rejects other users before reading their profile and preserves p
     service.requester({ requesterType: 'ORGANIZATION', requesterId: principal.userId }, principal),
   ).rejects.toMatchObject({ status: 400 });
 });
-test('organization requester uses the same valid multi-organization selection as current profile', async () => {
+test('organization memberships do not change unified requester identity; organization selection is explicit unsupported', async () => {
   const { service, tx } = setup();
-  const relation = (id: string, position: string, date: string | null, name: string) => ({
-    id,
-    position,
-    joinedAt: date ? new Date(date) : null,
-    organization: { id, name, verifyStatus: 'PENDING' },
-  });
-  tx.user.findUnique.mockResolvedValue({
-    id: principal.userId,
-    accountType: 'ORGANIZATION',
-    displayName: '',
-    realName: '',
-    memberships: [
-      relation('admin', 'ADMIN', '2020-01-01', '管理员组织'),
-      relation('owner-late', 'OWNER', null, '较晚组织'),
-      relation('owner', 'OWNER', '2026-01-01', '示例标注团队'),
-    ],
-  } as never);
-  expect(
-    await service.requester(
-      { requesterType: 'ORGANIZATION', requesterId: principal.userId },
-      principal,
-    ),
-  ).toEqual({
-    requesterType: 'ORGANIZATION',
-    requesterId: principal.userId,
-    requesterName: '示例标注团队',
-    orgId: 'owner',
-    orgVerifyStatus: 'PENDING',
-  });
-  expect(tx.user.findUnique.mock.calls[0]![0].include.memberships.where).toEqual({
-    joinStatus: { in: ['ACTIVE', 'EXIT_APPROVING', 'PENDING_LEAVE'] },
-    organization: { deleted: false },
-  });
+  const value = await service.requester(
+    { requesterType: 'INDIVIDUAL', requesterId: principal.userId },
+    principal,
+  );
+  expect(value).toMatchObject({ requesterType: 'INDIVIDUAL', orgId: null });
+  await expect(
+    service.requester({ requesterType: 'ORGANIZATION', requesterId: principal.userId }, principal),
+  ).rejects.toMatchObject({ status: 400 });
+  expect(tx.managementGrant.findFirst).not.toHaveBeenCalled();
 });
 test('incomplete organization profile cannot become a fabricated requester', async () => {
   const { service, tx } = setup();
@@ -185,62 +144,16 @@ const grantInput: GrantChange = {
   actor: 'test-operator',
   reason: '测试授权维护',
 };
-test('grant and audit are written in one transaction without changing User.role', async () => {
-  const { management, tx, db } = setup();
-  expect(await management.change(grantInput)).toEqual({ changed: true });
-  expect(db.$transaction).toHaveBeenCalledTimes(1);
-  expect(tx.$queryRaw.mock.calls[0]![0].join('')).toContain('FOR UPDATE');
-  expect(tx.managementGrant.upsert).toHaveBeenCalledWith(
-    expect.objectContaining({
-      create: expect.objectContaining({
-        userId: principal.userId,
-        role: 'NAVIGATOR',
-        grantedBy: 'test-operator',
-        revokedAt: null,
-      }),
-    }),
-  );
-  expect(tx.managementGrantAudit.create).toHaveBeenCalledWith({
-    data: expect.objectContaining({
-      action: 'GRANT',
-      role: 'NAVIGATOR',
-      actor: 'test-operator',
-      reason: '测试授权维护',
-    }),
-  });
-});
-test('revocation and repeated operations are idempotent, regrant records another audit', async () => {
-  const { management, tx } = setup();
-  tx.managementGrant.findUnique.mockResolvedValue({ revokedAt: null } as never);
-  expect(await management.change(grantInput)).toEqual({ changed: false });
-  expect(tx.managementGrantAudit.create).not.toHaveBeenCalled();
-  expect(await management.change({ ...grantInput, action: 'REVOKE' })).toEqual({ changed: true });
-  expect(tx.managementGrant.update).toHaveBeenCalledWith(
-    expect.objectContaining({ data: { revokedAt: expect.any(Date) } }),
-  );
-  tx.managementGrant.findUnique.mockResolvedValue({ revokedAt: new Date() } as never);
-  expect(await management.change(grantInput)).toEqual({ changed: true });
-  expect(tx.managementGrantAudit.create).toHaveBeenCalledTimes(2);
-});
-test.each([{ role: 'EXPERT' }, { action: 'DELETE' }, { actor: ' ' }, { reason: ' ' }, { uid: '' }])(
-  'invalid grant change is rejected before database writes: %j',
-  async (override) => {
-    const { management, db } = setup();
-    await expect(
-      management.change({ ...grantInput, ...override } as GrantChange),
-    ).rejects.toMatchObject({ status: 400 });
-    expect(db.$transaction).not.toHaveBeenCalled();
-  },
-);
-test('grant refuses disabled users but revocation remains available', async () => {
-  const { management, tx } = setup();
-  tx.$queryRaw.mockResolvedValue([{ id: principal.userId, status: 'DISABLED' }]);
-  await expect(management.change(grantInput)).rejects.toMatchObject({ status: 400 });
-  tx.managementGrant.findUnique.mockResolvedValue({ revokedAt: null } as never);
-  expect(await management.change({ ...grantInput, action: 'REVOKE' })).toEqual({ changed: true });
+test('legacy grant maintenance is disabled without mutating grants or user roles', async () => {
+  const { management, db } = setup();
+  for (const action of ['GRANT', 'REVOKE'] as const)
+    await expect(management.change({ ...grantInput, action })).rejects.toMatchObject({
+      status: 409,
+    });
+  expect(db.$transaction).not.toHaveBeenCalled();
 });
 test('project routes preserve authenticated transport, integer query behavior and response serialization', async () => {
-  const { db, tx } = setup();
+  const { db } = setup();
   const authenticate = vi.spyOn(AuthService.prototype, 'authenticate').mockResolvedValue(principal);
   const app = await createApp(config, db);
   try {
@@ -293,7 +206,7 @@ test('project routes preserve authenticated transport, integer query behavior an
       ).statusCode,
     ).toBe(200);
     expect(authenticate).toHaveBeenLastCalledWith('demo', 'web');
-    tx.managementGrant.findFirst.mockResolvedValue(null);
+    authenticate.mockResolvedValue({ ...principal, role: 'EXPERT' });
     expect(
       (
         await app.inject({
@@ -301,7 +214,7 @@ test('project routes preserve authenticated transport, integer query behavior an
           headers: { ...headers, 'x-management-role': 'NAVIGATOR' },
         })
       ).json(),
-    ).toEqual({ code: 403, message: '当前账号没有所需的管理授权', data: null });
+    ).toEqual({ code: 403, message: '请切换到对应业务角色', data: null });
     authenticate.mockRejectedValue(new AuthError(401, 'UNAUTHENTICATED', '登录已过期，请重新登录'));
     expect((await app.inject('/api/v1/project-categories')).json()).toEqual({
       code: 401,
@@ -322,7 +235,7 @@ test('project OpenAPI documents every parameter and complete examples validate a
       '/api/v1/project-requesters/{requesterType}/{requesterId}/backfill',
     ]) {
       const operation = spec.paths[path].get;
-      expect(operation.description).toContain('独立NAVIGATOR');
+      expect(operation.description).toContain('当前NAVIGATOR');
       expect(operation.security).toEqual([{ webSession: [] }, { desktopSession: [] }]);
       for (const parameter of operation.parameters)
         expect(parameter.description).toMatch(/[\u3400-\u9fff]/u);

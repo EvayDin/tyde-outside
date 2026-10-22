@@ -1,5 +1,7 @@
 # API 与 Swagger 使用说明
 
+> 2026-10-22现行规则：新增POST /organizations（API-124）与POST /auth/switch-role（API-121）。统一注册不接受organization/orgPosition，accountType选填且只接受INDIVIDUAL；账号自带三角色，当前会话角色控制已开发管理接口，数据范围仍逐业务校验。Organization创建即APPROVED/ACTIVE，允许多组织；完整请求/响应见Swagger及新契约。详见[统一账号与组织创建](UNIFIED_ACCOUNTS.md)。本轮证据见[插队任务](../../backend-migration/priority-unified-accounts/todoTask.md)。
+
 运行 `pnpm dev:server` 后访问 `http://127.0.0.1:3000/api/v1/docs/`。OpenAPI JSON/YAML 分别位于 `/api/v1/docs/json` 和 `/api/v1/docs/yaml`；文档读取不依赖数据库。
 
 认证后端已迁移到下表的接口路径与字段，注册和登录固定为执行专家 `EXPERT`，不要求选择身份。完整字段、联调示例、迁移说明和已知依赖见 [认证后端上下文](AUTH_BACKEND.md)。
@@ -33,6 +35,15 @@
 | POST `/organizations/approvals/process`                          | 双版本审批处理                                   |
 | GET `/organizations/member-imports/template`                     | 成员XLSX模板，登录后下载                         |
 | POST `/organizations/member-imports/generate`                    | 全量校验并原子导入成员                           |
+| POST `/entrance-exams/detail`                                    | 当前版本编辑配置（PM项目只读/NAV历史人工阅卷）   |
+| GET `/entrance-exams/management`                                 | 管理页卡片及已交卷统计                           |
+| POST `/entrance-exams/close`                                     | 当前PM主策略官关闭考试                           |
+| POST `/entrance-exams/roster`                                    | 应试花名册及真实逐轮成绩，需第18迁移             |
+| GET `/entrance-exams/import/template`                            | 试卷v1模板下载（独立PM，EXCEL/TXT/REDOC）        |
+| POST `/entrance-exams/import/parse`                              | 文件解析与附件预检（远程文档未接入）             |
+| POST `/entrance-exams/publish`                                   | 当前PM发布准入考试V1及认领附件                   |
+| PUT `/entrance-exams/edit`                                       | 当前PM校验预期版本并发布新配置版本               |
+| GET `/entrance-exams/reviewers`                                  | 当前生效PM查询项目阅卷候选                       |
 | GET `/projects/manager-candidates`                               | 本人项目策略官候选（NAVIGATOR）                  |
 | POST `/projects/manager-recruitments`                            | 直接招募或更换策略官（NAVIGATOR）                |
 | GET `/projects/production-plan`                                  | 查询生产计划（当前PM主策略官/协作负责人）        |
@@ -64,6 +75,8 @@ curl http://127.0.0.1:3000/api/v1/users/me \
 
 管理接口已开始接入本后端：管理授权独立维护，注册/登录及用户资料角色仍固定EXPERT。已接入项目分类、需求方回填（第8迁移、80项专用库集成通过），并新增草稿/发布实现及第9迁移；用户回传18:18:48运行92项集成全部通过，第9/10专用库结构已就绪，台账业务ID的UUID/数值文本兼容及附件修复验证通过；候选/招募已接入本批代码，已通过102项专用库集成（用户2026-10-20回传），迁移历史未另查；API-031/034项目列表读取已接入（部分迁移），用户2026-10-21回传130项集成全部通过，第14所需专用库结构已就绪，迁移历史未另查，286项单测通过；支线重算/修复、来源写流程和实时投递仍待05—14，见[项目列表](PROJECT_LISTS.md)；API-035详情和成员表基础已接入本批代码，独立NAV创建人/PM当前任职或ACTIVE MEMBER，管理范围优先，用户2026-10-20回传118项专用库集成全部通过，第13所需结构已就绪，迁移历史未另查，274项单测通过，见[项目详情](PROJECT_DETAILS.md)；生产计划GET `/projects/production-plan`和POST `/projects/production-plan/confirm`已接入，两者projectId均在query，主策略官确认、协作负责人只读，用户2026-10-20回传110项专用库集成全部通过，第12所需结构已就绪，迁移历史未另查，见[生产计划](PROJECT_PRODUCTION_PLANS.md)。候选/任职/任务轮次和待投递事件范围见[策略官与任务基础](PROJECT_MANAGERS.md)。草稿/发布按旧代码实际只要求有效登录和本人范围，完整快照/必填校验差异、附件事务和创建人文件权限见[项目草稿与发布](PROJECT_CREATION.md)。授权维护、接口约束及数据库验证限制见[管理授权与项目基础接口](MANAGEMENT_ACCESS.md)。
 
+准入考试已接模板、候选、文件解析、发布/编辑、编辑详情、管理页、关闭及花名册；花名册真实逐轮成绩需第18迁移，所需专用库结构及该分支已由用户2026-10-22复跑162项集成全通过验证；开发/部署仍未验收。权限、统计/分页语义及未接入分支见[考试基础](ENTRANCE_EXAM_MANAGEMENT.md)。远程文档/XLS内嵌图形、准入情况与阅卷写链路仍待后续，不把配置或读取可用当作阅卷完成。
+
 ## Swagger 文档标准
 
 后续新增、迁移和修改的后端接口统一遵循本标准。Swagger 必须能让调用方直接理解字段与使用条件；中文说明写进实际 JSON Schema/OpenAPI，TypeScript/Java 注释或独立 Markdown 不能替代它。
@@ -73,7 +86,7 @@ curl http://127.0.0.1:3000/api/v1/users/me \
 3. **取值与业务规则**：枚举逐值解释，例如 `INDIVIDUAL=个人、ORGANIZATION=组织`；说明实际默认行为、格式/长度、数值单位、日期格式/时区、脱敏和 null/空数组的意义。`required` 由实际 schema 声明；条件必填在字段和接口说明写清，例如组织账号必须填写 `organization.name`。不要为了展示默认值给 schema 添加会改变 AJV 入参的 `default`。
 4. **枚举可读性**：普通字符串枚举优先输出 `type: string` + `enum`，避免把每个字面量展开为一层 `anyOf`。保留现有合法取值、TypeScript 类型推导和验证语义；只有真实联合结构才使用 `oneOf/anyOf`。
 5. **完整示例**：每个有请求体的接口至少一个可通过实际 schema 校验的请求示例；个人/组织等主要分支分别给示例。成功响应提供实际结构示例，失败响应说明 HTTP 状态、业务码、中文原因和必要响应头（例如 `Retry-After` 单位为秒）。示例里的密码、令牌、手机号和证件均为演示值，不能使用环境密钥或真实用户数据。
-6. **文档与当前实现一致**：字段未接入、固定值、兼容字段被忽略、暂不支持的分支必须明确说明，不能把规划能力写成已上线。注册 `roles` 可省略且固定 EXPERT、文件存储默认关闭、已认领项目附件当前仅接实有NAVIGATOR授权的创建人；PM/专家及考试附件授权仍待接入等限制需在页面直接可见。
+6. **文档与当前实现一致**：字段未接入、固定值、兼容字段被忽略、暂不支持的分支必须明确说明，不能把规划能力写成已上线。注册 `roles` 可省略且固定 EXPERT、文件存储默认关闭、文件附件按当前真实管理/接单/准入关系授权，考试附件考生与组织职责等未接分支保持403；这些限制需在页面直接可见。
 7. **响应 schema 保真**：响应 schema 会影响 Fastify 序列化。给原自由对象补嵌套字段时核验字段与 null 不丢失；文档补充不得暗改校验、字段名、HTTP 状态或业务行为。发现业务差异按迁移任务另外记录。
 8. **交付验收**：查看生成的 `/api/v1/docs/json`，检查中文字段说明、嵌套结构、枚举和完整示例确实存在；示例通过实际请求校验；验证响应序列化及现有契约不变。`apps/server/tests/docs.test.ts` 已递归检查当前请求/响应字段的中文说明，并校验示例与枚举、组织响应字段保留；有 path/query/header 或新响应结构时扩展相应检查。不能仅靠 schema 源码有注释就通过验收。
 
@@ -114,7 +127,7 @@ OSS 物理主目录为配置的 `OSS_BUCKET` 下的 `tyde/`。API 与台账的 `
 
 `bizType` 默认 COMMON，`category` 默认由业务推断；忽略大小写和首尾空白，未知值400。固定业务大类不能被 category 放宽，ANY 仍受已知安全类型白名单。全局单文件默认50MiB、请求100MiB（含multipart边界/字段）、批量10个；图片/JSON10MiB，文档/Excel20MiB，视频/业务附件/ANY50MiB，均可被全局硬上限收紧。文件名、声明MIME和实际内容须一致；拒绝SVG/HTML/脚本及伪装内容；Office ZIP 检查结构和CRC，最多检查200项、解压2MiB，不解包落盘。文件和请求超限413，字段/内容不符400。
 
-敏感文件只通过鉴权代理读取：未认领对象只允许上传者；匿名预上传在组织认领前不能读取（uploadToken不是读取凭据）。已认领营业执照仅所属组织有效关系（ACTIVE/EXIT_APPROVING/PENDING_LEAVE）的 OWNER/ADMIN 可读取，且组织未逻辑删除；不使用用户单组织兼容字段或 hasExpertManagementRole 展示字段授权。**已认领项目附件先前已接具有独立NAVIGATOR授权的项目创建人读取，并要求项目未删除、附件ACTIVE和台账绑定一致；第9/10专用库结构已就绪，该分支及附件认领已通过92项集成，真实OSS及部署验收仍待完成。本批另接入独立PM授权且当前ASSIGNED的主策略官/协作负责人读取代码（102项专用库集成已通过），更换任职/撤销授权即失效；插队任务已接专家项目附件读取代码：免试时真实已接单个人/有效组织成员可读，需笔试时限有效组织主管/项目负责人或有未删除考试ADMITTED结果的专家。ACTIVE项目成员本身不放行；新事实表需第15迁移，所需专用库结构及数据库分支已由137项集成通过验证，迁移历史未另查；考试附件待05/08，不能视为完整项目/考试流程。** 非敏感文件沿用登录后访问规则。只接受新项目存活台账，不接收旧bucket未登记对象；这与旧普通文件“只要登录即可查看”存在收紧差异，尚未作为完整兼容验收通过。
+敏感文件只通过鉴权代理读取：未认领对象只允许上传者；匿名预上传在组织认领前不能读取（uploadToken不是读取凭据）。已认领营业执照仅所属组织有效关系（ACTIVE/EXIT_APPROVING/PENDING_LEAVE）的 OWNER/ADMIN 可读取，且组织未逻辑删除；不使用用户单组织兼容字段或 hasExpertManagementRole 展示字段授权。**已认领项目附件先前已接具有独立NAVIGATOR授权的项目创建人读取，并要求项目未删除、附件ACTIVE和台账绑定一致；第9/10专用库结构已就绪，该分支及附件认领已通过92项集成，真实OSS及部署验收仍待完成。本批另接入独立PM授权且当前ASSIGNED的主策略官/协作负责人读取代码（102项专用库集成已通过），更换任职/撤销授权即失效；插队任务已接专家项目附件读取代码：免试时真实已接单个人/有效组织成员可读，需笔试时限有效组织主管/项目负责人或有未删除考试ADMITTED结果的专家。ACTIVE项目成员本身不放行；新事实表需第15迁移，所需专用库结构及数据库分支已由137项集成通过验证，迁移历史未另查；考试附件管理读取本批接入独立PM当前主策略官/协作负责人及独立NAVIGATOR需求方/创建人，须绑定未删除考试和项目；考生及已接单组织职责待07/08，不能视为完整项目/考试流程。** 非敏感文件沿用登录后访问规则。只接受新项目存活台账，不接收旧bucket未登记对象；这与旧普通文件“只要登录即可查看”存在收紧差异，尚未作为完整兼容验收通过。
 
 组织注册的 `organization.businessLicense` 接受 BUSINESS_LICENSE 的 `objectKey/uploadToken`，默认24小时内一次认领（可配置），原文凭证不落库。无记录/类型错误/存储对象缺失或大小不符400，错误凭证403，过期/重复409，存储关闭/不可达503。认领、验证码消费、组织与用户创建同事务，失败回滚；`organization.businessLicenseUrl` 保留旧字段名，返回objectKey或null，不是公开URL。
 

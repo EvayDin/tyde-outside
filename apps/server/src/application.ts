@@ -1,3 +1,8 @@
+import { ExamQueryService } from './modules/entrance-exams/exam-query.service.js';
+import { ExamImportService } from './modules/entrance-exams/exam-import.service.js';
+import { ExamCommandService } from './modules/entrance-exams/exam-command.service.js';
+import { examManagementRoutes } from './modules/entrance-exams/exam-management.routes.js';
+import { ExamManagementService } from './modules/entrance-exams/exam-management.service.js';
 import { expertAssignmentRoutes } from './modules/expert/expert-assignment.routes.js';
 import { ExpertAssignmentService } from './modules/expert/expert-assignment.service.js';
 import { attendanceRoutes } from './modules/attendance/attendance.routes.js';
@@ -80,7 +85,8 @@ export async function createApp(
       req.url.startsWith(`${API_PREFIX}/project-categories`) ||
       req.url.startsWith(`${API_PREFIX}/project-requesters`) ||
       req.url.startsWith(`${API_PREFIX}/projects/`) ||
-      req.url.startsWith(`${API_PREFIX}/expert-assignments/`);
+      req.url.startsWith(`${API_PREFIX}/expert-assignments/`) ||
+      req.url.startsWith(`${API_PREFIX}/entrance-exams/`);
     const failure = (status: number, code: string, message: string) =>
       legacy
         ? { code: status === 429 ? 4292 : status, message, data: null }
@@ -120,6 +126,15 @@ export async function createApp(
   await personalApplicationRoutes(app, new PersonalApplicationService(db), auth, config);
   await attendanceRoutes(app, new AttendanceService(db), auth, config);
   await expertAssignmentRoutes(app, new ExpertAssignmentService(db), auth, config);
+  await examManagementRoutes(
+    app,
+    new ExamManagementService(db),
+    auth,
+    config,
+    new ExamImportService(db, new FileService(files)),
+    new ExamCommandService(db, files),
+    new ExamQueryService(db),
+  );
   await fileRoutes(app, new FileService(files), auth, config);
   await organizationRoutes(app, new OrganizationService(db), auth, config);
   await projectFoundationRoutes(

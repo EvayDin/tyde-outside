@@ -131,7 +131,7 @@ export const projectQuerySchema: FastifySchema = {
   security: [{ webSession: [] }, { desktopSession: [] }],
   params: projectDetailParams,
   description:
-    '只读已发布项目；有效会话及服务端实际关系：独立NAVIGATOR且为创建人、独立PM且为当前ASSIGNED主策略官/招募协作负责人，或ACTIVE MEMBER执行专家。管理范围优先（NAVIGATOR创建人→PM当前任职→EXPERT成员），不添加角色选择参数，不从User.role/组织身份/固定EXPERT扩大权限；只有专家范围返回productionRequirements。此优先级是固定登录身份与独立授权下的适配，兼容验收尚待完成。关联查询使用同一只读快照。未迁移接单/考试/入项写流程，不开放成员写HTTP，不按注册身份创建成员。项目列表支线聚合仍待后续，不在本入口伪造卡片。沿用Cookie/Bearer来源规则。',
+    '只读已发布项目；有效会话及服务端实际关系：当前NAVIGATOR角色且为创建人、当前PM角色且为当前ASSIGNED主策略官/招募协作负责人，或ACTIVE MEMBER执行专家。管理范围优先（NAVIGATOR创建人→PM当前任职→EXPERT成员），不添加角色选择参数，不从User.role/组织身份/固定EXPERT扩大权限；只有专家范围返回productionRequirements。此优先级是固定登录身份与独立授权下的适配，兼容验收尚待完成。关联查询使用同一只读快照。未迁移接单/考试/入项写流程，不开放成员写HTTP，不按注册身份创建成员。项目列表支线聚合仍待后续，不在本入口伪造卡片。沿用Cookie/Bearer来源规则。',
   response: {
     200: {
       ...resultSchema(projectPublishedDetail),

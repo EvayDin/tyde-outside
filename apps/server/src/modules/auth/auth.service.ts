@@ -6,7 +6,9 @@ import {
   type Organization,
   type UserOrgRel,
 } from '@prisma/client';
+import { BUSINESS_ROLES, type BusinessRole } from '@tyde/shared';
 import type {
+  OrganizationCreateInput,
   AuthUser,
   UserProfileUpdateInput,
   NicknameCheckResult,
@@ -47,7 +49,7 @@ export interface AuthPrincipal {
   userId: string;
   uid: string;
   sessionId: string;
-  role: 'EXPERT';
+  role: BusinessRole;
   clientType: ClientType;
 }
 const invalid = (message: string) => new AuthError(400, 'VALIDATION_ERROR', message);
@@ -58,7 +60,7 @@ function phoneNumber(phone: string): string {
 async function lock(tx: Tx, key: string) {
   await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))::text`;
 }
-function publicUser(user: Profile, current = false): AuthUser {
+function publicUser(user: Profile, selectedRole: BusinessRole | null = null): AuthUser {
   const memberships = (user.memberships ?? []).filter(
     (rel) => participatingStatuses.includes(rel.joinStatus) && !rel.organization.deleted,
   );
@@ -71,10 +73,10 @@ function publicUser(user: Profile, current = false): AuthUser {
     );
   })[0];
   const org = chosen?.organization;
-  return {
+  const result: AuthUser = {
     id: user.id,
     uid: user.uid,
-    accountType: user.accountType as AuthUser['accountType'],
+    accountType: 'INDIVIDUAL',
     phone: user.phoneE164.slice(3).replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2'),
     nickname: user.displayName,
     realName: user.realName ?? user.displayName,
@@ -84,11 +86,11 @@ function publicUser(user: Profile, current = false): AuthUser {
     idVerified: user.idVerified ?? 0,
     avatarUrl: user.avatarUrl ?? null,
     bio: user.bio ?? null,
-    role: 'EXPERT',
-    roles: ['EXPERT'],
-    selectedRole: current ? 'EXPERT' : null,
+    role: selectedRole ?? 'EXPERT',
+    roles: [...BUSINESS_ROLES],
+    selectedRole,
     hasExpertManagementRole: Boolean(
-      current && memberships.some((rel) => rel.position === 'OWNER'),
+      selectedRole === 'EXPERT' && memberships.some((rel) => rel.position === 'OWNER'),
     ),
     status: user.status,
     creditScore: 100,
@@ -113,6 +115,17 @@ function publicUser(user: Profile, current = false): AuthUser {
         }
       : null,
   };
+  result.organizations = [...memberships]
+    .sort((a, b) => a.orgId.localeCompare(b.orgId))
+    .map((rel) => ({
+      id: rel.orgId,
+      name: rel.organization.name,
+      position: rel.position,
+      joinStatus: rel.joinStatus,
+      status: rel.organization.status,
+      verifyStatus: rel.organization.verifyStatus,
+    }));
+  return result;
 }
 export class AuthService {
   constructor(
@@ -217,7 +230,13 @@ export class AuthService {
     }
     await tx.verificationChallenge.update({ where: { id: row.id }, data: { consumedAt: now } });
   }
-  private async issue(tx: Tx, user: User, client: ClientType, ip?: string): Promise<LoginResponse> {
+  private async issue(
+    tx: Tx,
+    user: User,
+    client: ClientType,
+    ip?: string,
+    selectedRole: BusinessRole = 'EXPERT',
+  ): Promise<LoginResponse> {
     if (user.status !== 'ACTIVE')
       throw new AuthError(403, 'FORBIDDEN', '账户已被禁用，请联系平台运营');
     if (ip !== undefined) {
@@ -253,6 +272,7 @@ export class AuthService {
         refreshExpiresAt: expiresAt,
         userId: user.id,
         clientType: client,
+        selectedRole,
         expiresAt,
       },
     });
@@ -269,9 +289,6 @@ export class AuthService {
     if (idCardNo && !/^(\d{15}|\d{17}[0-9X])$/.test(idCardNo)) throw invalid('身份证号格式不正确');
     const email = input.email?.trim().toLowerCase() || null;
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw invalid('邮箱格式不正确');
-    const org = input.accountType === 'ORGANIZATION' ? input.organization : undefined;
-    if (input.accountType === 'ORGANIZATION' && !org?.name.trim())
-      throw invalid('组织账号需填写组织信息');
     const passwordHash = await hashPassword(input.password);
     await this.rate([{ key: `register-ip:${digest(ip)}`, max: 100, seconds: 900 }]);
     try {
@@ -293,30 +310,6 @@ export class AuthService {
           const error = await this.consume(tx, phone, 'register', input.code!);
           if (error) return error;
         }
-        const organization = org
-          ? await tx.organization.create({
-              data: {
-                name: org.name.trim(),
-                unifiedCreditCode: org.unifiedCreditCode?.trim() || null,
-                description: org.description?.trim() || null,
-                logoUrl: org.logoUrl?.trim() || null,
-                expertiseTags: org.expertiseTags ?? [],
-              },
-            })
-          : null;
-        if (organization && org?.businessLicense) {
-          const file = await this.files.claimForOrganizationRegistration(
-            tx,
-            org.businessLicense.objectKey,
-            org.businessLicense.uploadToken,
-            organization.id,
-          );
-          organization.businessLicenseKey = file.objectKey;
-          await tx.organization.update({
-            where: { id: organization.id },
-            data: { businessLicenseKey: file.objectKey },
-          });
-        }
         const uid = randomUUID().replaceAll('-', '');
         const user = await tx.user.create({
           data: {
@@ -330,27 +323,11 @@ export class AuthService {
             passwordHash,
             email,
             idCardNo,
-            accountType: input.accountType,
+            accountType: 'INDIVIDUAL',
             role: 'EXPERT',
-            organizationId: organization?.id,
-            orgPosition: organization ? (input.orgPosition ?? 'OWNER') : null,
           },
           include: profileInclude,
         });
-        if (organization) {
-          const membership = await tx.userOrgRel.create({
-            data: {
-              userId: user.id,
-              uid: user.uid,
-              orgId: organization.id,
-              position: user.orgPosition ?? 'OWNER',
-              joinStatus: 'ACTIVE',
-              createdBy: user.uid,
-              updatedBy: user.uid,
-            },
-          });
-          return publicUser({ ...user, memberships: [{ ...membership, organization }] });
-        }
         return publicUser(user);
       });
       if (result instanceof AuthError) throw result;
@@ -366,6 +343,7 @@ export class AuthService {
     }
   }
   async login(input: LoginInput, ip: string, client: ClientType) {
+    const selectedRole = this.businessRole(input.role);
     const account = input.account.trim().toLowerCase();
     await this.rate([
       { key: `login-ip:${digest(ip)}`, max: 100, seconds: 900 },
@@ -382,7 +360,7 @@ export class AuthService {
       const current = await tx.user.findUniqueOrThrow({ where: { id: user.id } });
       if (current.passwordHash !== user.passwordHash)
         throw new AuthError(401, 'BAD_CREDENTIALS', '账号或密码错误');
-      return this.issue(tx, current, client, ip);
+      return this.issue(tx, current, client, ip, selectedRole);
     });
   }
   async loginBySms(
@@ -390,6 +368,7 @@ export class AuthService {
     ip: string,
     client: ClientType,
   ): Promise<SmsLoginResponse> {
+    const selectedRole = this.businessRole(input.role);
     await this.rate([{ key: `verify-ip:${digest(ip)}`, max: 100, seconds: 900 }]);
     const result = await this.db.$transaction(async (tx) => {
       const phone = phoneNumber(input.phone);
@@ -419,7 +398,7 @@ export class AuthService {
           expiresAt: expiresAt.toISOString(),
         };
       }
-      return this.issue(tx, user, client, ip);
+      return this.issue(tx, user, client, ip, selectedRole);
     });
     if (result instanceof AuthError) throw result;
     return result;
@@ -463,7 +442,8 @@ export class AuthService {
       });
       if (used.count !== 1) throw unauthorized();
       const user = await tx.user.findUniqueOrThrow({ where: { id: initial.userId } });
-      return this.issue(tx, user, client);
+      const latest = await tx.session.findUniqueOrThrow({ where: { id: initial.id } });
+      return this.issue(tx, user, client, undefined, this.businessRole(latest.selectedRole));
     });
   }
   private async requireSession(token: string | undefined, client: ClientType) {
@@ -488,13 +468,13 @@ export class AuthService {
       userId: session.userId,
       uid: session.user.uid,
       sessionId: session.id,
-      role: 'EXPERT',
+      role: this.businessRole(session.selectedRole),
       clientType: client,
     };
   }
   async me(token: string | undefined, client: ClientType) {
     const session = await this.requireSession(token, client);
-    return publicUser(session.user, true);
+    return publicUser(session.user, this.businessRole(session.selectedRole));
   }
   async checkNickname(nickname: string): Promise<NicknameCheckResult> {
     const name = nickname.trim();
@@ -572,7 +552,7 @@ export class AuthService {
           data.idCardNo = idCardNo;
         }
         if (passwordHash !== undefined) data.passwordHash = passwordHash;
-        // 兼容roles字段但不持久化角色选择；自助流程始终EXPERT。
+        // roles兼容字段不修改三角色资格或当前会话身份。
         const user = await tx.user.update({
           where: { id: session.userId },
           data,
@@ -583,13 +563,119 @@ export class AuthService {
             where: { userId: session.userId, revokedAt: null },
             data: { revokedAt: new Date() },
           });
-        return publicUser(user);
+        return publicUser(user, this.businessRole(active.selectedRole));
       });
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')
         throw new AuthError(409, 'DUPLICATE', '身份证号已被其他用户使用');
       throw error;
     }
+  }
+  async createOrganization(
+    token: string | undefined,
+    client: ClientType,
+    input: OrganizationCreateInput,
+  ) {
+    const session = await this.requireSession(token, client);
+    if (this.businessRole(session.selectedRole) !== 'EXPERT')
+      throw new AuthError(403, 'FORBIDDEN', '请切换到执行专家角色创建组织');
+    const name = input.name.trim();
+    if (!name) throw invalid('组织名称不能为空');
+    try {
+      return await this.db.$transaction(async (tx) => {
+        await lock(tx, session.user.phoneE164);
+        const active = await tx.session.findUnique({
+          where: { id: session.id },
+          include: { user: true },
+        });
+        if (
+          !active ||
+          active.revokedAt ||
+          active.expiresAt <= new Date() ||
+          active.user.status !== 'ACTIVE'
+        )
+          throw unauthorized();
+        if (this.businessRole(active.selectedRole) !== 'EXPERT')
+          throw new AuthError(403, 'FORBIDDEN', '请切换到执行专家角色创建组织');
+        const org = await tx.organization.create({
+          data: {
+            name,
+            unifiedCreditCode: input.unifiedCreditCode?.trim() || null,
+            description: input.description?.trim() || null,
+            logoUrl: input.logoUrl?.trim() || null,
+            expertiseTags: input.expertiseTags ?? [],
+            status: 'ACTIVE',
+            verifyStatus: 'APPROVED',
+            updatedBy: session.user.uid,
+          },
+        });
+        if (input.businessLicense) {
+          const file = await this.files.claimForOrganizationRegistration(
+            tx,
+            input.businessLicense.objectKey,
+            input.businessLicense.uploadToken,
+            org.id,
+          );
+          org.businessLicenseKey = file.objectKey;
+          await tx.organization.update({
+            where: { id: org.id },
+            data: { businessLicenseKey: file.objectKey },
+          });
+        }
+        await tx.userOrgRel.create({
+          data: {
+            userId: session.userId,
+            uid: session.user.uid,
+            orgId: org.id,
+            position: 'OWNER',
+            joinStatus: 'ACTIVE',
+            createdBy: session.user.uid,
+            updatedBy: session.user.uid,
+          },
+        });
+        return {
+          id: org.id,
+          name: org.name,
+          unifiedCreditCode: org.unifiedCreditCode,
+          description: org.description,
+          businessLicenseUrl: org.businessLicenseKey,
+          logoUrl: org.logoUrl,
+          expertiseTags: org.expertiseTags,
+          verifyStatus: org.verifyStatus,
+          status: org.status,
+          position: 'OWNER',
+          createdAt: org.createdAt.toISOString(),
+        };
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')
+        throw new AuthError(409, 'DUPLICATE', '组织名称或统一社会信用代码已被占用');
+      throw error;
+    }
+  }
+  private businessRole(role?: string): BusinessRole {
+    if (role === undefined) return 'EXPERT';
+    if (!(BUSINESS_ROLES as readonly string[]).includes(role))
+      throw new AuthError(403, 'FORBIDDEN', '仅可使用领航员、策略官或执行专家角色');
+    return role as BusinessRole;
+  }
+  async switchRole(token: string | undefined, client: ClientType, role: BusinessRole) {
+    const selectedRole = this.businessRole(role);
+    const session = await this.requireSession(token, client);
+    await this.db.$transaction(async (tx) => {
+      await lock(tx, session.user.phoneE164);
+      const result = await tx.session.updateMany({
+        where: {
+          id: session.id,
+          revokedAt: null,
+          expiresAt: { gt: new Date() },
+          user: { status: 'ACTIVE' },
+        },
+        data: { selectedRole },
+      });
+      if (result.count !== 1) throw unauthorized();
+    });
+    return { selectedRole, roles: [...BUSINESS_ROLES] };
   }
   async logout(token: string | undefined) {
     if (token)

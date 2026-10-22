@@ -34,7 +34,7 @@ const principal: AuthPrincipal = {
   userId: '00000000-0000-4000-8000-000000000001',
   uid: 'creator-uid',
   sessionId: 'session',
-  role: 'EXPERT',
+  role: 'NAVIGATOR',
   clientType: 'desktop',
 };
 const candidate = managerCandidate.examples[0] as ManagerCandidate;
@@ -72,7 +72,10 @@ function setup() {
         { userId: candidate.userId, role: 'PM' },
       ]),
     },
-    user: { findUnique: vi.fn().mockResolvedValue({ id: principal.userId }) },
+    user: {
+      findMany: vi.fn(async ({ where }) => where.id.in.map((id: string) => ({ id }))),
+      findUnique: vi.fn().mockResolvedValue({ id: principal.userId }),
+    },
     project: {
       findFirst: vi.fn(async () => project),
       updateMany: vi.fn(async ({ data }) => {
@@ -130,7 +133,7 @@ test('candidate query requires independent NAVIGATOR and own published nondelete
   const { service, tx, setProject } = setup();
   expect(await service.listCandidates(base.id, ' 小明 ', principal)).toHaveLength(1);
   const sql = tx.$queryRaw.mock.calls[0]![0] as Prisma.Sql;
-  expect(sql.sql).toContain('"ManagementGrant"');
+  expect(sql.sql).not.toContain('"ManagementGrant"');
   expect(sql.sql).toContain('NULLS LAST');
   expect(sql.sql).not.toContain('u."role"');
   expect(sql.values).toContain('%小明%');
@@ -146,8 +149,9 @@ test('candidate query requires independent NAVIGATOR and own published nondelete
   await expect(service.listCandidates(base.id, undefined, principal)).rejects.toMatchObject({
     status: 404,
   });
-  tx.managementGrant.findFirst.mockResolvedValueOnce(null);
-  await expect(service.listCandidates(base.id, undefined, principal)).rejects.toMatchObject({
+  await expect(
+    service.listCandidates(base.id, undefined, { ...principal, role: 'EXPERT' }),
+  ).rejects.toMatchObject({
     status: 403,
   });
 });
@@ -448,6 +452,7 @@ test('claimed project attachments allow only independently authorized current PM
   const db = {
     $queryRaw: vi.fn().mockResolvedValue([{ allowed: false }]),
     uploadedFile: {
+      findMany: vi.fn().mockResolvedValue([{ id: principal.userId }, { id: candidate.userId }]),
       findUnique: vi.fn().mockResolvedValue({
         status: 'CLAIMED',
         bizType: 'PROJECT_ATTACHMENT',
@@ -464,7 +469,9 @@ test('claimed project attachments allow only independently authorized current PM
   };
   const storage = { open: vi.fn().mockResolvedValue({ marker: 'stream' }) };
   const service = new FileService({ db, storage } as unknown as FileRegistryService);
-  expect(await service.open('project-attachment/example.pdf', principal)).toEqual({
+  expect(
+    await service.open('project-attachment/example.pdf', { ...principal, role: 'PM' }),
+  ).toEqual({
     marker: 'stream',
   });
   expect(db.projectManagerRecruitment.findFirst).toHaveBeenCalledWith({
@@ -479,11 +486,14 @@ test('claimed project attachments allow only independently authorized current PM
     select: { id: true },
   });
   db.projectManagerRecruitment.findFirst.mockResolvedValueOnce(null as never);
-  await expect(service.open('project-attachment/example.pdf', principal)).rejects.toMatchObject({
+  await expect(
+    service.open('project-attachment/example.pdf', { ...principal, role: 'PM' }),
+  ).rejects.toMatchObject({
     status: 403,
   });
-  db.managementGrant.findFirst.mockResolvedValueOnce(null as never);
-  await expect(service.open('project-attachment/example.pdf', principal)).rejects.toMatchObject({
+  await expect(
+    service.open('project-attachment/example.pdf', { ...principal, role: 'EXPERT' }),
+  ).rejects.toMatchObject({
     status: 403,
   });
   expect(storage.open).toHaveBeenCalledTimes(1);

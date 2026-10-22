@@ -101,7 +101,7 @@ export const projectSaveBody = {
       examples: ['SAVE_DRAFT'],
     },
     requesterType: choice(
-      '可省略/null，以当前账号为准；传值须匹配当前账号：INDIVIDUAL=个人、ORGANIZATION=组织。',
+      '可省略/null，以当前账号为准；统一账号传INDIVIDUAL；ORGANIZATION需求方选择尚未开放，返回400。',
       ['INDIVIDUAL', 'ORGANIZATION'],
       'INDIVIDUAL',
     ),
@@ -217,11 +217,7 @@ export const projectSaveBody = {
       0,
     ),
   },
-  examples: [
-    { operation: 'SAVE_DRAFT' },
-    projectPublishExample,
-    { ...projectPublishExample, requesterType: 'ORGANIZATION' },
-  ],
+  examples: [{ operation: 'SAVE_DRAFT' }, projectPublishExample],
 };
 const node = choice(
   '项目当前节点；草稿为null，发布为RECRUIT_PROJECT_MANAGER=招募策略官；其余节点由后续推进：PRODUCTION_PLAN=生产计划、ENTRANCE_EXAM=准入考试、STANDARD_TRAINING=标准培训、RECRUIT_EXECUTION_EXPERT=招募执行专家、PERSONNEL_MANAGEMENT=人员管理、PRODUCTION_TASK=生产任务、COMPLETED=结项；本接口不招募或创建生产计划。',
@@ -492,7 +488,7 @@ export function projectCreationSchema(
     summary,
     tags: ['Project'],
     description:
-      '按旧Controller/全局Security/Service实际行为：只要求有效登录及本人数据范围，不额外要求NAVIGATOR；旧文案中的领航员限制与代码不一致。注册登录仍固定EXPERT，其他管理接口继续独立角色授权。Web用HttpOnly Cookie，写请求校验来源；普通API/桌面用Bearer，禁止凭据混用。' +
+      '按旧Controller/全局Security/Service实际行为：只要求有效登录及本人数据范围，不额外要求NAVIGATOR；旧文案中的领航员限制与代码不一致。注册自带三角色，登录默认EXPERT，其他管理接口继续当前会话角色校验。Web用HttpOnly Cookie，写请求校验来源；普通API/桌面用Bearer，禁止凭据混用。' +
       (operationId === 'getCurrentProjectDraft'
         ? '无请求体，只读本人唯一未删除草稿，不产生写入副作用；不存在时hasDraft=false、draft=null。分类返回名称快照，附件仅返回ACTIVE且不含上传凭证。'
         : '保存锁创建人、检查草稿版本，项目/分类快照/附件认领释放同事务；发布校验完整性和同名项目后进入招募策略官节点，不代替后续招募。完整快照语义和实际必填规则见字段。首次重复请求若已有草稿但没回传版本返回400；发布后不再有草稿，新请求可创建下一份草稿。此接口不声明发布重试幂等键。'),

@@ -1,6 +1,11 @@
+import { organizationDetailResponse } from '../organizations/organization.schema.js';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import {
   API_PREFIX,
+  switchRoleSchema,
+  organizationCreateSchema,
+  type OrganizationCreateInput,
+  type BusinessRole,
   smsSendSchema,
   nicknameCheckSchema,
   userProfileUpdateSchema,
@@ -55,7 +60,11 @@ export async function authRoutes(app: FastifyInstance, service: AuthService, con
   app.addHook('onRequest', async (req, reply) => {
     if (
       !req.url.startsWith(`${API_PREFIX}/auth/`) &&
-      ![`${API_PREFIX}/users/me`, `${API_PREFIX}/users/me/update`].includes(req.url.split('?')[0]!)
+      ![
+        `${API_PREFIX}/users/me`,
+        `${API_PREFIX}/users/me/update`,
+        `${API_PREFIX}/organizations`,
+      ].includes(req.url.split('?')[0]!)
     )
       return;
     reply.header('Cache-Control', 'no-store');
@@ -103,11 +112,7 @@ export async function authRoutes(app: FastifyInstance, service: AuthService, con
     `${API_PREFIX}/auth/register`,
     {
       schema: {
-        ...authSchema(
-          'register',
-          '注册（固定为执行专家，无需选择身份）',
-          resultSchema(userResponse),
-        ),
+        ...authSchema('register', '统一注册（自带三种业务角色）', resultSchema(userResponse)),
         body: smsRegisterSchema,
       },
     },
@@ -211,6 +216,46 @@ export async function authRoutes(app: FastifyInstance, service: AuthService, con
         reply.clearCookie(cookieName, sessionCookieOptions(req));
       return success(user);
     },
+  );
+  app.post<{ Body: { role: BusinessRole } }>(
+    `${API_PREFIX}/auth/switch-role`,
+    {
+      schema: {
+        ...authSchema(
+          'switchRole',
+          '切换当前会话角色',
+          resultSchema({
+            type: 'object',
+            description: '当前角色和账号自带三角色；不更换令牌。',
+            required: ['selectedRole', 'roles'],
+            properties: {
+              selectedRole: switchRoleSchema.properties.role,
+              roles: userResponse.properties.roles,
+            },
+            examples: [{ selectedRole: 'EXPERT', roles: ['NAVIGATOR', 'PM', 'EXPERT'] }],
+          }),
+          true,
+        ),
+        body: switchRoleSchema,
+      },
+    },
+    async (req) => success(await service.switchRole(token(req), client(req), req.body.role)),
+  );
+  app.post<{ Body: OrganizationCreateInput }>(
+    `${API_PREFIX}/organizations`,
+    {
+      schema: {
+        ...authSchema(
+          'createOrganization',
+          '执行专家创建组织',
+          resultSchema(organizationDetailResponse),
+          true,
+        ),
+        tags: ['Organization'],
+        body: organizationCreateSchema,
+      },
+    },
+    async (req) => success(await service.createOrganization(token(req), client(req), req.body)),
   );
   app.post(
     `${API_PREFIX}/auth/logout`,

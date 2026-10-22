@@ -1,5 +1,7 @@
 # 策略官候选、分配与项目任务基础
 
+> 2026-10-22现行规则：当前NAVIGATOR+本人项目招募，候选为全部ACTIVE账号（自带PM），不查询ManagementGrant。任务受众依据ACTIVE账号和实际任职，不因当前会话切换而删除另一角色待办；附件按当前角色及真实任职读取。详见[统一账号与组织创建](UNIFIED_ACCOUNTS.md)。本轮证据见[插队任务](../../backend-migration/priority-unified-accounts/todoTask.md)。
+
 04本批接入API-032 `GET /api/v1/projects/manager-candidates`和API-033 `POST /api/v1/projects/manager-recruitments`。第11个迁移`20261019080000_project_managers`新增策略官任职、任务轮次、事务事件表和User.creditScore。用户2026-10-20回传102项专用库集成全部通过，本批数据库验证阻塞已解除；开发/部署及兼容验收仍待完成。
 
 ## 权限与接口

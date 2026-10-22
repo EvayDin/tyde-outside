@@ -40,7 +40,7 @@ export const managerRecruitBody = {
       type: 'string',
       format: 'uuid',
       description:
-        '必填候选用户ID，新库UUID字符串；须正常ACTIVE且有独立PM授权，不能再次选择该项目的当前策略官。User.role及客户端角色声明无效。',
+        '必填候选用户ID，新库UUID字符串；须正常ACTIVE且有当前PM角色，不能再次选择该项目的当前策略官。User.role及客户端角色声明无效。',
       examples: [userId],
     },
   },
@@ -56,7 +56,7 @@ export const managerCandidate = {
       type: 'string',
       enum: ['CURRENT', 'RECOMMENDED'],
       description:
-        '列表状态：CURRENT=当前生效策略官，匹配关键词时置顶；RECOMMENDED=正常且具有独立PM授权的可选候选。',
+        '列表状态：CURRENT=当前生效策略官，匹配关键词时置顶；RECOMMENDED=正常且具有当前PM角色的可选候选。',
       examples: ['RECOMMENDED'],
     },
     userId: {
@@ -213,7 +213,7 @@ export function projectManagerSchema(
   const errors = {
     400: '参数/项目状态不合法、候选已失效或已是当前策略官。',
     401: '未登录或会话失效。',
-    403: '缺独立NAVIGATOR授权、非创建人或会话传输不可信。',
+    403: '缺当前NAVIGATOR角色、非创建人或会话传输不可信。',
     404: '项目不存在或已逻辑删除。',
     409: '任职唯一或首次节点推进发生并发冲突。',
     500: '内部处理失败。',
@@ -225,7 +225,7 @@ export function projectManagerSchema(
     tags: ['Project'],
     security: [{ webSession: [] }, { desktopSession: [] }],
     description:
-      '须独立NAVIGATOR授权及本人创建的已发布项目；注册登录仍固定EXPERT，不从User.role或客户端角色授予管理权限。Web会话Cookie与写请求来源校验，普通API/桌面Bearer，禁止混用。候选须ACTIVE且独立PM授权；当前匹配者仍按旧SQL展示，不因其授权/状态变化静默消失。信用分是数据库旧字段默认100，本批不提供修改入口。' +
+      '须当前NAVIGATOR角色及本人创建的已发布项目；注册自带三角色，登录默认EXPERT，不从User.role或客户端角色授予管理权限。Web会话Cookie与写请求来源校验，普通API/桌面Bearer，禁止混用。候选须ACTIVE且当前PM角色；当前匹配者仍按旧SQL展示，不因其授权/状态变化静默消失。信用分是数据库旧字段默认100，本批不提供修改入口。' +
       (operationId === 'getProjectManagerCandidates'
         ? '无请求体、只读。按名称/昵称筛选，当前置顶，其余按负载/信用分/ID排序。'
         : '直接指派，锁项目；旧任职替换、新任职生效、首次节点条件更新、管理主线任务轮次及PENDING事件同事务，任一失败全部回滚。再次选择当前策略官返回400，不是幂等成功；不同候选并发按项目锁串行替换。策略官不写执行成员表。当前任务真值只覆盖管理主线；支线/专家受众及真实投递待后续接入，PENDING不代表已通知。'),

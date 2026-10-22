@@ -1,11 +1,13 @@
 # 注册登录后端迁移上下文
 
+> 2026-10-22现行规则：统一注册自带NAVIGATOR/PM/EXPERT，登录默认EXPERT，允许提交本机记住的role；API-121切换当前会话，刷新保留角色。独立创建组织API-124即ACTIVE/APPROVED、本人ACTIVE/OWNER；API-008/015返回实际会话角色、三角色和organizations数组。以下早期执行记录中的固定EXPERT、组织注册和独立授权描述仅为历史。详见[统一账号与组织创建](UNIFIED_ACCOUNTS.md)。本轮证据见[插队任务](../../backend-migration/priority-unified-accounts/todoTask.md)。
+
 ## 约定与范围（2026-10-16）
 
 - 用户负责后端，本次仅修改 `apps/server`、后端需要的共享 DTO/schema 和 Markdown 文档；不修改 Web、Electron、平台适配层或前端 E2E。
 - 旧接口来源：`../tyde-core/src/main/java/com/tyde/platform/module/auth/controller/{AuthController,SmsAuthController}.java`，请求/响应字段来自同模块 `dto/`，用户响应来自 `module/user/dto/UserDTO.java`。
-- 保持旧接口名称、路径和字段名；不再要求选择身份。注册固定写入 `EXPERT`，登录也固定使用执行专家身份。为兼容旧调用保留可选 `role` / `roles` 字段，传其他已知角色也不改变最终身份。
-- 当前按旧接口保留个人和组织注册；账号类型 `accountType` 与业务角色不同。组织注册是否保留曾询问用户，尚未得到明确选择，因此沿用旧接口能力。
+- 保持旧接口名称、路径和字段名；不再要求选择身份。账号注册自带三角色，User.role兼容存储仍为EXPERT，实际角色来自Session.selectedRole；登录role选填、默认EXPERT，不含OPS。
+- 当前统一注册；accountType为选填兼容字段且只接受INDIVIDUAL；不再在注册时创建组织，独立创建见POST /organizations。
 - 沿用新项目 Fastify + Prisma + PostgreSQL，不复制 Spring/Redis 基础设施；新旧项目数据库和令牌不互通。
 
 ## 接口契约
@@ -23,11 +25,9 @@
 | POST `/auth/logout`         | 无请求体；可携带当前认证凭据                                | null                     |
 | GET `/users/me`             | 当前认证凭据                                                | 用户资料 UserDTO         |
 
-注册必填字段：`accountType`、`password`、`confirmPassword`、`realName`、`phone`；另外必须且只能提交 `code`（注册场景验证码）或 `registrationToken`（短信登录返回的注册凭证）。
-可选字段：`roles`、`nickname`、`idCardNo`、`orgPosition`、`email`、`organization`。
+注册必填password、confirmPassword、realName、phone；code与registrationToken必须且只能提交一个。accountType可省略且只接受INDIVIDUAL，roles兼容忽略。昵称/身份证/邮箱仍选填，注册不能提交organization或orgPosition。
 
-`accountType` 为 `INDIVIDUAL` / `ORGANIZATION`。昵称默认真实姓名。个人账号忽略组织信息；组织账号要求 `organization.name`，组织内身份默认 `OWNER`，可沿用 `ADMIN` / `MEMBER`。
-组织信息保留字段 `name`、`unifiedCreditCode`、`businessLicense`（`objectKey` / `uploadToken`）、`description`、`logoUrl`、`expertiseTags`。**营业执照已接入文件上传台账认领：先调用 POST /files/upload 且 bizType=BUSINESS_LICENSE，再提交 objectKey/uploadToken。默认24小时有效（可配置）；注册组织、创建用户、消费验证码和认领同事务，失败回滚。businessLicenseUrl 保留旧字段名，返回objectKey或null，不返回公开链接；已认领营业执照仅本组织OWNER/ADMIN通过鉴权代理读取。配置模板默认关闭文件存储；本地后端已启用用户指定OSS，2026-10-19五个文件HTTP入口与真实OSS联调已通过。营业执照注册认领完整链路仍只在PostgreSQL+内存存储验证，尚无真实OSS闭环结果。**
+组织资料移至POST /organizations，name必填，其余字段沿原定义。组织、本人OWNER关系和营业执照认领同事务；创建即ACTIVE/APPROVED，无认证审核。营业执照仍先上传BUSINESS_LICENSE并提交objectKey/uploadToken，已认领文件仅所属组织OWNER/ADMIN可代理读取。
 
 LoginResponse 字段严格使用 `accessToken`、`refreshToken`、`tokenType`（`Bearer`）、`expiresIn`（秒）。注册仅创建账号并返回资料，不自动登录；未注册手机号短信登录返回 HTTP 200 和 `{ status: "registration_required", registrationToken, expiresAt }`，不创建账号或登录会话、不设置登录 Cookie；客户端据此进入资料填写页。注册凭证绑定手机号、10 分钟有效、一次性使用，再次验证同手机号会使旧凭证失效；放弃填写后，下次重新获取登录验证码并验证仍返回注册指引。
 
@@ -63,7 +63,7 @@ UserDTO 使用 `id`、`uid`、`accountType`、`phone`、`nickname`、`realName`�
 }
 ```
 
-示例凭证不可实际使用，需替换为本次返回的真实值。密码/确认密码、真实姓名及账号类型继续沿用既有注册要求，组织账号仍需组织资料。`code` 和 `registrationToken` 必须且只能提交一个；原 `scene=register` 验证码注册仍保留。凭证消费、用户/组织创建和营业执照认领在同一事务内，业务失败回滚，可修正表单重试；过期/错误/手机号不匹配/已消费凭证返回 HTTP 400。注册成功仍只返回用户资料，不自动登录，随后可用注册密码登录或重新获取登录验证码。实际页面跳转和表单对接由前端任务完成，本次未改 Web/Electron。
+示例凭证不可实际使用，需替换为本次返回的真实值。密码/确认密码与真实姓名校验保留，账号类型不再必填，不在注册提交组织资料。`code` 和 `registrationToken` 必须且只能提交一个；原 `scene=register` 验证码注册仍保留。凭证消费和统一用户创建在同一事务内，业务失败回滚，可修正表单重试；过期/错误/手机号不匹配/已消费凭证返回 HTTP 400。注册成功仍只返回用户资料，不自动登录，随后可用注册密码登录或重新获取登录验证码。实际页面跳转和表单对接由前端任务完成，本次未改 Web/Electron。
 
 复用既有 `RegistrationGrant` 表，无新增数据库迁移；摘要增加 `sms-registration:` 用途隔离，历史旧流程凭证不能用于此入口。过期凭证沿用现有认证清理命令。
 
@@ -79,7 +79,7 @@ UserDTO 使用 `id`、`uid`、`accountType`、`phone`、`nickname`、`realName`�
 
 用户已确认暂用开发/测试 mock 短信，固定字符串验证码 `095270`，有效期 5 分钟；真实短信未接入，现有配置继续禁止 mock 生产启动。验证码按 `phone + scene` 隔离；发送冷却和发送限流跨场景共用，错误次数持久化，成功消费一次。注册、验证码消费、重置密码及刷新使用事务和手机号 advisory lock。
 
-令牌仍采用新项目的随机不透明值，数据库只存摘要，默认有效 30 天；并非旧项目 JWT。刷新后原访问/刷新令牌对失效；重置密码撤销全部会话；普通退出撤销当前会话。当前实现允许 Web/桌面及同客户端多个会话并存；单账号踢号、退出范围、刷新重放强制下线等兼容策略仍待用户确认，不能视为已验收。角色切换按固定 EXPERT 规则暂缓。
+令牌仍采用新项目的随机不透明值，数据库只存摘要，默认有效 30 天；并非旧项目 JWT。刷新后原访问/刷新令牌对失效；重置密码撤销全部会话；普通退出撤销当前会话。当前实现允许 Web/桌面及同客户端多个会话并存；单账号踢号、退出范围、刷新重放强制下线等兼容策略仍待用户确认，不能视为已验收。角色切换现已接入API-121，刷新保留当前角色。
 
 Web 和 Electron 页面均使用 HttpOnly 会话 Cookie；浏览器来源须精确位于 `WEB_ORIGINS` 或 `DESKTOP_ORIGINS`。普通 Web 保持 SameSite=Lax，可信桌面来源使用 SameSite=None+Secure；服务端支持凭据 CORS、OPTIONS 预检，允许审批/导入所需的 `Idempotency-Key`，并暴露 Retry-After 与 Content-Disposition。页面写请求声明 `X-Tyde-Client: web`，GET/HEAD 省略自定义头；刷新令牌仅保留在适配器内存，IPC 只返回公开 API 源。非浏览器 API 继续支持 `X-Tyde-Client: desktop` 与 Bearer，并禁止 Origin、Cookie 和 sec-fetch-*；无浏览器头、Cookie 和客户端声明的调试请求自动按 Bearer 处理。
 
@@ -213,7 +213,7 @@ ALTER ROLE tyde_outside_dev LOGIN CREATEDB;
 
 用户已安装SheetJS，既有203项单测通过（本次未重跑）；第7个迁移20261019040000_member_imports提供整批事务幂等回执，已由用户应用专用测试库。2026-10-19 16:26:59 Agent复跑74项集成全部通过（总23.77秒），含注入激活失败/批中写失败的真实回滚场景，此前缺表阻塞解除。默认入口已交接04；用户随后已在开发库tyde_outside应用全部7个迁移，重启后41项业务HTTP复测全部符合预期，组织注册/登录及导入首次激活通过，原注册500已消除；部署迁移及兼容验收仍待完成，唯一逐接口验收见[03记录](../../backend-migration/03-organizations/todoTask.md)。
 
-## 04 独立管理授权
+## 历史：04独立管理授权（已被统一账号方案替代）
 
 用户已明确管理接口纳入本后端，管理授权独立维护。认证主体、注册/登录和用户资料角色保持EXPERT；新增管理业务授权读取ManagementGrant，不读取User.role或客户端角色。当前实现NAVIGATOR/PM授权及审计运维命令，分类查询和需求方回填要求NAVIGATOR；不提供HTTP授权管理，不自动授权现有账号。撤销后旧会话下一请求即时失去对应管理权限；项目归属与任职仍须分别校验。用户回传2026-10-19 17:25:16运行80项专用库集成全部通过（总29.88秒），此前缺表阻塞解除，专用库结构已就绪；本次未另查迁移历史，开发/部署库第8迁移及环境联调仍未确认，详见[管理授权说明](MANAGEMENT_ACCESS.md)和[04任务记录](../../backend-migration/04-project-foundation/todoTask.md)。
 

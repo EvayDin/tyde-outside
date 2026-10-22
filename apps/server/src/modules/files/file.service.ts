@@ -1,3 +1,4 @@
+import { canReadManagedExamFile } from '../entrance-exams/exam-file-access.js';
 import { canReadExpertProjectFile } from '../expert/expert-assignment.service.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { participatingStatuses } from '../organizations/organization.service.js';
@@ -102,6 +103,18 @@ export class FileService {
       record.bizType,
     );
     if (businessAttachment && record.status === 'CLAIMED') {
+      if (record.bizType === 'ENTRANCE_EXAM_ATTACHMENT') {
+        if (
+          record.claimedBizType !== 'ENTRANCE_EXAM_ATTACHMENT' ||
+          !record.claimedBizId ||
+          !/^[1-9]\d*$/.test(record.claimedBizId) ||
+          Number(record.claimedBizId) > 2147483647 ||
+          !(await canReadManagedExamFile(this.registry.db, Number(record.claimedBizId), principal))
+        )
+          throw new AuthError(403, 'FORBIDDEN', '无权访问该准入考试附件');
+        return this.registry.storage.open(record.objectKey);
+      }
+
       if (
         record.bizType !== 'PROJECT_ATTACHMENT' ||
         record.claimedBizType !== 'PROJECT_ATTACHMENT' ||
@@ -142,11 +155,12 @@ export class FileService {
         if (assigned) return this.registry.storage.open(record.objectKey);
       }
       if (
-        await canReadExpertProjectFile(
+        principal.role === 'EXPERT' &&
+        (await canReadExpertProjectFile(
           this.registry.db,
           Number(record.claimedBizId),
           principal.userId,
-        )
+        ))
       )
         return this.registry.storage.open(record.objectKey);
       // 考试附件读取仍由05/08接入；不凭ACTIVE项目成员或上传者身份放行。

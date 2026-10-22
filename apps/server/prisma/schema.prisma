@@ -52,6 +52,7 @@ model User {
   scheduleReceipts       PersonalScheduleReceipt[]
   assignmentResponses    ProjectExpertAssignmentMember[]
   examAttempts           EntranceExamAttempt[]
+  reviewedExamRounds     EntranceExamGradingRecord[]
   attendanceCorrections  OrgAttendanceAdjustment[]
 }
 
@@ -86,6 +87,7 @@ model Session {
   id               String    @id @default(uuid()) @db.Uuid
   tokenDigest      String    @unique @db.VarChar(64)
   userId           String    @db.Uuid
+  selectedRole     String    @default("EXPERT") @db.VarChar(16)
   clientType       String    @db.VarChar(16)
   expiresAt        DateTime  @db.Timestamptz(3)
   refreshDigest    String?   @unique @db.VarChar(64)
@@ -117,7 +119,7 @@ model Organization {
   createdAt           DateTime                  @default(now()) @db.Timestamptz(3)
   users               User[]
   memberships         UserOrgRel[]
-  verifyStatus        String                    @default("PENDING") @db.VarChar(16)
+  verifyStatus        String                    @default("APPROVED") @db.VarChar(16)
   status              String                    @default("ACTIVE") @db.VarChar(16)
   deleted             Boolean                   @default(false)
   updatedBy           String?                   @db.VarChar(36)
@@ -732,6 +734,8 @@ model ProjectEntranceExam {
   updatedAt        DateTime              @updatedAt @db.Timestamptz(3)
   project          Project               @relation(fields: [projectId], references: [id], onDelete: Restrict)
   attempts         EntranceExamAttempt[]
+  versions         EntranceExamVersion[] @relation("ExamVersions")
+  currentVersion   EntranceExamVersion?  @relation("ExamCurrentVersion", fields: [currentVersionId, id], references: [id, examId], onDelete: Restrict)
 
   @@index([projectId, status, deleted, createdAt])
 }
@@ -748,7 +752,11 @@ model EntranceExamGradingRound {
   createdBy      String   @db.VarChar(36)
   createdAt      DateTime @default(now()) @db.Timestamptz(3)
 
-  @@index([examVersionId, roundNo])
+  version EntranceExamVersion         @relation(fields: [examVersionId], references: [id], onDelete: Restrict)
+  records EntranceExamGradingRecord[]
+
+  @@unique([examVersionId, roundNo])
+  @@unique([id, examVersionId])
 }
 
 // scopeKey=PERSONAL或orgId；避免PostgreSQL可空唯一键导致个人作用域重复。
@@ -870,39 +878,134 @@ model ProjectExpertAssignmentMember {
   @@index([userId, status])
 }
 
-// 应试事实读取基础；05配置版本/试卷落地后补examVersionId/paperId外键，08接考试写入口。
+// 应试事实复用；05已准备配置版本/试卷外键，第17迁移待应用；08接考试写入口。
 model EntranceExamAttempt {
-  id                 Int                 @id @default(autoincrement())
-  attemptNo          String              @unique @db.VarChar(64)
+  id                 Int                  @id @default(autoincrement())
+  attemptNo          String               @unique @db.VarChar(64)
   examId             Int
   examVersionId      Int?
   paperId            Int?
-  candidateUserId    String              @db.Uuid
-  candidateUid       String              @db.VarChar(36)
-  candidateName      String              @db.VarChar(200)
-  userOrgRelId       String?             @db.Uuid
-  organizationId     String?             @db.Uuid
-  organizationName   String?             @db.VarChar(128)
-  sourceBizType      String              @default("EXPERT_ORDER") @db.VarChar(64)
+  candidateUserId    String               @db.Uuid
+  candidateUid       String               @db.VarChar(36)
+  candidateName      String               @db.VarChar(200)
+  userOrgRelId       String?              @db.Uuid
+  organizationId     String?              @db.Uuid
+  organizationName   String?              @db.VarChar(128)
+  sourceBizType      String               @default("EXPERT_ORDER") @db.VarChar(64)
   sourceBizId        Int?
-  gradingStatus      String              @default("NOT_STARTED") @db.VarChar(24)
-  finalResult        String              @default("PENDING") @db.VarChar(16)
-  enteredAt          DateTime?           @db.Timestamptz(3)
-  answerDeadlineAt   DateTime?           @db.Timestamptz(3)
-  integritySignedAt  DateTime?           @db.Timestamptz(3)
-  submittedAt        DateTime?           @db.Timestamptz(3)
-  cancelledAt        DateTime?           @db.Timestamptz(3)
-  finalDecidedAt     DateTime?           @db.Timestamptz(3)
+  gradingStatus      String               @default("NOT_STARTED") @db.VarChar(24)
+  finalResult        String               @default("PENDING") @db.VarChar(16)
+  enteredAt          DateTime?            @db.Timestamptz(3)
+  answerDeadlineAt   DateTime?            @db.Timestamptz(3)
+  integritySignedAt  DateTime?            @db.Timestamptz(3)
+  submittedAt        DateTime?            @db.Timestamptz(3)
+  cancelledAt        DateTime?            @db.Timestamptz(3)
+  finalDecidedAt     DateTime?            @db.Timestamptz(3)
   decisionDetailJson Json?
-  createdBy          String              @db.VarChar(36)
-  updatedBy          String?             @db.VarChar(36)
-  createdAt          DateTime            @default(now()) @db.Timestamptz(3)
-  updatedAt          DateTime            @updatedAt @db.Timestamptz(3)
-  exam               ProjectEntranceExam @relation(fields: [examId], references: [id], onDelete: Restrict)
-  candidate          User                @relation(fields: [candidateUserId], references: [id], onDelete: Restrict)
-  organization       Organization?       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  membership         UserOrgRel?         @relation(fields: [userOrgRelId], references: [id], onDelete: Restrict)
+  createdBy          String               @db.VarChar(36)
+  updatedBy          String?              @db.VarChar(36)
+  createdAt          DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime             @updatedAt @db.Timestamptz(3)
+  exam               ProjectEntranceExam  @relation(fields: [examId], references: [id], onDelete: Restrict)
+  candidate          User                 @relation(fields: [candidateUserId], references: [id], onDelete: Restrict)
+  organization       Organization?        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  membership         UserOrgRel?          @relation(fields: [userOrgRelId], references: [id], onDelete: Restrict)
   admittedMember     ProjectMember?
+  version            EntranceExamVersion? @relation(fields: [examVersionId, examId], references: [id, examId], onDelete: Restrict)
+  paper              EntranceExamPaper?   @relation(fields: [paperId, examVersionId], references: [id, examVersionId], onDelete: Restrict)
 
+  gradingRecords EntranceExamGradingRecord[]
+
+  @@unique([id, examVersionId])
   @@index([candidateUserId, examId])
+}
+
+// 配置以版本保存，发布/编辑新增版本而非覆盖历史。
+model EntranceExamVersion {
+  id                   Int                        @id @default(autoincrement())
+  examId               Int
+  versionNo            Int
+  examNameSnapshot     String                     @db.VarChar(128)
+  durationMinutes      Int?
+  registrationDeadline DateTime                   @db.Timestamptz(3)
+  fullScore            Decimal                    @db.Decimal(10, 2)
+  passScore            Decimal                    @db.Decimal(10, 2)
+  decisionRule         String                     @default("MAJORITY") @db.VarChar(24)
+  tieBreakRule         String?                    @db.VarChar(16)
+  publishedBy          String                     @db.VarChar(36)
+  publishedAt          DateTime                   @db.Timestamptz(3)
+  createdBy            String                     @db.VarChar(36)
+  createdAt            DateTime                   @default(now()) @db.Timestamptz(3)
+  exam                 ProjectEntranceExam        @relation("ExamVersions", fields: [examId], references: [id], onDelete: Restrict)
+  currentFor           ProjectEntranceExam[]      @relation("ExamCurrentVersion")
+  papers               EntranceExamPaper[]
+  gradingRounds        EntranceExamGradingRound[]
+  attempts             EntranceExamAttempt[]
+
+  @@unique([examId, versionNo])
+  @@unique([id, examId])
+  @@index([examId, publishedAt])
+}
+
+model EntranceExamPaper {
+  id            Int                    @id @default(autoincrement())
+  examVersionId Int
+  sequenceNo    Int
+  paperName     String?                @db.VarChar(100)
+  totalScore    Decimal                @db.Decimal(10, 2)
+  createdBy     String                 @db.VarChar(36)
+  createdAt     DateTime               @default(now()) @db.Timestamptz(3)
+  version       EntranceExamVersion    @relation(fields: [examVersionId], references: [id], onDelete: Restrict)
+  questions     EntranceExamQuestion[]
+  attempts      EntranceExamAttempt[]
+
+  @@unique([examVersionId, sequenceNo])
+  @@unique([id, examVersionId])
+}
+
+model EntranceExamQuestion {
+  id                 Int               @id @default(autoincrement())
+  paperId            Int
+  sequenceNo         Int
+  questionContent    String?           @db.Text
+  questionFilesJson  Json?
+  requiredFlag       Boolean           @default(true)
+  score              Decimal           @db.Decimal(10, 2)
+  scoreSource        String            @default("AUTO") @db.VarChar(16)
+  referenceAnswer    String?           @db.Text
+  referenceFilesJson Json?
+  createdBy          String            @db.VarChar(36)
+  createdAt          DateTime          @default(now()) @db.Timestamptz(3)
+  paper              EntranceExamPaper @relation(fields: [paperId], references: [id], onDelete: Restrict)
+
+  @@unique([paperId, sequenceNo])
+}
+
+// 逐轮执行/汇总结果，记录只绑定考生进入时的同版本轮次；写入/派发流程后续接入。
+model EntranceExamGradingRecord {
+  id                Int                      @id @default(autoincrement())
+  attemptId         Int
+  gradingRoundId    Int
+  examVersionId     Int
+  status            String                   @default("PENDING") @db.VarChar(16)
+  reviewerUserId    String?                  @db.Uuid
+  toolTraceId       String?                  @db.VarChar(128)
+  score             Decimal?                 @db.Decimal(10, 2)
+  roundResult       String?                  @db.VarChar(16)
+  conclusionSummary String?                  @db.Text
+  errorMessage      String?                  @db.VarChar(1000)
+  startedAt         DateTime?                @db.Timestamptz(3)
+  completedAt       DateTime?                @db.Timestamptz(3)
+  createdBy         String                   @db.VarChar(36)
+  updatedBy         String?                  @db.VarChar(36)
+  createdAt         DateTime                 @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime                 @updatedAt @db.Timestamptz(3)
+  attempt           EntranceExamAttempt      @relation(fields: [attemptId, examVersionId], references: [id, examVersionId], onDelete: Restrict)
+  gradingRound      EntranceExamGradingRound @relation(fields: [gradingRoundId, examVersionId], references: [id, examVersionId], onDelete: Restrict)
+  reviewer          User?                    @relation(fields: [reviewerUserId], references: [id], onDelete: Restrict)
+
+  @@unique([attemptId, gradingRoundId])
+  @@index([reviewerUserId, status, createdAt])
+  @@index([gradingRoundId, status, createdAt])
+  @@index([status, attemptId])
 }

@@ -63,16 +63,11 @@ export async function collectManagementTasks(
     assigned?.candidateUserId,
     assigned?.expertRecruitmentHandlerUserId,
   ].filter((id): id is string => Boolean(id));
-  const grants = await tx.managementGrant.findMany({
-    where: {
-      userId: { in: ids },
-      role: { in: ['NAVIGATOR', 'PM'] },
-      revokedAt: null,
-      user: { status: 'ACTIVE' },
-    },
-    select: { userId: true, role: true },
+  const activeUsers = await tx.user.findMany({
+    where: { id: { in: ids }, status: 'ACTIVE' },
+    select: { id: true },
   });
-  const granted = new Set(grants.map((g) => JSON.stringify([g.userId, g.role])));
+  const activeIds = new Set(activeUsers.map((u) => u.id));
   const currentNodeCode =
     project.currentNodeCode ?? (assigned ? 'PRODUCTION_PLAN' : 'RECRUIT_PROJECT_MANAGER');
   const scopes: TaskScope[] = [];
@@ -81,7 +76,7 @@ export async function collectManagementTasks(
     role: 'NAVIGATOR' | 'PM',
     perspective: string,
   ) => {
-    if (userId && granted.has(recipientKey({ userId, role })))
+    if (userId && activeIds.has(userId))
       scopes.push({
         userId,
         role,

@@ -89,8 +89,8 @@ export const organizationDetailResponse = {
     },
     verifyStatus: {
       ...text(
-        '组织认证状态：PENDING=待审核、APPROVED=通过、REJECTED=拒绝；读取数据库，默认PENDING，认证审核写操作尚未迁移。',
-        'PENDING',
+        '组织认证状态：PENDING=待审核、APPROVED=通过、REJECTED=拒绝；新建固定APPROVED，表示创建即生效，无人工审核；PENDING/REJECTED仅为历史枚举。',
+        'APPROVED',
       ),
       enum: ['PENDING', 'APPROVED', 'REJECTED'],
     },
@@ -122,7 +122,7 @@ export const organizationDetailResponse = {
       businessLicenseUrl: null,
       logoUrl: 'logos/example.png',
       expertiseTags: ['图像标注'],
-      verifyStatus: 'PENDING',
+      verifyStatus: 'APPROVED',
       status: 'ACTIVE',
       position: 'OWNER',
       createdAt: '2026-10-19T00:00:00.000Z',

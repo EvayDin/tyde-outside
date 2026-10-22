@@ -398,7 +398,9 @@ test('claimed project attachment reads require active business relationship plus
   };
   const storage = { open: vi.fn().mockResolvedValue({ marker: 'stream' }) };
   const service = new FileService({ db, storage } as unknown as FileRegistryService);
-  expect(await service.open('project-attachment/example.pdf', principal)).toEqual({
+  expect(
+    await service.open('project-attachment/example.pdf', { ...principal, role: 'NAVIGATOR' }),
+  ).toEqual({
     marker: 'stream',
   });
   expect(db.projectAttachment.findFirst).toHaveBeenCalledWith({
@@ -410,12 +412,15 @@ test('claimed project attachment reads require active business relationship plus
     },
     select: { id: true, project: { select: { createdBy: true } } },
   });
-  db.managementGrant.findFirst.mockResolvedValueOnce(null as never);
-  await expect(service.open('project-attachment/example.pdf', principal)).rejects.toMatchObject({
+  await expect(
+    service.open('project-attachment/example.pdf', { ...principal, role: 'EXPERT' }),
+  ).rejects.toMatchObject({
     status: 403,
   });
   db.projectAttachment.findFirst.mockResolvedValueOnce(null as never);
-  await expect(service.open('project-attachment/example.pdf', principal)).rejects.toMatchObject({
+  await expect(
+    service.open('project-attachment/example.pdf', { ...principal, role: 'NAVIGATOR' }),
+  ).rejects.toMatchObject({
     status: 403,
   });
   expect(storage.open).toHaveBeenCalledTimes(1);
@@ -434,13 +439,17 @@ test('malformed claimed project IDs and unsupported exam relations never reach s
   const service = new FileService({ db, storage } as unknown as FileRegistryService);
   for (const claimedBizId of ['abc', '-1', '0', '2147483648', '9007199254740992']) {
     db.uploadedFile.findUnique.mockResolvedValueOnce({ ...record, claimedBizId });
-    await expect(service.open(record.objectKey, principal)).rejects.toMatchObject({ status: 403 });
+    await expect(
+      service.open(record.objectKey, { ...principal, role: 'NAVIGATOR' }),
+    ).rejects.toMatchObject({ status: 403 });
   }
   db.uploadedFile.findUnique.mockResolvedValueOnce({
     ...record,
     bizType: 'ENTRANCE_EXAM_ATTACHMENT',
   });
-  await expect(service.open(record.objectKey, principal)).rejects.toMatchObject({ status: 403 });
+  await expect(
+    service.open(record.objectKey, { ...principal, role: 'NAVIGATOR' }),
+  ).rejects.toMatchObject({ status: 403 });
   expect(db.projectAttachment.findFirst).not.toHaveBeenCalled();
   expect(storage.open).not.toHaveBeenCalled();
 });

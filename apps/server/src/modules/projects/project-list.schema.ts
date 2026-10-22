@@ -176,9 +176,9 @@ export function projectListSchema(manager: boolean): FastifySchema {
   const message =
     '仅本人对应角色的PUBLISHED且未删除项目，结项COMPLETED即使有陈旧支线也隐藏；只读快照，不刷新支线、不推进节点或轮次。' +
     (manager
-      ? '独立PM授权+当前ASSIGNED主策略官或招募协作负责人；主策略官四个主节点或本人支线才推送，协作负责人只接招募主节点或EXPERT_RECRUITMENT_RETRY。'
-      : '独立NAVIGATOR授权+本人创建，招募策略官主节点或本人NAVIGATOR支线才推送。') +
-    '无请求参数、无请求体。注册角色仍EXPERT，User.role及客户端角色不授权。支线读取按人/项目/视角唯一快照；重算、修复、事件和考试/接单写流程待后续05/07/10—14；接口保留部分迁移。仅实际来源表查询，失败向外传播，不把来源失败当无待办。沿用Cookie/Bearer来源规则。';
+      ? '当前PM角色+当前ASSIGNED主策略官或招募协作负责人；主策略官四个主节点或本人支线才推送，协作负责人只接招募主节点或EXPERT_RECRUITMENT_RETRY。'
+      : '当前NAVIGATOR角色+本人创建，招募策略官主节点或本人NAVIGATOR支线才推送。') +
+    '无请求参数、无请求体。注册自带三角色，登录默认EXPERT，User.role及客户端角色不授权。支线读取按人/项目/视角唯一快照；重算、修复、事件和考试/接单写流程待后续05/07/10—14；接口保留部分迁移。仅实际来源表查询，失败向外传播，不把来源失败当无待办。沿用Cookie/Bearer来源规则。';
   return {
     operationId: manager ? 'listManagedProjects' : 'listOwnedProjects',
     summary: manager ? '查询策略官项目列表' : '查询项目列表',
@@ -197,7 +197,7 @@ export function projectListSchema(manager: boolean): FastifySchema {
       ...Object.fromEntries(
         Object.entries({
           401: '未登录或会话失效。',
-          403: '缺所需独立管理授权或来源不可信。',
+          403: '缺所需当前会话角色或来源不可信。',
           500: '内部处理失败，来源查询失败不返回伪造空列表。',
           503: '服务不可用。',
         }).map(([status, message]) => [

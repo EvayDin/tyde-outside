@@ -36,6 +36,16 @@ test('OpenAPI preserves legacy auth names, request fields, Result and token resp
       '/api/v1/auth/register',
       '/api/v1/auth/sms/login',
       '/api/v1/auth/sms/send',
+      '/api/v1/auth/switch-role',
+      '/api/v1/entrance-exams/close',
+      '/api/v1/entrance-exams/detail',
+      '/api/v1/entrance-exams/edit',
+      '/api/v1/entrance-exams/import/parse',
+      '/api/v1/entrance-exams/import/template',
+      '/api/v1/entrance-exams/management',
+      '/api/v1/entrance-exams/publish',
+      '/api/v1/entrance-exams/reviewers',
+      '/api/v1/entrance-exams/roster',
       '/api/v1/expert-assignments/detail',
       '/api/v1/expert-assignments/my-projects',
       '/api/v1/files',
@@ -89,28 +99,20 @@ test('OpenAPI preserves legacy auth names, request fields, Result and token resp
         'nickname',
         'realName',
         'idCardNo',
-        'orgPosition',
         'phone',
         'code',
         'registrationToken',
         'email',
-        'organization',
       ].sort(),
     );
     expect(registration.required).not.toContain('roles');
-    expect(registration.properties.accountType.enum).toEqual(['INDIVIDUAL', 'ORGANIZATION']);
+    expect(registration.properties.accountType.enum).toEqual(['INDIVIDUAL']);
     expect(registration.properties.accountType.anyOf).toBeUndefined();
     expect(registration.properties.roles.items.enum).toEqual(['NAVIGATOR', 'PM', 'EXPERT', 'OPS']);
-    expect(registration.properties.organization.properties.businessLicense.description).toContain(
-      '一次性 uploadToken',
-    );
-    const registerMedia =
-      spec.paths['/api/v1/auth/register'].post.requestBody.content['application/json'];
-    expect(
-      Object.values(registerMedia.examples).map(
-        (entry) => (entry as { value: { accountType: string } }).value.accountType,
-      ),
-    ).toEqual(['INDIVIDUAL', 'ORGANIZATION', 'INDIVIDUAL']);
+    const organization =
+      spec.paths['/api/v1/organizations'].post.requestBody.content['application/json'].schema;
+    expect(organization.properties.businessLicense.description).toContain('一次性 uploadToken');
+    expect(registration.required).not.toContain('accountType');
     const documented = new Set<object>();
     function checkFields(schema: Record<string, unknown>, location: string) {
       if (documented.has(schema)) return;
@@ -298,7 +300,7 @@ test('documented request examples pass actual Fastify validation; flat enums pre
     ]) {
       for (const example of schema.examples ?? []) expect(validate(schema, example)).toBe(true);
     }
-    for (const accountType of ['INDIVIDUAL', 'ORGANIZATION'])
+    for (const accountType of ['INDIVIDUAL'])
       expect(validate(smsRegisterSchema, { ...smsRegisterSchema.examples![0], accountType })).toBe(
         true,
       );

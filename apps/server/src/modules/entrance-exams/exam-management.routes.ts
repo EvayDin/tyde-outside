@@ -1,0 +1,137 @@
+import type { ExamQueryService, ExamLocator, ExamRosterInput } from './exam-query.service.js';
+import { examQuerySchema } from './exam-query.schema.js';
+import { examConfigRouteSchema } from './exam-config.schema.js';
+import type { ExamConfigInput, ExamEditInput } from './exam-config.types.js';
+import type { ExamCommandService } from './exam-command.service.js';
+import type { ExamImportService } from './exam-import.service.js';
+import { examImportRoutes } from './exam-import.routes.js';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { API_PREFIX } from '@tyde/shared';
+import type { Config } from '../../config/index.js';
+import { AuthError } from '../auth/auth.error.js';
+import type { AuthPrincipal, AuthService } from '../auth/auth.service.js';
+import { validateTransport } from '../auth/security.js';
+import type { ExamManagementService } from './exam-management.service.js';
+import type { ExamTemplateType } from './exam-import-template.js';
+import { examSchema } from './exam-management.schema.js';
+
+export async function examManagementRoutes(
+  parent: FastifyInstance,
+  service: ExamManagementService,
+  auth: AuthService,
+  config: Config,
+  imports: ExamImportService,
+  commands: ExamCommandService,
+  queries: ExamQueryService,
+) {
+  await parent.register(async (app) => {
+    const identities = new WeakMap<FastifyRequest, AuthPrincipal>();
+    app.addHook('onRequest', async (req, reply) => {
+      reply.header('Cache-Control', 'no-store');
+      if (
+        !req.headers['x-tyde-client'] &&
+        !req.headers.origin &&
+        !req.headers.cookie &&
+        !Object.keys(req.headers).some((key) => key.startsWith('sec-fetch-'))
+      )
+        req.headers['x-tyde-client'] = 'desktop';
+      let client;
+      try {
+        client = validateTransport(req.headers, req.method, config.webOrigins);
+      } catch {
+        throw new AuthError(403, 'ORIGIN_NOT_ALLOWED', '请求来源或会话凭据组合不可信');
+      }
+      const token =
+        client === 'desktop'
+          ? req.headers.authorization?.replace(/^Bearer /, '')
+          : req.cookies[config.cookieSecure ? '__Host-tyde_session' : 'tyde_session'];
+      identities.set(req, await auth.authenticate(token, client));
+    });
+    app.post<{ Body: ExamLocator }>(
+      `${API_PREFIX}/entrance-exams/detail`,
+      { schema: examQuerySchema('detail') },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await queries.detail(req.body, identities.get(req)!),
+      }),
+    );
+    app.get<{ Querystring: { projectId: string } }>(
+      `${API_PREFIX}/entrance-exams/management`,
+      { schema: examQuerySchema('management') },
+      async (req) => {
+        const id = Number(req.query.projectId);
+        if (!Number.isInteger(id) || id < 1 || id > 2147483647)
+          throw new AuthError(400, 'VALIDATION_ERROR', '项目ID必须为32位正整数');
+        return {
+          code: 200,
+          message: '操作成功',
+          data: await queries.management(id, identities.get(req)!),
+        };
+      },
+    );
+    app.post<{ Body: ExamLocator & { closeReason?: string | null } }>(
+      `${API_PREFIX}/entrance-exams/close`,
+      { schema: examQuerySchema('close') },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await commands.close(req.body, identities.get(req)!),
+      }),
+    );
+    app.post<{ Body: ExamRosterInput }>(
+      `${API_PREFIX}/entrance-exams/roster`,
+      { schema: examQuerySchema('roster') },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await queries.roster(req.body, identities.get(req)!),
+      }),
+    );
+    await examImportRoutes(app, imports, (req) => identities.get(req)!);
+    app.post<{ Body: ExamConfigInput }>(
+      `${API_PREFIX}/entrance-exams/publish`,
+      { schema: examConfigRouteSchema(false), bodyLimit: 2 * 1024 * 1024 },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await commands.save(req.body, identities.get(req)!),
+      }),
+    );
+    app.put<{ Body: ExamEditInput }>(
+      `${API_PREFIX}/entrance-exams/edit`,
+      { schema: examConfigRouteSchema(true), bodyLimit: 2 * 1024 * 1024 },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await commands.save(req.body, identities.get(req)!, true),
+      }),
+    );
+    app.get<{ Querystring: { type: ExamTemplateType } }>(
+      `${API_PREFIX}/entrance-exams/import/template`,
+      { schema: examSchema(true) },
+      async (req, reply) => {
+        const file = await service.template(req.query.type, identities.get(req)!);
+        return reply
+          .header('X-Content-Type-Options', 'nosniff')
+          .header('Content-Disposition', `attachment; filename="${file.filename}"`)
+          .type(file.contentType)
+          .send(file.content);
+      },
+    );
+    app.get<{ Querystring: { projectId: string; keyword?: string } }>(
+      `${API_PREFIX}/entrance-exams/reviewers`,
+      { schema: examSchema(false) },
+      async (req) => {
+        const id = Number(req.query.projectId);
+        if (!Number.isInteger(id) || id < 1 || id > 2147483647)
+          throw new AuthError(400, 'VALIDATION_ERROR', '项目ID必须为32位正整数');
+        return {
+          code: 200,
+          message: '操作成功',
+          data: await service.reviewers(id, req.query.keyword, identities.get(req)!),
+        };
+      },
+    );
+  });
+}

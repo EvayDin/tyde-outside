@@ -20,38 +20,20 @@ export async function resolveCurrentRequester(
     },
   });
   if (!user) throw new AuthError(404, 'NOT_FOUND', '需求方用户不存在');
-  if (input.requesterType != null && user.accountType !== input.requesterType)
-    throw new AuthError(400, 'VALIDATION_ERROR', '需求方类型与当前账号不一致');
-  if (user.accountType === 'ORGANIZATION') {
-    // 与当前用户资料的多组织选取规则一致，不接受客户端指定组织代替当前账号。
-    const selected = [...user.memberships].sort(
-      (a, b) =>
-        Number(b.position === 'OWNER') - Number(a.position === 'OWNER') ||
-        (a.joinedAt?.getTime() ?? Infinity) - (b.joinedAt?.getTime() ?? Infinity) ||
-        a.id.localeCompare(b.id),
-    )[0];
-    const org = selected?.organization;
-    if (!org?.name.trim())
-      throw new AuthError(400, 'VALIDATION_ERROR', '当前组织账号未关联组织信息');
-    return {
-      user,
-      requester: {
-        requesterType: user.accountType as 'INDIVIDUAL' | 'ORGANIZATION',
-        requesterId: user.id,
-        requesterName: org.name,
-        orgId: org.id,
-        orgVerifyStatus: org.verifyStatus,
-      },
-    };
-  }
+  if (input.requesterType != null && input.requesterType !== 'INDIVIDUAL')
+    throw new AuthError(
+      400,
+      'VALIDATION_ERROR',
+      '统一账号使用本人作为需求方，组织需求方选择尚未开放',
+    );
   const nickname = user.displayName.trim();
   const realName = user.realName?.trim();
   const name = nickname && realName ? `${nickname}(${realName})` : nickname || realName;
-  if (!name) throw new AuthError(400, 'VALIDATION_ERROR', '当前个人账号未填写姓名');
+  if (!name) throw new AuthError(400, 'VALIDATION_ERROR', '当前账号未填写姓名');
   return {
     user,
     requester: {
-      requesterType: user.accountType as 'INDIVIDUAL' | 'ORGANIZATION',
+      requesterType: 'INDIVIDUAL' as const,
       requesterId: user.id,
       requesterName: name,
       orgId: null,
