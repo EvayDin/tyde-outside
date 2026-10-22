@@ -1,5 +1,6 @@
 import type {
   AuthUser,
+  BusinessRole,
   LoginInput,
   RegistrationRequired,
   SmsLoginInput,
@@ -14,6 +15,14 @@ export const API_PREFIX = '/api/v1';
 export const MOCK_SMS_CODE = '095270';
 export { IPC } from './ipc.js';
 export * from './auth.js';
+export * from './organizations.js';
+export * from './workbench.js';
+import type {
+  BusinessLicenseUploadResult,
+  OrganizationApi,
+  OrganizationImportResult,
+} from './organizations.js';
+import type { WorkbenchApi } from './workbench.js';
 
 /** 登录令牌由平台适配器保管，页面只接收登录状态或注册指引。 */
 export interface Authenticated {
@@ -40,6 +49,15 @@ export class ApiError extends Error {
     this.retryAfter = retryAfter;
   }
 }
+/** 行级校验失败携带完整导入结果，供页面逐行展示；并非导入成功。 */
+export class OrganizationImportError extends ApiError {
+  readonly result: OrganizationImportResult;
+  constructor(failure: ApiFailure, result: OrganizationImportResult, retryAfter?: number) {
+    super(400, failure, retryAfter);
+    this.name = 'OrganizationImportError';
+    this.result = result;
+  }
+}
 /** 现有组织资料查询响应；权限与身份由后端按指定组织校验。 */
 export interface OrganizationDetail {
   id: string;
@@ -54,14 +72,33 @@ export interface OrganizationDetail {
   position: 'OWNER' | 'ADMIN' | 'MEMBER';
   createdAt: string;
 }
-export interface AuthApi {
+/** 与现有 AVATAR/IMAGE 上传策略一致；实际内容与声明 MIME 仍由服务端校验。 */
+export const AVATAR_MAX_BYTES = 10 * 1024 * 1024;
+export const AVATAR_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'] as const;
+export const AVATAR_ACCEPT = AVATAR_EXTENSIONS.map((extension) => `.${extension}`).join(',');
+export interface AvatarUploadResult {
+  objectKey: string;
+  /** 一次性认领凭证，仅内存保留，保存时传 avatarUploadToken。 */
+  uploadToken: string;
+  url: string | null;
+  sensitive: false;
+  fileName: string;
+  extension: (typeof AVATAR_EXTENSIONS)[number];
+  size: number;
+  contentType: string;
+  fileHash: string;
+}
+export interface AuthApi extends OrganizationApi, WorkbenchApi {
   health(): Promise<{ status: string }>;
   sendCode(input: SmsSendInput): Promise<string>;
   login(input: LoginInput): Promise<void>;
   verifyCode(input: SmsLoginInput): Promise<VerifyResult>;
   completeRegistration(input: SmsRegisterInput): Promise<AuthUser>;
   getCurrentUser(): Promise<AuthUser>;
+  switchRole(role: BusinessRole): Promise<{ selectedRole: BusinessRole; roles: BusinessRole[] }>;
   updateProfile(input: UserProfileUpdateInput): Promise<AuthUser>;
+  uploadAvatar(file: File): Promise<AvatarUploadResult>;
+  uploadBusinessLicense(file: File): Promise<BusinessLicenseUploadResult>;
   /** 成功会撤销全部会话，调用方须返回登录页。 */
   changePassword(newPassword: string, confirmNewPassword: string): Promise<void>;
   getOrganization(orgId: string): Promise<OrganizationDetail>;
