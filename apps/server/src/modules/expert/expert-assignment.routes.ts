@@ -1,3 +1,5 @@
+import { expertTasksBody, expertTasksResponse } from './expert-task.schema.js';
+import type { ExpertTaskQuery } from './expert-task-query.js';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { API_PREFIX } from '@tyde/shared';
 import type { Config } from '../../config/index.js';
@@ -11,6 +13,7 @@ import {
   myProjectsQuery,
   assignmentDetailQuery,
   assignmentDetailResponse,
+  projectOwnerCandidatesResponse,
 } from './expert-assignment.schema.js';
 export async function expertAssignmentRoutes(
   parent: FastifyInstance,
@@ -44,6 +47,47 @@ export async function expertAssignmentRoutes(
           : req.cookies[config.cookieSecure ? '__Host-tyde_session' : 'tyde_session'];
       identities.set(req, await auth.authenticate(token, client));
     });
+    app.post<{ Body: ExpertTaskQuery }>(
+      `${API_PREFIX}/expert-assignments/my-tasks`,
+      {
+        schema: {
+          ...expertSchema(
+            'myExpertTasks',
+            '查询当前用户需要处理的执行专家任务卡片',
+            '本人分配及有效多组织身份聚合；部分迁移，生产/审批/转项待对应任务接回，未迁移写入口按钮为false。',
+            expertTasksResponse,
+          ),
+          body: expertTasksBody,
+        },
+      },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await service.myTasks(req.body, identities.get(req)!),
+      }),
+    );
+    app.get<{ Querystring: { assignmentId: string } }>(
+      `${API_PREFIX}/expert-assignments/project-owner-candidates`,
+      {
+        schema: {
+          ...expertSchema(
+            'expertProjectOwnerCandidates',
+            '查询组织接单时可选择的项目负责人',
+            '按assignmentId定位组织，仅该组织有效主管可查；包含正常账号的在组、退出审批中及待离职成员，支持主管同时管理多个组织。',
+            projectOwnerCandidatesResponse,
+          ),
+          querystring: assignmentDetailQuery,
+        },
+      },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await service.projectOwnerCandidates(
+          Number(req.query.assignmentId),
+          identities.get(req)!,
+        ),
+      }),
+    );
     app.get<{ Querystring: { keyword?: string } }>(
       `${API_PREFIX}/expert-assignments/my-projects`,
       {
