@@ -1,3 +1,13 @@
+import type { ProjectRecruitmentService, RecruitmentInput } from './project-recruitment.service.js';
+import type { RecruitmentQuery } from './project-recruitment-candidates.js';
+import { recruitmentSchema } from './project-recruitment.schema.js';
+import type {
+  ProjectRecruitmentHandlerService,
+  HandlerChangeInput,
+} from './project-recruitment-handler.service.js';
+import { handlerSchema } from './project-recruitment-handler.schema.js';
+import type { ProjectMaterialsService, MaterialsInput } from './project-materials.service.js';
+import { materialsSchema, materialsConfirmSchema } from './project-materials.schema.js';
 import type { ProjectListService } from './project-list.service.js';
 import { projectListSchema } from './project-list.schema.js';
 import type { ProjectQueryService } from './project-query.service.js';
@@ -48,6 +58,9 @@ export async function projectFoundationRoutes(
   plans: ProjectProductionPlanService,
   queries: ProjectQueryService,
   lists: ProjectListService,
+  materials: ProjectMaterialsService,
+  handlers: ProjectRecruitmentHandlerService,
+  recruitment: ProjectRecruitmentService,
 ) {
   await parent.register(async (app) => {
     const identities = new WeakMap<FastifyRequest, AuthPrincipal>();
@@ -78,6 +91,92 @@ export async function projectFoundationRoutes(
         throw new AuthError(400, 'VALIDATION_ERROR', '项目ID必须为32位正整数');
       return id;
     };
+    app.get<{ Querystring: { projectId: string } }>(
+      `${API_PREFIX}/projects/expert-recruitments/detail`,
+      { schema: recruitmentSchema('detail') },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await recruitment.detail(planProjectId(req.query.projectId), identities.get(req)!),
+      }),
+    );
+    app.get<{
+      Querystring: Omit<RecruitmentQuery, 'projectId' | 'current' | 'size'> & {
+        projectId: string;
+        current?: string;
+        size?: string;
+      };
+    }>(
+      `${API_PREFIX}/projects/expert-recruitments/candidates`,
+      { schema: recruitmentSchema('candidates') },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await recruitment.candidates(
+          {
+            ...req.query,
+            projectId: planProjectId(req.query.projectId),
+            current: planProjectId(req.query.current ?? '1'),
+            size: Number(req.query.size ?? '20'),
+          },
+          identities.get(req)!,
+        ),
+      }),
+    );
+    app.post<{ Body: RecruitmentInput }>(
+      `${API_PREFIX}/projects/expert-recruitments/submit`,
+      { schema: recruitmentSchema('submit') },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await recruitment.submit(req.body, identities.get(req)!),
+      }),
+    );
+    app.get<{ Querystring: { projectId: string } }>(
+      `${API_PREFIX}/projects/expert-recruitments/handler-candidates`,
+      { schema: handlerSchema(false) },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await handlers.candidates(planProjectId(req.query.projectId), identities.get(req)!),
+      }),
+    );
+    app.post<{ Body: HandlerChangeInput }>(
+      `${API_PREFIX}/projects/expert-recruitment-handler/change`,
+      { schema: handlerSchema(true) },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await handlers.change(req.body, identities.get(req)!),
+      }),
+    );
+    app.get<{ Querystring: { projectId: string } }>(
+      `${API_PREFIX}/projects/standard-materials/detail`,
+      { schema: materialsSchema(false) },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await materials.get(planProjectId(req.query.projectId), identities.get(req)!),
+      }),
+    );
+    app.post<{ Body: MaterialsInput }>(
+      `${API_PREFIX}/projects/standard-materials/update`,
+      { schema: materialsSchema(true) },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await materials.update(req.body, identities.get(req)!),
+      }),
+    );
+    app.post<{ Querystring: { projectId: string } }>(
+      `${API_PREFIX}/projects/standard-materials/confirm-read`,
+      { schema: materialsConfirmSchema },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await materials.confirmRead(planProjectId(req.query.projectId), identities.get(req)!),
+      }),
+    );
     app.get(`${API_PREFIX}/projects/list`, { schema: projectListSchema(false) }, async (req) => ({
       code: 200,
       message: '操作成功',

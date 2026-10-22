@@ -1,5 +1,21 @@
 # API 与 Swagger 使用说明
 
+> 2026-10-22：用户17:27:30候选定向1项通过（187跳过，共188项，总3.76秒），API-059显式分页400已解除。058—060本批4项及06累计11项集成均分批全部通过，不是全188项复跑；06基础交接07，本轮未执行07。真实HTTP/OSS、部署及完整兼容仍保留原接口状态，无新迁移。下方待复验为历史，详见[招募记录](PROJECT_RECRUITMENT.md)。
+
+> 2026-10-22分页修复：API-059的current/size按URL十进制文本校验，由路由显式转换，缺省1/20；避免全局coerceTypes=false时显式分页400。用户本批4项集成3通过1失败，修复后仅候选1项待本机复验；14项定向单测及服务端类型/变更ESLint/后端build通过，详见[最新记录](PROJECT_RECRUITMENT.md#2026-10-22分页修复最新)。
+
+> 2026-10-22第四批：API-058 GET `/projects/expert-recruitments/detail`、059 GET `/projects/expert-recruitments/candidates`、060 POST `/projects/expert-recruitments/submit`已接入。当前PM主策略官或招募负责人，独立个人/多组织候选，项目锁下批量追加、拒单追溯/轮次/本域快照/PENDING outbox同事务。无新迁移；新增4项集成初始化不可达，业务断言未执行。完整字段/示例及本机复验命令见[专家招募](PROJECT_RECRUITMENT.md#api-0580602026-10-22第四批优先于上方未接入历史)，下方058—060尚未接入为前批历史。
+
+> 2026-10-22：API-056 GET `/projects/expert-recruitments/handler-candidates`和057 POST `/projects/expert-recruitment-handler/change`已接入。仅当前PM主策略官，全部ACTIVE统一账号候选（含本人），允许重复指定，负责人/管理轮次/outbox同事务，不推进节点/版本。用户17:00:34复测新增2项集成全过（182跳过，共184项，总4.07秒），原初始化阻塞解除；真实HTTP/部署/兼容仍待验收，058—060尚未接入。见[招募负责人](PROJECT_RECRUITMENT.md)。
+
+> 2026-10-22最新集成结果：用户16:47:26附件定向1项复验通过（181跳过，总2.74秒），结合16:44:41其余4项，标准材料053—055新增5项集成分批全部通过，原状态断言阻塞解除。不是全182项复跑，真实HTTP/OSS、部署及完整兼容仍待验收。无新迁移，本轮仅同步结果。见[标准材料验收](PROJECT_STANDARD_MATERIALS.md)。
+
+> 2026-10-22集成更新：用户16:44:41复测标准材料5项集成4通过，仅附件移除状态断言误写失败；已改为现行RELEASED及到期回收契约，修正后该1项待本机复验。055两项确认/回滚集成已通过，原初始化连接阻塞解除；未改业务实现或数据库。见[标准材料验收](PROJECT_STANDARD_MATERIALS.md)。
+
+> 2026-10-22：API-055 POST `/projects/standard-materials/confirm-read?projectId=3001`已接入，当前EXPERT且具备读取资格的ACTIVE已实际入项普通成员可确认；项目负责人403。首次时间、本人培训轮次和个人履约快照同事务，重复确认幂等并刷新陈旧快照；不修改共享节点/版本。396单测及类型/ESLint/build通过，2项新集成因数据库初始化不可达未执行断言，保留待验收。见[项目标准材料](PROJECT_STANDARD_MATERIALS.md)。
+
+> 2026-10-22：新增API-053 GET `/projects/standard-materials/detail`和API-054 POST `/projects/standard-materials/update`，保持原字段及数据权限。正文/链接至少一项，附件替换与项目/主线轮次同事务；055于后续第二批接入。契约与验证边界见[项目标准材料](PROJECT_STANDARD_MATERIALS.md)。
+
 > 2026-10-22现行规则：新增POST /organizations（API-124）与POST /auth/switch-role（API-121）。统一注册不接受organization/orgPosition，accountType选填且只接受INDIVIDUAL；账号自带三角色，当前会话角色控制已开发管理接口，数据范围仍逐业务校验。Organization创建即APPROVED/ACTIVE，允许多组织；完整请求/响应见Swagger及新契约。详见[统一账号与组织创建](UNIFIED_ACCOUNTS.md)。本轮证据见[插队任务](../../backend-migration/priority-unified-accounts/todoTask.md)。
 
 运行 `pnpm dev:server` 后访问 `http://127.0.0.1:3000/api/v1/docs/`。OpenAPI JSON/YAML 分别位于 `/api/v1/docs/json` 和 `/api/v1/docs/yaml`；文档读取不依赖数据库。
