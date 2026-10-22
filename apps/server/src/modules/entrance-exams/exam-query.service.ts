@@ -3,11 +3,10 @@ import { AuthError } from '../auth/auth.error.js';
 import type { AuthPrincipal } from '../auth/auth.service.js';
 import { displayName } from '../projects/project-detail.js';
 import { projectTime } from '../projects/project-time.js';
-import { requireExamViewer } from './exam-access.js';
-export interface ExamLocator {
-  projectId: number;
-  examId: number;
-}
+import { requireExamViewer, requireProjectExam, type ExamLocator } from './exam-access.js';
+export type { ExamLocator } from './exam-access.js';
+import { queryExamAdmissions, type ExamAdmissionInput } from './exam-admission.js';
+import { queryExamGradingDetail, type ExamGradingDetailInput } from './exam-grading-query.js';
 export interface ExamRosterInput extends ExamLocator {
   keyword?: string | null;
   finalResult?: 'PENDING' | 'ADMITTED' | 'ELIMINATED' | null;
@@ -18,15 +17,18 @@ const jsonObject = (value: Prisma.JsonValue): value is Prisma.JsonObject =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const time = (value: Date | null) => (value ? projectTime(value) : null);
-export async function requireProjectExam(tx: Prisma.TransactionClient, input: ExamLocator) {
-  const exam = await tx.projectEntranceExam.findFirst({
-    where: { id: input.examId, projectId: input.projectId, deleted: false },
-  });
-  if (!exam) throw new AuthError(404, 'NOT_FOUND', '考试不存在或不属于当前项目');
-  return exam;
-}
 export class ExamQueryService {
   constructor(readonly db: PrismaClient) {}
+  async gradingDetail(input: ExamGradingDetailInput, principal: AuthPrincipal) {
+    return this.db.$transaction((tx) => queryExamGradingDetail(tx, input, principal), {
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+    });
+  }
+  async admissions(input: ExamAdmissionInput, principal: AuthPrincipal) {
+    return this.db.$transaction((tx) => queryExamAdmissions(tx, input, principal), {
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+    });
+  }
   async detail(input: ExamLocator, principal: AuthPrincipal) {
     return this.db.$transaction(
       async (tx) => {

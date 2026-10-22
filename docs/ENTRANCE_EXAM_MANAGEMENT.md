@@ -1,12 +1,22 @@
 # 准入考试配置与导入基础
 
-> 2026-10-22现行规则：已开发考试接口改用当前PM或NAVIGATOR会话角色+项目/历史人工轮次资格，不读独立授权。MANUAL配置阅卷人必须ACTIVE，自带三角色，不要求独立授予；当前角色和实际阅卷提交资格须分别校验。05未新增040/048—052；回调仍专用HMAC。详见[统一账号与组织创建](UNIFIED_ACCOUNTS.md)。本轮证据见[插队任务](../../backend-migration/priority-unified-accounts/todoTask.md)。
+2026-10-22第六批：API-049人工提交主链路已接入，保留部分迁移；367项单测、类型/ESLint/后端build通过。用户2026-10-22回传15:37:53定向集成5项全部通过（1文件，166跳过，总13.17秒，测试4.10秒），本批人工提交并发、轮次推进/裁决、准入成员、逐题来源与事务回滚数据库断言已验证，原初始化连接阻塞解除；本次不是全171项复跑，迁移历史未另查，本批无新迁移。无新迁移，不重做040/048。当前保持05，直接续做050—052，不重复本批5项。下一AUTO仅持久化mock待派发事实，不代表执行；跨领域卡片重算、转项消费、实际投递仍待原归属回补。
+
+2026-10-22用户明确约定：所有业务Agent相关功能先使用mock，不连接真实Agent服务、不进行真实Agent联调。后续自动阅卷派发/执行/回调先由可控mock覆盖成功、失败和重试等场景，Swagger及验收记录明确模拟来源；业务权限、逐题来源、事务/轮次、专用HMAC、时间/重放/幂等仍须按本地接口验证。此约定不表示未开发接口已有实现，不将预置读取夹具当成真实交卷或阅卷执行。
+
+当前040/048本批168项真实HTTP记录全部通过（16种方法/路径），非空读取/历史版本/组织范围与权限回收均已验证；开发库20迁移已由用户成功应用并经本批用户夹具核对，部署库另行验证。详见[读取验收记录](EXAM_READ_ACCEPTANCE.md)。
+
+2026-10-22最新05第五批：API-048 POST /entrance-exams/grading/detail已接入，按当前PM任职或NAVIGATOR历史人工阅卷资格读取考生绑定版本/试卷、真实答案及所选轮次逐题判定，允许CLOSED考试。353项单测（32文件，13:05:26启动，总9.92秒）、类型/ESLint/后端build通过。新增第20迁移20261022010000_entrance_exam_grading_details（答案/逐题判卷及来源外键），Agent未应用迁移；用户2026-10-22回传13:16:29定向集成3项全部通过（1文件，163跳过，总4.64秒，测试2.24秒），第20迁移所需专用库结构、真实阅卷详情及逐题来源约束/删除保护均已验证，原RESTRICT错误类型断言阻塞解除；本次不是全166项复跑，迁移历史未另查，无需当前专用库再次迁移20。040前批2项集成全过仍有效。保持05，下一批049—052，不执行06；以下第四批及插队交接为历史。
+
+2026-10-22第四批：新增API-040准入情况查询；348项单测、类型/ESLint/后端build通过，用户12:01:20启动的本批2项数据库集成全部通过（161跳过，总5.71秒），原连接阻塞解除，无新增迁移。当前续做048—052；以下此前“准入情况待实现”仅为历史。
+
+> 2026-10-22现行规则：已开发考试接口改用当前PM或NAVIGATOR会话角色+项目/历史人工轮次资格，不读独立授权。MANUAL配置阅卷人必须ACTIVE，自带三角色，不要求独立授予；当前角色和实际阅卷提交资格须分别校验。统一账号插队批次未新增040/048—052；第四/五批已接入040和048，049人工主链路已接入（部分迁移），050—052仍未实现，回调仍须专用HMAC。详见[统一账号与组织创建](UNIFIED_ACCOUNTS.md)。本轮证据见[插队任务](../../backend-migration/priority-unified-accounts/todoTask.md)。
 
 2026-10-21第三批：新增编辑配置详情、管理页、关闭和花名册；逐轮成绩模型及第18迁移已准备。339单测为前批通过证据；用户2026-10-22复跑162项集成全过，第18所需专用库结构已验证、历史未另查，原缺表阻塞解除。当前保持05，下次从准入情况及阅卷继续；远程文档/XLS内嵌图片、准入情况及阅卷写链路仍待实现。逐接口状态和证据唯一维护在[05任务记录](../../backend-migration/05-exam-management/todoTask.md)。
 
 ## HTTP契约
 
-所有入口均需有效会话。模板要求独立PM授权；导入、发布、编辑、关闭还须已发布项目的当前生效主策略官，招募协作负责人不能写。详情、管理页、花名册允许独立PM当前主策略官/协作负责人，或独立NAVIGATOR且在该项目任一未删除考试的历史MANUAL轮次中。NAV仅为需求方/创建人不等于管理页阅卷资格；历史版本和已关闭考试人工池仍参与只读判定。双授权先匹配PM项目关系，无匹配时可按NAV阅卷资格只读。注册/登录仍固定EXPERT，不读取客户端角色声明。Web使用Cookie并校验来源，桌面及普通API客户端使用Bearer，不混用。全部响应no-store。
+所有入口均需有效会话。模板要求当前PM角色；导入、发布、编辑、关闭还须已发布项目的当前生效主策略官，招募协作负责人不能写。详情、管理页、花名册及阅卷详情允许当前PM主策略官/协作负责人，或当前NAVIGATOR且在该项目任一未删除考试的历史MANUAL轮次中；历史版本和已关闭考试人工池仍参与只读判定。NAV仅为需求方/创建人不等于阅卷资格，角色本身不授予项目权限。API-040另允许EXPERT已接单组织的主管/有效项目负责人查授权组织，见下文。统一注册自带NAVIGATOR/PM/EXPERT，登录默认EXPERT，当前会话单角色，不读取客户端角色声明或独立管理授权。Web使用Cookie并校验来源，桌面及普通API客户端使用Bearer，不混用。全部响应no-store。
 
 | 方法与路径（统一加`/api/v1`）         | 参数与行为                                                                                                                                          |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -19,6 +29,7 @@
 | `GET /entrance-exams/management`      | query projectId，返回未删除考试卡片、已交卷统计及生产计划上限下的操作按钮。                                                                         |
 | `POST /entrance-exams/close`          | JSON projectId/examId，可选closeReason最多500字符；重复/并发关闭409。                                                                               |
 | `POST /entrance-exams/roster`         | JSON projectId/examId，可选keyword/finalResult/current/size；读取真实应试和逐轮成绩，不创建任务。                                                   |
+| `POST /entrance-exams/grading/detail` | JSON projectId/examId/attemptId，可选roundNo省略/null取1；读取实际绑定试卷及所选轮次逐题判卷。                                                      |
 
 候选范围固定为项目需求方、当前策略官本人，保持顺序并去重，只返回ACTIVE账号，最多两项。`{userId,uid,name,avatarUrl}`不含手机号；userId为新库UUID，不能混用旧数值ID。name缺失时逐级回退，avatarUrl未设为null。保存MANUAL阅卷配置沿旧服务规则，允许配置状态有效且有独立NAVIGATOR或PM授权的其他用户，不限候选两人；保存为发布时的userId/uid/name快照。这不表示普通登录即可手动提交阅卷。
 
@@ -78,3 +89,98 @@ pnpm test:integration
 当前专用库第18所需结构已验证；Agent未应用迁移，迁移历史未另查。迁移脚本仅允许`.env.test`指定且允许清空的本机`_test`库，不读取开发连接，本身不清表；集成会清表。开发/部署库另外确认目标后按既有说明应用`pnpm db:deploy`，不要将测试指向开发库。迁移事务失败整批回滚，不清空来源或生成虚假版本。第18只新增空记录表和约束，不回填成绩。
 
 162项全通过后，下一批从040准入情况及048—052阅卷继续。HMAC、时间/重放/结果幂等、失败重试补偿和阅卷支线须沿旧规则单独实现。完整ID/时间/JSON/排序/大小写/模板样式兼容及真实外部依赖验收仍保留。
+
+## 项目准入情况（API-040）
+
+`GET /api/v1/entrance-exams/admissions?projectId=3001&current=1&size=20`，无请求体。可选`keyword`匹配应试快照的姓名/UID/组织名；可选`admissionStatus`取`PENDING`（待阅卷）、`PENDING_ENTRY`（考试通过待准入）、`ADMITTED`（实际已入项）、`ENTRY_DECLINED`（已放弃入项）、`ELIMINATED`（淘汰）。页码从1开始、页大小1—100，省略分别为1和20；越界返回400。响应为Result包装的`current/size/total/pages/records`，详见Swagger完整个人/组织示例。
+
+当前PM须为项目生效主策略官或招募协作负责人，NAVIGATOR须为历史人工轮次配置阅卷人；EXPERT须管理本项目已ACCEPTED接单的组织，只能查这些组织的记录。主管关系允许ACTIVE/EXIT_APPROVING/PENDING_LEAVE；普通成员或只有个人应试资格不允许。项目负责人表存在任何历史记录时不再回退旧负责人字段；角色和组织身份本身不能取代已接单项目范围。
+
+仅返回未删除考试的已交卷记录，包含关闭考试，跨考试按交卷时间/ID倒序。考试名取实际应试版本，姓名取实时用户资料，组织名仍为应试快照；人员属性取应试绑定组织成员关系。待阅卷/淘汰结果优先于入项事实，考试通过后以拒绝状态优先、joinedAt非空判实际入项；后来离项仍有joinedAt时沿旧SQL显示已准入。过滤、计数及分页在同一RepeatableRead只读事务完成，不修改准入结论或创建阅卷任务。
+
+本批没有迁移或外部依赖。用户12:01:20启动的新增2项数据库验证已全部通过（161项跳过，总5.71秒）；本批独立真实HTTP已通过，部署及完整大小写兼容仍待验收；本机专用库复跑方式、逐接口状态和下一批阅卷边界以[05任务记录](../../backend-migration/05-exam-management/todoTask.md)为准。
+
+## 考生阅卷详情（API-048）
+
+`POST /api/v1/entrance-exams/grading/detail`，完整请求示例：
+
+```json
+{ "projectId": 3001, "examId": 5001, "attemptId": 11001, "roundNo": 1 }
+```
+
+当前PM主策略官/协作负责人或项目历史人工阅卷池中的当前NAVIGATOR可读，EXPERT不能凭本人应试或组织管理身份读取。允许CLOSED考试。绑定版本和试卷缺失表示尚未进入，返回400；应试/考试归属错404，轮次不存在400，绑定配置损坏500。未交卷亦可读，整体finalResult返回存储值，不置null。
+
+响应包含考生显示资料、绑定版本的passScore、gradingStatus/finalResult、全部rounds、selectedRound和questions。rounds按序返回真实配置，缺执行记录时gradingRecordId/status/score/roundResult/conclusionSummary/errorMessage均null；不自动创建记录。questions仅实际分配试卷，带题干/参考答案及附件、考生答案及附件、answeredFlag、所选轮次correctness/gradingOpinion；缺答案为null/false，缺逐题记录correctness=null，与有记录但待判的PENDING区分。0分保留，快照未知字段保留，读取不改变考试/答卷/记录。中文字段和完整响应示例见Swagger。
+
+第20迁移`20261022010000_entrance_exam_grading_details`新增答案和逐题判卷空表及来源约束：Answer必须提供实际绑定paperId；Item必须提供与record/answer一致的attemptId和questionId；唯一键阻止重复答案/同轮逐题项，RESTRICT保护来源，correctness仅PENDING/CORRECT/INCORRECT。此处是内部持久化字段，不添加到现有HTTP请求。后续08交卷须同时遵守这些约束，049—052处理真实逐题任务；当前未开放这些写入口。
+
+Agent未应用迁移；用户13:16:29复跑新增3项数据库验证全部通过（163跳过，总4.64秒，测试2.24秒），原RESTRICT断言已修正并验证具体外键与删除后完整事实不变。当前专用库第20所需结构及来源/删除保护已验证，迁移历史未另查，无需再次迁移或重复本批验收。以下为需要时复查命令（在`tyde/`）：
+
+```sh
+pnpm --filter @tyde/server exec vitest run tests/auth.integration.test.ts -t 'grading detail'
+# 若需全量回归（当前166项）：pnpm test:integration
+```
+
+其他尚未迁移的测试环境使用`pnpm db:deploy:test`，迁移只读取受保护的`.env.test`专用_test库且不清库；集成测试会清空专用测试数据。开发/部署库另行核对目标后按部署说明迁移；第18/19及040此前通过证据保持。答案附件只返回快照，文件代理另行校验已有业务资格，本批不扩大下载范围。040/048本批真实HTTP已通过；本轮未新增OSS文件或扩展下载资格，部署及完整兼容仍待验收。
+
+## 人工阅卷提交（API-049，第六批）
+
+`POST /api/v1/entrance-exams/grading/manual` 保持旧字段：projectId、examId、attemptId、gradingRecordId、可选conclusionSummary（最多5000字）及items（1—500项questionId、correctness、可选gradingOpinion）。correctness只能CORRECT/INCORRECT；意见最多5000字，空白转null。Swagger包含递归中文字段说明及完整可校验示例。
+
+有效登录三角色账号均需在该应试绑定版本的本轮MANUAL池内，EXPERT也不因当前角色被额外阻止；项目PM/协作负责人/详情读取权限本身不授予提交资格。已关闭考试和历史版本可提交。应试须已交卷且前面每轮COMPLETED；本轮只允许PENDING/PROCESSING，COMPLETED重复409，其他状态400。考试/应试/记录错误归属404，无本轮资格403。
+
+同事务按项目→应试→判卷记录锁定，完整核对实际paper、全部题目及答案/逐题来源；Decimal仅累加CORRECT题分数，与绑定版本passScore比较。不会补造缺失答案/逐题任务。一次锁定本轮，只激活紧接下一轮WAITING；全部轮次完成才按绑定版本MAJORITY/MANUAL_PRIORITY及平票规则裁决，记录票数解释。人工优先也须等AUTO完成，不把不同轮次分数相加。成功响应返回attemptId、gradingRecordId、recordStatus、score、roundResult、gradingStatus、finalResult。
+
+普通EXPERT_ORDER准入后重查实际接单与考生归属，有效接单创建唯一admissionAttemptId的PENDING_CONFIRM成员（joinedAt=null）；失效接单保留考试结论但不创建席位；来源缺失或错配整事务回滚。转项来源仅记录EXAM_RESULT_DECIDED事实，不创建普通待入项成员，审批消费归12。阅卷待办轮次及本域快照同步；保留其他领域已有快照，跨领域完整优先级选择仍待04回补。
+
+下一轮AUTO只写PENDING及ProjectEventOutbox中的EXAM_AUTO_DISPATCH_REQUESTED，payload明确provider=mock、executionStatus=NOT_EXECUTED。第六批当时尚未接入mock执行器和050—052；第七批现已接入显式mock执行及上述入口，详见下方最新契约，仍不调用真实Agent。EXAM_RESULT_DECIDED、EXAM_REVIEW_QUEUE_CHANGED、MEMBER_ENTRY_CONFIRMATION_REQUIRED也仅持久化，实际投递归14；不能作为通知送达/转项审批推进证据。人工链路、这些事实、成员和待办共用事务。
+
+本批新增14项单测，最终367项单测通过（33文件，15:31:18，总11.34秒），类型/变更ESLint/后端build通过。用户2026-10-22回传15:37:53定向集成5项全部通过（1文件，166跳过，总13.17秒，测试4.10秒），本批人工提交并发、轮次推进/裁决、准入成员、逐题来源与事务回滚数据库断言已验证，原初始化连接阻塞解除；本次不是全171项复跑，迁移历史未另查，本批无新迁移。本批已通过，不重复要求验收；本批无新迁移，开发/部署库和真实HTTP写入口仍未验收。逐接口状态与续做以[05任务记录](../../backend-migration/05-exam-management/todoTask.md)为准。
+
+## 自动阅卷、重试与补偿（API-050—052，第七批）
+
+2026-10-22：三个入口及中文Swagger已接入，按本轮约定仅mock；用户16:04:30复跑新增6项数据库验证全部通过（171跳过，总6.63秒，测试4.35秒），第21所需专用库结构具备，迁移历史未另查；不代表真实Agent联调或真实HTTP交卷验收。
+
+| 方法与路径（均加/api/v1）                                | 请求字段                                                                                                                      | 权限与状态                                           |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| POST /entrance-exams/grading/retry                       | projectId/examId/gradingRecordId                                                                                              | 当前PM生效主策略官；已交卷AUTO、前轮全部完成且FAILED |
+| POST /entrance-exams/grading/auto/compensate             | projectId/examId/gradingRecordId/items/summary?/compensationReason?                                                           | 当前PM生效主策略官；FAILED或COMPLETED的AUTO          |
+| POST /integrations/agents/entrance-exam-grading/callback | projectId/attemptId/examVersionId/paperId/roundNo/gradingRecordId/toolTraceId/status/items?/summary?/errorCode?/errorMessage? | 专用HMAC；首次必须PROCESSING当前trace                |
+
+前两项旧Controller虽允许PM/NAVIGATOR，旧服务实际要求当前PM主策略官，新实现沿此规则。NAV人工池、EXPERT或招募协作负责人不能重试/补偿。允许CLOSED和历史版本，试卷/准入线始终取应试绑定版本。
+
+重试清空trace、回调摘要、逐题临时结果、执行汇总/时间/错误，回到PENDING并消解失败待办；mock下一次领取生成新trace，迟到回调409。补偿完整覆盖实际试卷，所有分数与轮次投票由服务器计算；FAILED补偿才开放下一轮，COMPLETED修正不重复激活。清trace使旧回调失效；反转最终结论时拒绝转项结果及已入项成员，只撤销同应试未入项PENDING_CONFIRM成员。补偿原因写审计事实，所有写入失败整事务回滚。
+
+回调使用`X-Agent-Timestamp`（Unix秒）和`X-Agent-Signature`（Base64），专用`AUTO_GRADING_HMAC_SECRET`至少32随机字符且独立于认证密钥；缺配置503。规范串为以下四行，无末尾换行：
+
+```text
+POST
+/api/v1/integrations/agents/entrance-exam-grading/callback
+<timestamp>
+<Base64(SHA256(原始UTF-8请求体字节))>
+```
+
+签名为`Base64(HMAC-SHA256(secret, 规范串))`。先验原始体，再解析JSON；时间差绝对值超过300秒拒绝401。成功status=SUCCEEDED须完整items(questionId/correctness/gradingOpinion?)，正确计该题全分、错误计0；FAILED须省略items或null，不计票、不激活下一轮。数据库逐项核对项目、应试、绑定版本/试卷、自动轮/前轮与trace。相同trace的规范化内容摘要落库，同内容重放无写副作用，变化内容409；重试或补偿后旧trace拒绝。Cookie/Bearer不代替HMAC。
+
+mock命令与本地后端必须使用相同数据库和专用密钥；它只处理指定真实PENDING自动记录，不创建答卷或伪造交卷。命令在`tyde/`执行，先确认已迁移及目标环境：
+
+```sh
+pnpm --filter @tyde/server exam-auto:mock <recordId> correct
+pnpm --filter @tyde/server exam-auto:mock <recordId> incorrect
+pnpm --filter @tyde/server exam-auto:mock <recordId> failed
+pnpm --filter @tyde/server exam-auto:mock <recordId> timeout
+pnpm --filter @tyde/server exam-auto:mock expire expire
+```
+
+correct/incorrect是可控全题正确/错误判定，不分析真实答案内容；逐题意见、总结明确标注模拟来源。failed投递签名失败回调，timeout只领取不回调；expire扫描最多100条超过60分钟的PROCESSING，按当前trace标FAILED。成功/失败回调由CLI仅投递本地`127.0.0.1:PORT`，拒绝重定向，15秒传输超时；接收成功但响应丢失时不覆盖已完成结果。再次执行同一非PENDING记录不会重复领取，失败后通过050重新入队。没有后台扫描/定时任务，不消费通用outbox的实际通知，事件仍非送达证据。
+
+第21迁移`20261022020000_auto_grading_callback_digest`仅增加摘要列/格式约束，Agent未应用；用户本批6项已通过，无需当前专用库重复迁移，以下仅供复查：
+
+```sh
+pnpm db:deploy:test
+pnpm --filter @tyde/server exec vitest run tests/auth.integration.test.ts -t 'auto grading'
+```
+
+第一条不清库，第二条会清空专用`_test`库，177项中只跑本批6项。15:48:06本轮尝试全部停在初始化连接127.0.0.1:5432，未进入业务断言；前批049的5项通过仍有效，不重跑。382项单测、类型/变更ESLint/后端build已通过；真实HTTP写链路/部署未验收；本批6项后续已通过，05基础交接06，跨领域卡片重算/转项审批/实际投递仍归04/12/14，08交卷另归原任务，不接真实Agent。
+
+2026-10-22第七批最新复验与交接：用户2026-10-22回传16:04:30启动的本批6项集成全部通过（1文件，171跳过，共177项，总6.63秒，测试4.35秒）；并发领取、签名HTTP回调/幂等、失败重试/旧trace拒绝、补偿及不可逆反转回滚、权限/逐题来源、超时和outbox故障整事务回滚已验证。第21迁移所需专用测试库结构已具备，迁移历史未另查；不是全177项复跑。原127.0.0.1:5432初始化连接阻塞解除，无需当前专用库再次迁移21或重复本批6项。 382项单测等仍为前批通过证据，本轮仅文档同步，未重跑或操作数据库。05基础已交接06，本轮未实施06；真实HTTP写链路/部署/完整兼容继续本任务，原接口状态保留，Agent继续mock。

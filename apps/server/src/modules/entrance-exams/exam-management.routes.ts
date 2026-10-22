@@ -1,4 +1,16 @@
+import type { ExamAutoService } from './exam-auto.service.js';
+import type { AutoRetryInput, AutoCompensateInput } from './exam-auto.types.js';
+import { autoRetrySchema, autoCompensateSchema } from './exam-auto.schema.js';
 import type { ExamQueryService, ExamLocator, ExamRosterInput } from './exam-query.service.js';
+import type { ExamAdmissionInput } from './exam-admission.js';
+import { examAdmissionSchema } from './exam-admission.schema.js';
+import type { ExamGradingDetailInput } from './exam-grading-query.js';
+import { examGradingDetailSchema } from './exam-grading-query.schema.js';
+import type {
+  ExamGradingCommandService,
+  ManualGradingInput,
+} from './exam-grading-command.service.js';
+import { manualGradingSchema } from './exam-grading-command.schema.js';
 import { examQuerySchema } from './exam-query.schema.js';
 import { examConfigRouteSchema } from './exam-config.schema.js';
 import type { ExamConfigInput, ExamEditInput } from './exam-config.types.js';
@@ -23,6 +35,8 @@ export async function examManagementRoutes(
   imports: ExamImportService,
   commands: ExamCommandService,
   queries: ExamQueryService,
+  gradings: ExamGradingCommandService,
+  auto: ExamAutoService,
 ) {
   await parent.register(async (app) => {
     const identities = new WeakMap<FastifyRequest, AuthPrincipal>();
@@ -47,6 +61,67 @@ export async function examManagementRoutes(
           : req.cookies[config.cookieSecure ? '__Host-tyde_session' : 'tyde_session'];
       identities.set(req, await auth.authenticate(token, client));
     });
+    app.get<{
+      Querystring: Omit<ExamAdmissionInput, 'projectId' | 'current' | 'size'> & {
+        projectId: string;
+        current?: string;
+        size?: string;
+      };
+    }>(`${API_PREFIX}/entrance-exams/admissions`, { schema: examAdmissionSchema }, async (req) => {
+      const projectId = Number(req.query.projectId);
+      if (!Number.isInteger(projectId) || projectId < 1 || projectId > 2147483647)
+        throw new AuthError(400, 'VALIDATION_ERROR', '项目ID必须为32位正整数');
+      return {
+        code: 200,
+        message: '操作成功',
+        data: await queries.admissions(
+          {
+            keyword: req.query.keyword,
+            admissionStatus: req.query.admissionStatus,
+            projectId,
+            ...(req.query.current !== undefined ? { current: Number(req.query.current) } : {}),
+            ...(req.query.size !== undefined ? { size: Number(req.query.size) } : {}),
+          },
+          identities.get(req)!,
+        ),
+      };
+    });
+    app.post<{ Body: AutoRetryInput }>(
+      `${API_PREFIX}/entrance-exams/grading/retry`,
+      { schema: autoRetrySchema },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await auto.retry(req.body, identities.get(req)!),
+      }),
+    );
+    app.post<{ Body: AutoCompensateInput }>(
+      `${API_PREFIX}/entrance-exams/grading/auto/compensate`,
+      { schema: autoCompensateSchema, bodyLimit: 4 * 1024 * 1024 },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await gradings.compensate(req.body, identities.get(req)!),
+      }),
+    );
+    app.post<{ Body: ManualGradingInput }>(
+      `${API_PREFIX}/entrance-exams/grading/manual`,
+      { schema: manualGradingSchema },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await gradings.manual(req.body, identities.get(req)!),
+      }),
+    );
+    app.post<{ Body: ExamGradingDetailInput }>(
+      `${API_PREFIX}/entrance-exams/grading/detail`,
+      { schema: examGradingDetailSchema },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await queries.gradingDetail(req.body, identities.get(req)!),
+      }),
+    );
     app.post<{ Body: ExamLocator }>(
       `${API_PREFIX}/entrance-exams/detail`,
       { schema: examQuerySchema('detail') },

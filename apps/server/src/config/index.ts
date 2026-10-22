@@ -2,6 +2,7 @@ import { readFileConfig, type FileConfig } from '../modules/files/file.config.js
 
 export interface Config {
   files: FileConfig;
+  autoGradingSecret: string;
   env: 'development' | 'test' | 'production';
   host: string;
   port: number;
@@ -78,7 +79,16 @@ export function readConfig(source: NodeJS.ProcessEnv = process.env): Config {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT 配置无效');
   const proxy = source.TRUST_PROXY;
   if (proxy === 'true') throw new Error('TRUST_PROXY 不允许 true，请设置 false 或可信代理 IP/CIDR');
+  const autoGradingSecret = source.AUTO_GRADING_HMAC_SECRET ?? '';
+  if (
+    autoGradingSecret &&
+    (autoGradingSecret.length < 32 ||
+      autoGradingSecret === codeSecret ||
+      autoGradingSecret.includes('REPLACE_'))
+  )
+    throw new Error('AUTO_GRADING_HMAC_SECRET须至少32位且独立于认证密钥');
   return {
+    autoGradingSecret,
     files: readFileConfig(source),
     env: env as Config['env'],
     host: source.HOST ?? '127.0.0.1',

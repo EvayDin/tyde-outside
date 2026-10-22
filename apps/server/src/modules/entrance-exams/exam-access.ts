@@ -67,3 +67,15 @@ export async function requireExamViewer(
     '当前用户不是项目策略官、招募协作负责人或配置的领航员阅卷人',
   );
 }
+
+export interface ExamLocator {
+  projectId: number;
+  examId: number;
+}
+export async function requireProjectExam(tx: Prisma.TransactionClient, input: ExamLocator) {
+  const exam = await tx.projectEntranceExam.findFirst({
+    where: { id: input.examId, projectId: input.projectId, deleted: false },
+  });
+  if (!exam) throw new AuthError(404, 'NOT_FOUND', '考试不存在或不属于当前项目');
+  return exam;
+}

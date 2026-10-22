@@ -1,4 +1,11 @@
+import { ExamAutoService } from '../src/modules/entrance-exams/exam-auto.service.js';
+import {
+  autoCallbackPath,
+  signAutoCallback,
+} from '../src/modules/entrance-exams/exam-auto-signature.js';
+import type { AutoCallbackInput } from '../src/modules/entrance-exams/exam-auto.types.js';
 import { examConfigExample } from '../src/modules/entrance-exams/exam-config.schema.js';
+import { ExamGradingCommandService } from '../src/modules/entrance-exams/exam-grading-command.service.js';
 import {
   ProjectProductionPlanService,
   type ProductionPlanInput,
@@ -22,7 +29,8 @@ import { digest } from '../src/modules/auth/security.js';
 import { ProjectManagerService } from '../src/modules/projects/project-manager.service.js';
 import { ProjectCreationService } from '../src/modules/projects/project-creation.service.js';
 const testEnv = parseEnv(readFileSync(new URL('../.env.test', import.meta.url), 'utf8'));
-const config = readConfig(testEnv);
+const autoTestSecret = 'auto-integration-dedicated-secret-32';
+const config = readConfig({ ...testEnv, AUTO_GRADING_HMAC_SECRET: autoTestSecret });
 if (
   config.env !== 'test' ||
   !new URL(config.databaseUrl).pathname.endsWith('_test') ||
@@ -6323,4 +6331,1041 @@ test('membership persistence failure rolls back newly created organization and i
     (await db.uploadedFile.findUniqueOrThrow({ where: { id: upload.record.id } })).status,
   ).toBe('UPLOADED');
   expect(await db.user.count({ where: { id: user.id } })).toBe(1);
+});
+
+const admissionPage = (
+  projectId: number,
+  headers: Record<string, string>,
+  query: Record<string, string | number> = {},
+) =>
+  app.inject({
+    url: `/api/v1/entrance-exams/admissions?${new URLSearchParams({ projectId: String(projectId), ...Object.fromEntries(Object.entries(query).map(([k, v]) => [k, String(v)])) })}`,
+    headers,
+  });
+
+test('admissions database pagination distinguishes all five states, history names, snapshot search, unsubmitted and deleted exams', async () => {
+  const f = await examReadFixture();
+  const submittedAt = new Date('2026-10-22T01:00:00Z');
+  const pending = await readAttempt(f, 'ADMISSION_PENDING', { submittedAt });
+  const failed = await readAttempt(f, 'ADMISSION_FAILED', {
+    finalResult: 'ELIMINATED',
+    submittedAt,
+  });
+  const waiting = await readAttempt(f, 'ADMISSION_WAITING', {
+    finalResult: 'ADMITTED',
+    submittedAt,
+  });
+  const joined = await readAttempt(f, 'ADMISSION_JOINED', { finalResult: 'ADMITTED', submittedAt });
+  const declined = await readAttempt(f, 'ADMISSION_DECLINED', {
+    finalResult: 'ADMITTED',
+    submittedAt,
+  });
+  await readAttempt(f, 'ADMISSION_UNSUBMITTED');
+  for (const [attempt, status, joinedAt] of [
+    [pending, 'ENTRY_DECLINED', submittedAt],
+    [failed, 'ACTIVE', submittedAt],
+    [joined, 'LEFT', submittedAt],
+    [declined, 'ENTRY_DECLINED', submittedAt],
+  ] as const)
+    await db.projectMember.create({
+      data: {
+        projectId: f.projectId,
+        userId: f.manager.user.id,
+        admissionAttemptId: attempt.id,
+        status,
+        joinedAt,
+        createdBy: f.manager.user.uid,
+      },
+    });
+  const edited = await f.edit(f.exam.examId, f.exam.currentVersionId, { examName: '改名后的考试' });
+  expect(edited.statusCode, edited.body).toBe(200);
+  const historical = await db.entranceExamVersion.findUniqueOrThrow({
+    where: { id: f.exam.currentVersionId },
+  });
+  await db.user.update({
+    where: { id: f.manager.user.id },
+    data: { displayName: '实时准入姓名', realName: '真实姓名' },
+  });
+  const expected = {
+    PENDING: pending.id,
+    ELIMINATED: failed.id,
+    PENDING_ENTRY: waiting.id,
+    ADMITTED: joined.id,
+    ENTRY_DECLINED: declined.id,
+  };
+  for (const [admissionStatus, attemptId] of Object.entries(expected)) {
+    const result = await admissionPage(f.projectId, f.manager.headers, { admissionStatus });
+    expect(result.statusCode, result.body).toBe(200);
+    expect(result.json().data).toMatchObject({
+      total: 1,
+      records: [
+        {
+          attemptId,
+          admissionStatus,
+          examName: historical.examNameSnapshot,
+          candidateName: '实时准入姓名(真实姓名)',
+          organizationId: null,
+          employmentType: null,
+        },
+      ],
+    });
+  }
+  const first = await admissionPage(f.projectId, f.handler.headers, { size: 2 });
+  expect(first.json().data).toMatchObject({
+    total: 5,
+    pages: 3,
+    records: [{ attemptId: declined.id }, { attemptId: joined.id }],
+  });
+  expect(
+    (await admissionPage(f.projectId, f.headers, { current: 4, size: 2 })).json().data.records,
+  ).toEqual([]);
+  expect(
+    (
+      await admissionPage(f.projectId, f.manager.headers, { keyword: '  快照ADMISSION_WAITING  ' })
+    ).json().data.total,
+  ).toBe(1);
+  expect(
+    (await admissionPage(f.projectId, f.manager.headers, { keyword: '实时准入姓名' })).json().data
+      .total,
+  ).toBe(0);
+  const second = await f.publish({ ...f.payload, examName: '第二场考试' });
+  expect(second.statusCode, second.body).toBe(200);
+  await readAttempt({ ...f, exam: second.json().data }, 'ADMISSION_SECOND', { submittedAt });
+  expect((await f.close()).statusCode).toBe(200);
+  expect((await admissionPage(f.projectId, f.headers)).json().data.total).toBe(6);
+  await db.projectEntranceExam.update({ where: { id: f.exam.examId }, data: { deleted: true } });
+  expect((await admissionPage(f.projectId, f.manager.headers)).json().data).toMatchObject({
+    total: 1,
+    records: [{ examId: second.json().data.examId }],
+  });
+});
+
+test('admissions restrict EXPERT to accepted managed organizations and revoke legacy owner fallback as soon as owner history exists', async () => {
+  const f = await examReadFixture();
+  const owner = await projectTestAccount('13610000001');
+  const organization = await db.organization.create({
+    data: { name: '准入隔离组织', expertiseTags: [] },
+  });
+  const org = { owner: owner.user, headers: owner.headers, orgId: organization.id };
+  await db.userOrgRel.create({
+    data: { userId: owner.user.id, uid: owner.user.uid, orgId: org.orgId, position: 'OWNER' },
+  });
+  const account = await projectManagerAccount(4, 100, false);
+  const rel = await db.userOrgRel.create({
+    data: { userId: account.user.id, uid: account.user.uid, orgId: org.orgId },
+  });
+  const other = { ...account, rel };
+  const assignment = await db.projectExpertAssignment.create({
+    data: {
+      assignmentNo: 'ADMISSION-ORG',
+      projectId: f.projectId,
+      subjectType: 'ORGANIZATION',
+      organizationId: org.orgId,
+      projectOwnerUserId: other.user.id,
+      status: 'ACCEPTED',
+      createdBy: org.owner.uid,
+    },
+  });
+  await db.userOrgRel.update({
+    where: { id: other.rel.id },
+    data: { employmentType: 'PART_TIME' },
+  });
+  const orgAttempt = await readAttempt(f, 'ADMISSION_ORG', {
+    submittedAt: new Date(),
+    candidateUserId: other.user.id,
+    candidateUid: other.user.uid,
+    organizationId: org.orgId,
+    organizationName: '组织快照',
+    userOrgRelId: other.rel.id,
+  });
+  await readAttempt(f, 'ADMISSION_PERSONAL', { submittedAt: new Date() });
+  for (const headers of [org.headers, other.headers]) {
+    const result = await admissionPage(f.projectId, headers);
+    expect(result.statusCode, result.body).toBe(200);
+    expect(result.json().data).toMatchObject({
+      total: 1,
+      records: [
+        { attemptId: orgAttempt.id, organizationId: org.orgId, employmentType: 'PART_TIME' },
+      ],
+    });
+  }
+  const secondOrg = await db.organization.create({
+    data: { name: '另一个已接单组织', expertiseTags: [] },
+  });
+  const secondRel = await db.userOrgRel.create({
+    data: {
+      userId: owner.user.id,
+      uid: owner.user.uid,
+      orgId: secondOrg.id,
+      position: 'OWNER',
+      joinStatus: 'PENDING_LEAVE',
+    },
+  });
+  await db.projectExpertAssignment.create({
+    data: {
+      assignmentNo: 'ADMISSION-ORG-SECOND',
+      projectId: f.projectId,
+      subjectType: 'ORGANIZATION',
+      organizationId: secondOrg.id,
+      status: 'ACCEPTED',
+      createdBy: owner.user.uid,
+    },
+  });
+  await readAttempt(f, 'ADMISSION_ORG_SECOND', {
+    submittedAt: new Date(),
+    candidateUserId: owner.user.id,
+    candidateUid: owner.user.uid,
+    organizationId: secondOrg.id,
+    userOrgRelId: secondRel.id,
+  });
+  expect((await admissionPage(f.projectId, org.headers)).json().data.total).toBe(2);
+  expect((await admissionPage(f.projectId, other.headers)).json().data.total).toBe(1);
+  await db.userOrgRel.update({ where: { id: secondRel.id }, data: { joinStatus: 'LEFT' } });
+  expect((await admissionPage(f.projectId, org.headers)).json().data.total).toBe(1);
+  const history = await db.projectExpertAssignmentOwner.create({
+    data: {
+      assignmentId: assignment.id,
+      userId: other.user.id,
+      status: 'REMOVED',
+      createdBy: org.owner.uid,
+    },
+  });
+  expect((await admissionPage(f.projectId, other.headers)).statusCode).toBe(403);
+  await db.projectExpertAssignmentOwner.update({
+    where: { id: history.id },
+    data: { status: 'ACTIVE' },
+  });
+  expect((await admissionPage(f.projectId, other.headers)).json().data.total).toBe(1);
+  await db.projectExpertAssignment.update({
+    where: { id: assignment.id },
+    data: { status: 'REJECTED' },
+  });
+  expect((await admissionPage(f.projectId, org.headers)).statusCode).toBe(403);
+  expect((await admissionPage(f.projectId, other.headers)).statusCode).toBe(403);
+  const outsider = await projectManagerAccount(3);
+  expect((await admissionPage(f.projectId, outsider.headers)).statusCode).toBe(403);
+});
+
+async function gradingDetailFixture() {
+  const f = await examReadFixture();
+  const attempt = await readAttempt(f, 'GRADING_DETAIL', {
+    submittedAt: new Date(),
+    gradingStatus: 'IN_PROGRESS',
+  });
+  const question = await db.entranceExamQuestion.findFirstOrThrow({
+    where: { paperId: attempt.paperId! },
+  });
+  await db.entranceExamQuestion.update({ where: { id: question.id }, data: { score: 10 } });
+  const unanswered = await db.entranceExamQuestion.create({
+    data: {
+      paperId: attempt.paperId!,
+      sequenceNo: 2,
+      score: 10,
+      questionContent: '尚未作答的题目',
+      createdBy: f.manager.user.uid,
+    },
+  });
+  const otherPaper = await db.entranceExamPaper.create({
+    data: {
+      examVersionId: attempt.examVersionId!,
+      sequenceNo: 2,
+      totalScore: 20,
+      createdBy: f.manager.user.uid,
+      questions: {
+        create: {
+          sequenceNo: 1,
+          score: 20,
+          questionContent: '不属于实际作答试卷',
+          createdBy: f.manager.user.uid,
+        },
+      },
+    },
+    include: { questions: true },
+  });
+  const round = await db.entranceExamGradingRound.findFirstOrThrow({
+    where: { examVersionId: attempt.examVersionId! },
+  });
+  const secondRound = await db.entranceExamGradingRound.create({
+    data: {
+      examVersionId: attempt.examVersionId!,
+      roundNo: 2,
+      gradingMode: 'AUTO',
+      toolCode: 'example-tool',
+      toolName: '示例工具',
+      createdBy: f.manager.user.uid,
+    },
+  });
+  await db.entranceExamVersion.update({
+    where: { id: attempt.examVersionId! },
+    data: { tieBreakRule: 'STRICT' },
+  });
+  const answer = await db.entranceExamAnswer.create({
+    data: {
+      attemptId: attempt.id,
+      paperId: attempt.paperId!,
+      questionId: question.id,
+      answerContent: '真实答案',
+      answerFilesJson: [
+        {
+          objectKey: 'entrance-exam-attachment/example.txt',
+          fileName: 'answer.txt',
+          custom: { kept: true },
+        },
+      ],
+      answeredFlag: true,
+      createdBy: f.manager.user.uid,
+    },
+  });
+  const firstRecord = await db.entranceExamGradingRecord.create({
+    data: {
+      attemptId: attempt.id,
+      examVersionId: attempt.examVersionId!,
+      gradingRoundId: round.id,
+      status: 'COMPLETED',
+      score: 0,
+      roundResult: 'ELIMINATED',
+      conclusionSummary: '第一轮未通过',
+      createdBy: f.manager.user.uid,
+    },
+  });
+  const secondRecord = await db.entranceExamGradingRecord.create({
+    data: {
+      attemptId: attempt.id,
+      examVersionId: attempt.examVersionId!,
+      gradingRoundId: secondRound.id,
+      status: 'FAILED',
+      errorMessage: '示例工具失败',
+      createdBy: f.manager.user.uid,
+    },
+  });
+  await db.entranceExamGradingItem.create({
+    data: {
+      gradingRecordId: firstRecord.id,
+      attemptId: attempt.id,
+      questionId: question.id,
+      answerId: answer.id,
+      correctness: 'INCORRECT',
+      gradingOpinion: '第一轮意见',
+      createdBy: f.manager.user.uid,
+    },
+  });
+  await db.entranceExamGradingItem.create({
+    data: {
+      gradingRecordId: secondRecord.id,
+      attemptId: attempt.id,
+      questionId: question.id,
+      answerId: answer.id,
+      correctness: 'CORRECT',
+      gradingOpinion: '第二轮意见',
+      createdBy: f.manager.user.uid,
+    },
+  });
+  const gradingDetail = (patch = {}, headers = f.manager.headers) =>
+    post(
+      '/entrance-exams/grading/detail',
+      { projectId: f.projectId, examId: f.exam.examId, attemptId: attempt.id, ...patch },
+      headers,
+    );
+  return {
+    ...f,
+    attempt,
+    question,
+    unanswered,
+    otherPaper,
+    round,
+    secondRound,
+    answer,
+    firstRecord,
+    secondRecord,
+    gradingDetail,
+  };
+}
+
+test('grading detail retains historical paper/reference/pass-score and per-round answers after edit and close, with no read side effects', async () => {
+  const f = await gradingDetailFixture();
+  const edited = await f.edit(f.exam.examId, f.exam.currentVersionId, {
+    passScore: 18,
+    papers: [
+      {
+        questions: [
+          {
+            questionContent: '新版题干',
+            score: 20,
+            scoreSource: 'MANUAL',
+            referenceAnswer: '新版参考答案',
+          },
+        ],
+      },
+    ],
+    gradingRounds: [{ gradingMode: 'MANUAL', reviewerUserIds: [f.manager.user.id] }],
+  });
+  expect(edited.statusCode, edited.body).toBe(200);
+  await db.user.update({
+    where: { id: f.manager.user.id },
+    data: { displayName: '阅卷详情实时名', realName: '实时姓名' },
+  });
+  expect((await f.close()).statusCode).toBe(200);
+  const snapshot = async () => ({
+    attempt: await db.entranceExamAttempt.findUniqueOrThrow({ where: { id: f.attempt.id } }),
+    answers: await db.entranceExamAnswer.findMany({ orderBy: { id: 'asc' } }),
+    records: await db.entranceExamGradingRecord.findMany({ orderBy: { id: 'asc' } }),
+    items: await db.entranceExamGradingItem.findMany({ orderBy: { id: 'asc' } }),
+  });
+  const before = await snapshot();
+  for (const headers of [f.manager.headers, f.handler.headers, f.headers]) {
+    const result = await f.gradingDetail({}, headers);
+    expect(result.statusCode, result.body).toBe(200);
+    expect(result.json().data).toMatchObject({
+      candidateName: '阅卷详情实时名(实时姓名)',
+      passScore: 12,
+      gradingStatus: 'IN_PROGRESS',
+      finalResult: 'PENDING',
+      rounds: [{ score: 0, roundResult: 'ELIMINATED' }, { errorMessage: '示例工具失败' }],
+      selectedRound: { gradingRoundId: f.round.id, gradingRecordId: f.firstRecord.id, score: 0 },
+      questions: [
+        {
+          questionId: f.question.id,
+          score: 10,
+          referenceAnswer: f.question.referenceAnswer,
+          answerId: f.answer.id,
+          answerContent: '真实答案',
+          answerFiles: f.answer.answerFilesJson,
+          answeredFlag: true,
+          correctness: 'INCORRECT',
+          gradingOpinion: '第一轮意见',
+        },
+        { questionId: f.unanswered.id, answerId: null, answeredFlag: false, correctness: null },
+      ],
+    });
+    expect(result.json().data.questions).toHaveLength(2);
+  }
+  expect((await f.gradingDetail({ roundNo: 2 })).json().data).toMatchObject({
+    selectedRound: {
+      gradingRecordId: f.secondRecord.id,
+      status: 'FAILED',
+      errorMessage: '示例工具失败',
+    },
+    questions: [{ correctness: 'CORRECT', gradingOpinion: '第二轮意见' }, { correctness: null }],
+  });
+  expect((await f.gradingDetail({ roundNo: null })).json().data.selectedRound.roundNo).toBe(1);
+  expect(await snapshot()).toEqual(before);
+});
+
+test('grading detail returns truthful missing records before submission and rejects unbound, foreign, nonexistent or unauthorized sources', async () => {
+  const f = await gradingDetailFixture();
+  const empty = await readAttempt(f, 'GRADING_DETAIL_EMPTY');
+  const result = await f.gradingDetail({ attemptId: empty.id });
+  expect(result.statusCode, result.body).toBe(200);
+  expect(result.json().data).toMatchObject({
+    gradingStatus: 'NOT_STARTED',
+    finalResult: 'PENDING',
+    selectedRound: { gradingRecordId: null, status: null, score: null },
+    questions: [
+      { answerId: null, answeredFlag: false, correctness: null },
+      { answerId: null, answeredFlag: false, correctness: null },
+    ],
+  });
+  expect(await db.entranceExamGradingRecord.count()).toBe(2);
+  const unbound = await readAttempt(f, 'GRADING_DETAIL_UNBOUND', {
+    examVersionId: null,
+    paperId: null,
+    enteredAt: null,
+  });
+  expect((await f.gradingDetail({ attemptId: unbound.id })).statusCode).toBe(400);
+  expect((await f.gradingDetail({ attemptId: 2147483647 })).statusCode).toBe(404);
+  expect((await f.gradingDetail({ roundNo: 3 })).statusCode).toBe(400);
+  const foreign = await f.publish({ ...f.payload, examName: '其他考试阅卷' });
+  expect(foreign.statusCode, foreign.body).toBe(200);
+  expect((await f.gradingDetail({ examId: foreign.json().data.examId })).statusCode).toBe(404);
+  const outsider = await projectManagerAccount(3);
+  expect((await f.gradingDetail({}, outsider.headers)).statusCode).toBe(403);
+  const expert = await projectTestAccount('13610000002');
+  expect((await f.gradingDetail({}, expert.headers)).statusCode).toBe(403);
+  await db.entranceExamGradingRound.updateMany({
+    where: { examVersionId: f.exam.currentVersionId },
+    data: {
+      reviewersJson: [{ userId: f.manager.user.id, uid: f.manager.user.uid, name: '策略官' }],
+    },
+  });
+  // foreign考试仍配置了f.user，删除该考试后不能借其阅卷池读取本项目答案。
+  await db.projectEntranceExam.update({
+    where: { id: foreign.json().data.examId },
+    data: { deleted: true },
+  });
+  expect((await f.gradingDetail({}, f.headers)).statusCode).toBe(403);
+});
+
+test('grading detail source constraints reject cross-paper answers, cross-attempt/question items, duplicates, invalid correctness and source deletion', async () => {
+  const f = await gradingDetailFixture();
+  const otherAttempt = await readAttempt(f, 'GRADING_DETAIL_OTHER', { submittedAt: new Date() });
+  const otherAnswer = await db.entranceExamAnswer.create({
+    data: {
+      attemptId: otherAttempt.id,
+      paperId: otherAttempt.paperId!,
+      questionId: f.unanswered.id,
+      answeredFlag: false,
+      createdBy: f.manager.user.uid,
+    },
+  });
+  const answerData = {
+    attemptId: f.attempt.id,
+    paperId: f.attempt.paperId!,
+    questionId: f.unanswered.id,
+    createdBy: f.manager.user.uid,
+  };
+  await expect(
+    db.entranceExamAnswer.create({
+      data: { ...answerData, questionId: f.otherPaper.questions[0]!.id },
+    }),
+  ).rejects.toMatchObject({ code: 'P2003' });
+  await expect(
+    db.entranceExamAnswer.create({
+      data: { ...answerData, paperId: f.otherPaper.id, questionId: f.otherPaper.questions[0]!.id },
+    }),
+  ).rejects.toMatchObject({ code: 'P2003' });
+  await expect(
+    db.entranceExamAnswer.create({ data: { ...answerData, questionId: f.question.id } }),
+  ).rejects.toMatchObject({ code: 'P2002' });
+  const secondAnswer = await db.entranceExamAnswer.create({ data: answerData });
+  const itemData = {
+    gradingRecordId: f.firstRecord.id,
+    attemptId: f.attempt.id,
+    questionId: f.unanswered.id,
+    answerId: secondAnswer.id,
+    createdBy: f.manager.user.uid,
+  };
+  await expect(
+    db.entranceExamGradingItem.create({ data: { ...itemData, answerId: otherAnswer.id } }),
+  ).rejects.toMatchObject({ code: 'P2003' });
+  await expect(
+    db.entranceExamGradingItem.create({
+      data: { ...itemData, attemptId: otherAttempt.id, answerId: otherAnswer.id },
+    }),
+  ).rejects.toMatchObject({ code: 'P2003' });
+  await expect(
+    db.entranceExamGradingItem.create({ data: { ...itemData, answerId: f.answer.id } }),
+  ).rejects.toMatchObject({ code: 'P2003' });
+  const stored = await db.entranceExamGradingItem.create({ data: itemData });
+  expect(stored.correctness).toBe('PENDING');
+  await expect(db.entranceExamGradingItem.create({ data: itemData })).rejects.toMatchObject({
+    code: 'P2002',
+  });
+  await expect(
+    db.entranceExamGradingItem.update({
+      where: { id: stored.id },
+      data: { correctness: 'UNKNOWN' },
+    }),
+  ).rejects.toThrow();
+  expect(
+    (await db.entranceExamGradingItem.findUniqueOrThrow({ where: { id: stored.id } })).correctness,
+  ).toBe('PENDING');
+  const snapshot = async () => ({
+    attempt: await db.entranceExamAttempt.findUniqueOrThrow({ where: { id: f.attempt.id } }),
+    answers: await db.entranceExamAnswer.findMany({
+      where: { attemptId: f.attempt.id },
+      orderBy: { id: 'asc' },
+    }),
+    records: await db.entranceExamGradingRecord.findMany({
+      where: { attemptId: f.attempt.id },
+      orderBy: { id: 'asc' },
+    }),
+    items: await db.entranceExamGradingItem.findMany({
+      where: { attemptId: f.attempt.id },
+      orderBy: { id: 'asc' },
+    }),
+  });
+  const before = await snapshot();
+  // RESTRICT的SQLSTATE 23001可能未映射为P2003；必须命中具体外键，其他删除错误仍然失败。
+  await expect(db.entranceExamAnswer.delete({ where: { id: f.answer.id } })).rejects.toMatchObject({
+    message: expect.stringContaining('EntranceExamGradingItem_answerId_attemptId_questionId_fkey'),
+  });
+  expect(await snapshot()).toEqual(before);
+});
+
+// 人工写链路专用准备；不复用真实HTTP读取夹具，也不代表08交卷入口已经实现。
+async function manualGradingFixture() {
+  const f = await gradingDetailFixture();
+  await db.entranceExamGradingRecord.update({
+    where: { id: f.firstRecord.id },
+    data: { status: 'PENDING', score: null, roundResult: null },
+  });
+  await db.entranceExamGradingRecord.update({
+    where: { id: f.secondRecord.id },
+    data: { status: 'WAITING', errorMessage: null },
+  });
+  await db.entranceExamGradingItem.updateMany({
+    where: { attemptId: f.attempt.id },
+    data: { correctness: 'PENDING', gradingOpinion: null },
+  });
+  const secondAnswer = await db.entranceExamAnswer.create({
+    data: {
+      attemptId: f.attempt.id,
+      paperId: f.attempt.paperId!,
+      questionId: f.unanswered.id,
+      answeredFlag: false,
+      createdBy: f.manager.user.uid,
+    },
+  });
+  for (const record of [f.firstRecord, f.secondRecord])
+    await db.entranceExamGradingItem.create({
+      data: {
+        gradingRecordId: record.id,
+        attemptId: f.attempt.id,
+        questionId: f.unanswered.id,
+        answerId: secondAnswer.id,
+        createdBy: f.manager.user.uid,
+      },
+    });
+  const assignment = await db.projectExpertAssignment.create({
+    data: {
+      assignmentNo: 'MANUAL-SOURCE',
+      projectId: f.projectId,
+      subjectType: 'INDIVIDUAL',
+      expertUserId: f.manager.user.id,
+      status: 'ACCEPTED',
+      createdBy: f.manager.user.uid,
+    },
+  });
+  await db.entranceExamAttempt.update({
+    where: { id: f.attempt.id },
+    data: { sourceBizId: assignment.id },
+  });
+  const body = {
+    projectId: f.projectId,
+    examId: f.exam.examId,
+    attemptId: f.attempt.id,
+    gradingRecordId: f.firstRecord.id,
+    items: [
+      { questionId: f.question.id, correctness: 'CORRECT' },
+      { questionId: f.unanswered.id, correctness: 'CORRECT', gradingOpinion: '  完整  ' },
+    ],
+  };
+  const manual = (patch = {}, headers = f.manager.headers) =>
+    post('/entrance-exams/grading/manual', { ...body, ...patch }, headers);
+  return { ...f, assignment, body, manual };
+}
+test('manual grading serializes competing reviewers, activates only the next manual round, preserves history and decides membership once', async () => {
+  const f = await manualGradingFixture();
+  await db.entranceExamGradingRound.update({
+    where: { id: f.secondRound.id },
+    data: { gradingMode: 'MANUAL', reviewersJson: [{ userId: f.user.id }] },
+  });
+  const edited = await f.edit(f.exam.examId, f.exam.currentVersionId, { passScore: 20 });
+  expect(edited.statusCode, edited.body).toBe(200);
+  expect((await f.close()).statusCode).toBe(200);
+  const competing = await Promise.all([f.manual(), f.manual({}, f.headers)]);
+  expect(competing.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+  const first = competing.find((r) => r.statusCode === 200)!;
+  expect(first.json().data).toMatchObject({
+    score: 20,
+    roundResult: 'ADMITTED',
+    gradingStatus: 'IN_PROGRESS',
+    finalResult: 'PENDING',
+  });
+  expect(
+    (await db.entranceExamGradingRecord.findUniqueOrThrow({ where: { id: f.secondRecord.id } }))
+      .status,
+  ).toBe('PENDING');
+  expect(await db.projectMember.count({ where: { admissionAttemptId: f.attempt.id } })).toBe(0);
+  expect(
+    await db.projectRoleNodeSnapshot.findFirst({
+      where: {
+        projectId: f.projectId,
+        userId: f.user.id,
+        sourceBizId: f.secondRecord.id,
+        branchNodeCode: 'ENTRANCE_EXAM_GRADING',
+      },
+    }),
+  ).not.toBeNull();
+  expect((await f.manual({ gradingRecordId: f.secondRecord.id })).statusCode).toBe(403);
+  const final = await f.manual(
+    {
+      gradingRecordId: f.secondRecord.id,
+      items: f.body.items.map((i) => ({ ...i, correctness: 'INCORRECT' })),
+    },
+    f.headers,
+  );
+  expect(final.statusCode, final.body).toBe(200);
+  expect(final.json().data).toMatchObject({
+    score: 0,
+    finalResult: 'ELIMINATED',
+    gradingStatus: 'COMPLETED',
+  });
+  expect(await db.projectMember.count({ where: { admissionAttemptId: f.attempt.id } })).toBe(0);
+  expect(
+    await db.projectRoleNodeSnapshot.count({
+      where: { projectId: f.projectId, sourceBizType: 'GRADING_RECORD' },
+    }),
+  ).toBe(0);
+  expect(
+    await db.projectTaskRound.count({
+      where: { projectId: f.projectId, status: 'OPEN', taskType: 'ENTRANCE_EXAM_GRADING' },
+    }),
+  ).toBe(0);
+  expect(
+    await db.projectEventOutbox.count({
+      where: { projectId: f.projectId, eventType: 'EXAM_RESULT_DECIDED' },
+    }),
+  ).toBe(1);
+});
+test('manual grading final admission creates a pending member with validated assignment and repeated submit cannot duplicate it', async () => {
+  const f = await manualGradingFixture();
+  await db.entranceExamGradingItem.deleteMany({ where: { gradingRecordId: f.secondRecord.id } });
+  await db.entranceExamGradingRecord.delete({ where: { id: f.secondRecord.id } });
+  await db.entranceExamGradingRound.delete({ where: { id: f.secondRound.id } });
+  const response = await f.manual();
+  expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().data.finalResult).toBe('ADMITTED');
+  expect(
+    await db.projectMember.findUnique({ where: { admissionAttemptId: f.attempt.id } }),
+  ).toMatchObject({
+    projectId: f.projectId,
+    userId: f.manager.user.id,
+    expertAssignmentId: f.assignment.id,
+    status: 'PENDING_CONFIRM',
+    joinedAt: null,
+  });
+  expect((await f.manual()).statusCode).toBe(409);
+  expect(await db.projectMember.count({ where: { admissionAttemptId: f.attempt.id } })).toBe(1);
+});
+test('manual grading rejects wrong round/user/attempt, WAITING and incomplete or foreign question sets without writes', async () => {
+  const f = await manualGradingFixture();
+  expect((await f.manual({}, f.handler.headers)).statusCode).toBe(403);
+  expect((await f.manual({ attemptId: 2147483647 })).statusCode).toBe(404);
+  expect((await f.manual({ gradingRecordId: f.secondRecord.id })).statusCode).toBe(400);
+  for (const items of [
+    f.body.items.slice(0, 1),
+    [f.body.items[0], f.body.items[0]],
+    [{ questionId: f.otherPaper.questions[0]!.id, correctness: 'CORRECT' }, f.body.items[1]],
+  ])
+    expect((await f.manual({ items })).statusCode).toBe(400);
+  await db.entranceExamAttempt.update({ where: { id: f.attempt.id }, data: { submittedAt: null } });
+  expect((await f.manual()).statusCode).toBe(400);
+  expect(
+    (await db.entranceExamGradingRecord.findUniqueOrThrow({ where: { id: f.firstRecord.id } }))
+      .status,
+  ).toBe('PENDING');
+  expect(
+    await db.entranceExamGradingItem.count({
+      where: { attemptId: f.attempt.id, correctness: { not: 'PENDING' } },
+    }),
+  ).toBe(0);
+});
+test('manual grading next AUTO only persists mock dispatch intent without pretending execution; later transaction failure rolls everything back', async () => {
+  const f = await manualGradingFixture();
+  const beforeEvents = await db.projectEventOutbox.count();
+  const failing = new Proxy(db, {
+    get(target, key) {
+      if (key === '$transaction')
+        return (callback: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+          db.$transaction((tx) =>
+            callback(
+              new Proxy(tx, {
+                get(transaction, property) {
+                  if (property === 'projectEventOutbox')
+                    return {
+                      ...transaction.projectEventOutbox,
+                      create: async () => {
+                        throw new Error('injected grading outbox failure');
+                      },
+                    };
+                  return Reflect.get(transaction, property);
+                },
+              }),
+            ),
+          );
+      const value = Reflect.get(target, key);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  await expect(
+    new ExamGradingCommandService(failing).manual(f.body as never, {
+      userId: f.manager.user.id,
+      uid: f.manager.user.uid,
+      role: 'PM',
+      sessionId: 'test',
+      clientType: 'desktop',
+    }),
+  ).rejects.toThrow('injected grading outbox failure');
+  expect(
+    (await db.entranceExamGradingRecord.findUniqueOrThrow({ where: { id: f.firstRecord.id } }))
+      .status,
+  ).toBe('PENDING');
+  expect(
+    (await db.entranceExamGradingRecord.findUniqueOrThrow({ where: { id: f.secondRecord.id } }))
+      .status,
+  ).toBe('WAITING');
+  expect(
+    await db.entranceExamGradingItem.count({
+      where: { attemptId: f.attempt.id, correctness: { not: 'PENDING' } },
+    }),
+  ).toBe(0);
+  expect(await db.projectEventOutbox.count()).toBe(beforeEvents);
+  const ok = await f.manual();
+  expect(ok.statusCode, ok.body).toBe(200);
+  const dispatch = await db.projectEventOutbox.findFirstOrThrow({
+    where: { projectId: f.projectId, eventType: 'EXAM_AUTO_DISPATCH_REQUESTED' },
+  });
+  expect(dispatch.payload).toMatchObject({
+    gradingRecordId: f.secondRecord.id,
+    provider: 'mock',
+    executionStatus: 'NOT_EXECUTED',
+  });
+  expect(
+    (await db.entranceExamGradingRecord.findUniqueOrThrow({ where: { id: f.secondRecord.id } }))
+      .status,
+  ).toBe('PENDING');
+});
+test('manual grading missing accepted admission source rolls back final result and item writes', async () => {
+  const f = await manualGradingFixture();
+  await db.entranceExamGradingItem.deleteMany({ where: { gradingRecordId: f.secondRecord.id } });
+  await db.entranceExamGradingRecord.delete({ where: { id: f.secondRecord.id } });
+  await db.entranceExamGradingRound.delete({ where: { id: f.secondRound.id } });
+  await db.entranceExamAttempt.update({ where: { id: f.attempt.id }, data: { sourceBizId: null } });
+  expect((await f.manual()).statusCode).toBe(500);
+  expect(
+    (await db.entranceExamGradingRecord.findUniqueOrThrow({ where: { id: f.firstRecord.id } }))
+      .status,
+  ).toBe('PENDING');
+  expect(
+    (await db.entranceExamAttempt.findUniqueOrThrow({ where: { id: f.attempt.id } })).finalResult,
+  ).toBe('PENDING');
+  expect(await db.projectMember.count({ where: { admissionAttemptId: f.attempt.id } })).toBe(0);
+  expect(
+    await db.entranceExamGradingItem.count({
+      where: { attemptId: f.attempt.id, correctness: { not: 'PENDING' } },
+    }),
+  ).toBe(0);
+});
+
+async function autoGradingFixture() {
+  const f = await manualGradingFixture();
+  const submitted = await f.manual();
+  expect(submitted.statusCode, submitted.body).toBe(200);
+  const auto = new ExamAutoService(db);
+  const locator = {
+    projectId: f.projectId,
+    examId: f.exam.examId,
+    gradingRecordId: f.secondRecord.id,
+  };
+  const compensate = (patch = {}) =>
+    post(
+      '/entrance-exams/grading/auto/compensate',
+      { ...locator, items: f.body.items, compensationReason: '模拟复核', ...patch },
+      f.manager.headers,
+    );
+  return { ...f, auto, locator, compensate };
+}
+async function autoHttpCallback(input: AutoCallbackInput) {
+  const raw = JSON.stringify(input),
+    timestamp = String(Math.floor(Date.now() / 1000));
+  return app.inject({
+    method: 'POST',
+    url: autoCallbackPath,
+    headers: {
+      'content-type': 'application/json',
+      'x-agent-timestamp': timestamp,
+      'x-agent-signature': signAutoCallback(autoTestSecret, timestamp, raw),
+    },
+    payload: raw,
+  });
+}
+test('auto grading mock claims once under concurrency, signs HTTP callback, finalizes and accepts only identical replay', async () => {
+  const f = await autoGradingFixture();
+  const claims = await Promise.all([
+    f.auto.claim(f.secondRecord.id),
+    f.auto.claim(f.secondRecord.id),
+  ]);
+  expect(claims.filter(Boolean)).toHaveLength(1);
+  const input = { ...claims.find(Boolean)!, items: f.body.items } as AutoCallbackInput;
+  const completed = await autoHttpCallback(input);
+  expect(completed.statusCode, completed.body).toBe(200);
+  expect(completed.json().data).toMatchObject({
+    score: 20,
+    finalResult: 'ADMITTED',
+    recordStatus: 'COMPLETED',
+  });
+  const events = await db.projectEventOutbox.count();
+  expect((await autoHttpCallback(input)).statusCode).toBe(200);
+  expect(await db.projectEventOutbox.count()).toBe(events);
+  expect((await autoHttpCallback({ ...input, summary: '篡改' })).statusCode).toBe(409);
+  expect(await db.projectMember.count({ where: { admissionAttemptId: f.attempt.id } })).toBe(1);
+  expect(
+    (await db.entranceExamGradingRecord.findUniqueOrThrow({ where: { id: f.secondRecord.id } }))
+      .callbackDigest,
+  ).toMatch(/^[0-9a-f]{64}$/);
+});
+test('auto grading mock failure stays blocked, retry resets all temporary state and rejects late prior execution', async () => {
+  const f = await autoGradingFixture();
+  let old: AutoCallbackInput | undefined;
+  await f.auto.executeMock(f.secondRecord.id, 'failed', async (input) => {
+    old = input;
+    const result = await autoHttpCallback(input);
+    expect(result.statusCode, result.body).toBe(200);
+  });
+  const failed = await db.entranceExamGradingRecord.findUniqueOrThrow({
+    where: { id: f.secondRecord.id },
+  });
+  expect(failed.status).toBe('FAILED');
+  expect((await autoHttpCallback(old!)).statusCode).toBe(200);
+  expect((await autoHttpCallback({ ...old!, errorMessage: 'changed' })).statusCode).toBe(409);
+  const retry = await post('/entrance-exams/grading/retry', f.locator, f.manager.headers);
+  expect(retry.statusCode, retry.body).toBe(200);
+  expect(retry.json().data).toMatchObject({
+    recordStatus: 'PENDING',
+    score: null,
+    roundResult: null,
+    gradingStatus: 'PENDING',
+  });
+  expect((await autoHttpCallback(old!)).statusCode).toBe(409);
+  expect(
+    await db.entranceExamGradingItem.count({
+      where: { gradingRecordId: f.secondRecord.id, correctness: { not: 'PENDING' } },
+    }),
+  ).toBe(0);
+  await f.auto.executeMock(f.secondRecord.id, 'correct', async (input) => {
+    expect(input.toolTraceId).not.toBe(old!.toolTraceId);
+    const result = await autoHttpCallback(input);
+    expect(result.statusCode, result.body).toBe(200);
+  });
+  expect(
+    (await db.entranceExamAttempt.findUniqueOrThrow({ where: { id: f.attempt.id } })).finalResult,
+  ).toBe('ADMITTED');
+});
+test('auto grading compensation invalidates trace, removes only pending member and rolls back irreversible reversals', async () => {
+  const f = await autoGradingFixture();
+  const input = await f.auto.claim(f.secondRecord.id);
+  expect((await autoHttpCallback({ ...input!, items: f.body.items })).statusCode).toBe(200);
+  const wrong = f.body.items.map((i) => ({ ...i, correctness: 'INCORRECT' }));
+  let result = await f.compensate({ items: wrong });
+  expect(result.statusCode, result.body).toBe(200);
+  expect(result.json().data.finalResult).toBe('ELIMINATED');
+  expect(await db.projectMember.count({ where: { admissionAttemptId: f.attempt.id } })).toBe(0);
+  expect((await autoHttpCallback({ ...input!, items: f.body.items })).statusCode).toBe(409);
+  expect((await f.compensate()).statusCode).toBe(200);
+  const member = await db.projectMember.findUniqueOrThrow({
+    where: { admissionAttemptId: f.attempt.id },
+  });
+  await db.projectMember.update({
+    where: { id: member.id },
+    data: { status: 'ACTIVE', joinedAt: new Date() },
+  });
+  const before = await db.entranceExamGradingRecord.findUniqueOrThrow({
+    where: { id: f.secondRecord.id },
+  });
+  result = await f.compensate({ items: wrong });
+  expect(result.statusCode, result.body).toBe(400);
+  expect(
+    await db.entranceExamGradingRecord.findUniqueOrThrow({ where: { id: before.id } }),
+  ).toEqual(before);
+  expect(
+    (await db.entranceExamAttempt.findUniqueOrThrow({ where: { id: f.attempt.id } })).finalResult,
+  ).toBe('ADMITTED');
+});
+test('auto grading retry and compensation retain strict manager scope and reject wrong sources and incomplete paper', async () => {
+  const f = await autoGradingFixture();
+  await db.entranceExamGradingRecord.update({
+    where: { id: f.secondRecord.id },
+    data: { status: 'FAILED' },
+  });
+  expect((await post('/auth/switch-role', { role: 'EXPERT' }, f.manager.headers)).statusCode).toBe(
+    200,
+  );
+  const expert = f.manager.headers;
+  for (const path of ['/entrance-exams/grading/retry', '/entrance-exams/grading/auto/compensate']) {
+    const body = path.endsWith('retry') ? f.locator : { ...f.locator, items: f.body.items };
+    expect((await post(path, body, expert)).statusCode).toBe(403);
+  }
+  expect((await post('/auth/switch-role', { role: 'PM' }, expert)).statusCode).toBe(200);
+  const pm = f.manager.headers;
+  expect(
+    (
+      await post(
+        '/entrance-exams/grading/retry',
+        { ...f.locator, gradingRecordId: f.firstRecord.id },
+        pm,
+      )
+    ).statusCode,
+  ).toBe(400);
+  expect((await f.compensate({ items: f.body.items.slice(0, 1) })).statusCode).toBe(400);
+  expect(
+    (
+      await f.compensate({
+        items: [{ questionId: f.otherPaper.questions[0]!.id, correctness: 'CORRECT' }],
+      })
+    ).statusCode,
+  ).toBe(400);
+  expect(
+    (await db.entranceExamGradingRecord.findUniqueOrThrow({ where: { id: f.secondRecord.id } }))
+      .status,
+  ).toBe('FAILED');
+});
+test('auto grading mock timeout fails current trace and preserves a later successful execution from stale timeout', async () => {
+  const f = await autoGradingFixture();
+  await f.auto.executeMock(f.secondRecord.id, 'timeout', autoHttpCallback);
+  await db.entranceExamGradingRecord.update({
+    where: { id: f.secondRecord.id },
+    data: { startedAt: new Date(Date.now() - 61 * 60000) },
+  });
+  expect(await f.auto.expireTimedOut()).toBe(1);
+  expect(
+    (await db.entranceExamGradingRecord.findUniqueOrThrow({ where: { id: f.secondRecord.id } }))
+      .status,
+  ).toBe('FAILED');
+  expect(
+    (await post('/entrance-exams/grading/retry', f.locator, f.manager.headers)).statusCode,
+  ).toBe(200);
+  await f.auto.executeMock(f.secondRecord.id, 'correct', async (input) => {
+    expect((await autoHttpCallback(input)).statusCode).toBe(200);
+  });
+  expect(await f.auto.expireTimedOut()).toBe(0);
+});
+test('auto grading callback outbox failure rolls back digest, items, final verdict and member atomically', async () => {
+  const f = await autoGradingFixture();
+  const input = await f.auto.claim(f.secondRecord.id);
+  const before = await db.entranceExamGradingRecord.findUniqueOrThrow({
+    where: { id: f.secondRecord.id },
+  });
+  const failing = new Proxy(db, {
+    get(target, key) {
+      if (key === '$transaction')
+        return (fn: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+          db.$transaction((tx) =>
+            fn(
+              new Proxy(tx, {
+                get(t, k) {
+                  if (k === 'projectEventOutbox')
+                    return {
+                      ...t.projectEventOutbox,
+                      create: async () => {
+                        throw new Error('injected auto outbox failure');
+                      },
+                    };
+                  return Reflect.get(t, k);
+                },
+              }),
+            ),
+          );
+      const v = Reflect.get(target, key);
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+  await expect(
+    new ExamGradingCommandService(failing).callback({
+      ...input!,
+      items: f.body.items,
+    } as AutoCallbackInput),
+  ).rejects.toThrow('injected auto outbox failure');
+  expect(
+    await db.entranceExamGradingRecord.findUniqueOrThrow({ where: { id: f.secondRecord.id } }),
+  ).toEqual(before);
+  expect(
+    await db.entranceExamGradingItem.count({
+      where: { gradingRecordId: f.secondRecord.id, correctness: { not: 'PENDING' } },
+    }),
+  ).toBe(0);
+  expect(await db.projectMember.count({ where: { admissionAttemptId: f.attempt.id } })).toBe(0);
+  expect(
+    (await db.entranceExamAttempt.findUniqueOrThrow({ where: { id: f.attempt.id } })).finalResult,
+  ).toBe('PENDING');
 });
