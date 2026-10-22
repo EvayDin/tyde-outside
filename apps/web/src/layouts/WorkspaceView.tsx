@@ -1,0 +1,74 @@
+import { createContext, useContext, useRef, type PropsWithChildren } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { ApiError, type AuthUser } from '@tyde/shared';
+import { SESSION_KEY } from '@/hooks/useSession';
+import { api } from '@/services/api';
+
+/** 可展示的业务角色，当前选择由服务端会话提供。 */
+export const workspaceViewOptions = [
+  { value: 'EXPERT', label: '执行专家' },
+  { value: 'NAVIGATOR', label: '领航员' },
+  { value: 'PM', label: '策略官' },
+] as const;
+export type WorkspaceView = (typeof workspaceViewOptions)[number]['value'];
+
+const WorkspaceViewContext = createContext<{
+  view: WorkspaceView;
+  setView: (view: WorkspaceView) => void;
+  isPending: boolean;
+  error: unknown;
+} | null>(null);
+
+/** 真实切换当前会话角色；服务端确认前保留当前界面，失败不重放写请求。 */
+export function WorkspaceViewProvider({ user, children }: PropsWithChildren<{ user: AuthUser }>) {
+  const cache = useQueryClient();
+  const switching = useRef(false);
+  const view = user.selectedRole ?? user.role;
+  const switchRole = useMutation({
+    mutationFn: (role: WorkspaceView) => api.switchRole(role),
+    onSuccess: async (result) => {
+      await cache.cancelQueries();
+      if (cache.getQueryData<AuthUser | null>(SESSION_KEY)?.id !== user.id) return;
+      cache.removeQueries({ predicate: (query) => query.queryKey[0] !== SESSION_KEY[0] });
+      cache.setQueryData<AuthUser>(
+        SESSION_KEY,
+        (current) =>
+          current && {
+            ...current,
+            role: result.selectedRole,
+            selectedRole: result.selectedRole,
+            roles: result.roles,
+          },
+      );
+      // 读取完整资料同步角色相关摘要；读取失败不重复已成功的角色切换。
+      void cache.invalidateQueries({ queryKey: SESSION_KEY });
+    },
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 401)
+        void cache.invalidateQueries({ queryKey: SESSION_KEY });
+    },
+    onSettled: () => {
+      switching.current = false;
+    },
+  });
+
+  function setView(role: WorkspaceView) {
+    if (switching.current || role === view || !user.roles.includes(role)) return;
+    switching.current = true;
+    switchRole.mutate(role);
+  }
+
+  return (
+    <WorkspaceViewContext.Provider
+      value={{ view, setView, isPending: switchRole.isPending, error: switchRole.error }}
+    >
+      {children}
+    </WorkspaceViewContext.Provider>
+  );
+}
+
+export function useWorkspaceView() {
+  const context = useContext(WorkspaceViewContext);
+  if (!context) throw new Error('当前角色必须在登录后的工作台中使用');
+  return context;
+}

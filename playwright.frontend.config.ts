@@ -1,9 +1,15 @@
 import { defineConfig } from '@playwright/test';
 
-/** 认证页回归使用 Web 路由拦截与隔离桌面接口，不依赖业务后端或数据库。 */
+/** 双端认证、个人中心、组织及角色视图使用隔离 HTTP 契约回归，不依赖业务数据库。 */
 export default defineConfig({
   testDir: './tests/e2e',
-  testMatch: ['frontend.spec.ts', 'profile.spec.ts'],
+  testMatch: [
+    'frontend.spec.ts',
+    'profile.spec.ts',
+    'organizations.spec.ts',
+    'organization-create.spec.ts',
+    'organization-electron.spec.ts',
+  ],
   workers: 1,
   timeout: 30_000,
   reporter: [['list'], ['json', { outputFile: 'artifacts/frontend-results.json' }]],

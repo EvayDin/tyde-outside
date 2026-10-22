@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { Link } from '@tanstack/react-router';
 import type { AuthUser } from '@tyde/shared';
 import { ErrorNotice } from '@/components/ErrorNotice';
 import { UserAvatar } from '@/components/UserAvatar';
@@ -11,7 +12,18 @@ const statuses: Record<string, string> = { ACTIVE: '正常', FROZEN: '冻结', D
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function ProfileOrganization({ organization }: { organization: AuthUser['organization'] }) {
-  if (!organization) return null;
+  if (!organization)
+    return (
+      <section aria-label="所属组织" className="mt-[24px] border-t pt-[20px]">
+        <h3 className="m-0 text-[14px] leading-[22px] font-semibold">所属组织</h3>
+        <p className="mt-[10px] text-[12px] leading-[20px] text-[var(--color-neutral-strong)]">
+          还没有组织，可以创建自己的团队。
+        </p>
+        <Button asChild variant="outline" size="settings" className="mt-[12px] w-full">
+          <Link to="/organization/create">创建组织</Link>
+        </Button>
+      </section>
+    );
   return <OrganizationSummary organization={organization} />;
 }
 
@@ -96,6 +108,9 @@ function OrganizationSummary({ organization }: { organization: Record<string, un
           )}
         </dl>
       )}
+      <Button asChild variant="outline" size="settings" className="mt-[16px] w-full">
+        <Link to="/organization">{canRead ? '进入组织管理' : '查看我的组织'}</Link>
+      </Button>
       {canRead && detail.isFetching && (
         <p role="status" className="mt-[12px] text-[12px] text-[var(--color-neutral-strong)]">
           正在读取组织详情…

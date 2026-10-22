@@ -12,10 +12,13 @@ import {
 } from '@tanstack/react-router';
 import { AuthLayout } from '../layouts/AuthLayout';
 import { WorkspaceLayout } from '../layouts/WorkspaceLayout';
+import { WorkspaceViewProvider } from '../layouts/WorkspaceView';
 import { LoginPage } from '../modules/auth/LoginPage';
 import { RegisterPage } from '../modules/auth/RegisterPage';
 import { WelcomePage } from '../modules/auth/WelcomePage';
 import { ProfilePage } from '../modules/profile/ProfilePage';
+import { OrganizationPage } from '../modules/organizations/OrganizationPage';
+import { OrganizationCreatePage } from '../modules/organizations/OrganizationCreatePage';
 import { AuthFlowProvider, useAuthFlow } from '../modules/auth/AuthFlow';
 import { useSession } from '../hooks/useSession';
 import { ErrorNotice } from '../components/ErrorNotice';
@@ -67,9 +70,11 @@ function RootLayout() {
 function Workspace() {
   const { data: user } = useSession();
   return user ? (
-    <WorkspaceLayout user={user}>
-      <Outlet />
-    </WorkspaceLayout>
+    <WorkspaceViewProvider key={user.id} user={user}>
+      <WorkspaceLayout user={user}>
+        <Outlet />
+      </WorkspaceLayout>
+    </WorkspaceViewProvider>
   ) : null;
 }
 
@@ -100,6 +105,20 @@ function CurrentProfilePage() {
   return session.data && <ProfilePage user={session.data} />;
 }
 
+function CurrentOrganizationPage() {
+  const session = useSession();
+  if (session.data && (session.data.selectedRole ?? session.data.role) !== 'EXPERT')
+    return <Navigate to="/" replace />;
+  return session.data && <OrganizationPage user={session.data} />;
+}
+
+function CurrentOrganizationCreatePage() {
+  const session = useSession();
+  if (session.data && (session.data.selectedRole ?? session.data.role) !== 'EXPERT')
+    return <Navigate to="/" replace />;
+  return session.data && <OrganizationCreatePage user={session.data} />;
+}
+
 const rootRoute = createRootRoute({
   component: RootLayout,
   notFoundComponent: () => <Navigate to="/" replace />,
@@ -120,6 +139,16 @@ const profileRoute = createRoute({
   path: '/profile',
   component: CurrentProfilePage,
 });
+const organizationRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/organization',
+  component: CurrentOrganizationPage,
+});
+const organizationCreateRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/organization/create',
+  component: CurrentOrganizationCreatePage,
+});
 const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/auth',
@@ -131,7 +160,14 @@ const registrationRoute = createRoute({
   component: RegisterPage,
 });
 const router = createRouter({
-  routeTree: rootRoute.addChildren([homeRoute, profileRoute, loginRoute, registrationRoute]),
+  routeTree: rootRoute.addChildren([
+    homeRoute,
+    profileRoute,
+    organizationRoute,
+    organizationCreateRoute,
+    loginRoute,
+    registrationRoute,
+  ]),
   history: createHashHistory(),
 });
 
