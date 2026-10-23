@@ -136,7 +136,7 @@ export const userResponse = {
     hasExpertManagementRole: {
       type: 'boolean',
       description:
-        '当前会话是否具备执行专家管理职责；查询本人资料时按有效多组织关系判断，OWNER为true；旧SQL还包括组织项目负责人，该分支待07迁移，ADMIN本身不代表执行专家管理职责。注册响应为false，其他响应只在当前EXPERT且存在有效OWNER关系时为true；不作为业务权限凭据。',
+        '当前会话是否具备执行专家管理职责；仅EXPERT会话下，有效多组织主管或已接单组织的现任项目负责人为true。负责人须仍在对应组织，关系表存在任何历史即禁用旧单值回退；删除项目不计入。ADMIN本身不代表管理职责。注册响应false；本字段用于展示，不作为业务权限凭据。',
       examples: [false],
     },
     status: text(

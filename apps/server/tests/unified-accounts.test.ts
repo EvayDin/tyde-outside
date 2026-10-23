@@ -264,3 +264,33 @@ test('HTTP routes validate and serialize schemas, reject owner injection and unt
     await app.close();
   }
 });
+
+test('expert management display follows accepted owner organizations and selected session role', async () => {
+  const f = setup();
+  Object.assign(f.user, {
+    memberships: [
+      {
+        orgId: 'org',
+        position: 'MEMBER',
+        joinStatus: 'ACTIVE',
+        joinedAt: new Date(),
+        id: 'rel',
+        organization: { id: 'org', deleted: false, expertiseTags: [], createdAt: new Date() },
+      },
+    ],
+    assignmentOwners: [{ assignment: { organizationId: 'org' } }],
+  });
+  expect((await f.service.me(token, 'desktop')).hasExpertManagementRole).toBe(true);
+  f.session.selectedRole = 'PM';
+  expect((await f.service.me(token, 'desktop')).hasExpertManagementRole).toBe(false);
+  f.session.selectedRole = 'EXPERT';
+  Object.assign(f.user, { assignmentOwners: [{ assignment: { organizationId: 'another-org' } }] });
+  expect((await f.service.me(token, 'desktop')).hasExpertManagementRole).toBe(false);
+  Object.assign(f.user, {
+    assignmentOwners: [],
+    legacyOwnerAssignments: [{ organizationId: 'org' }],
+  });
+  expect((await f.service.me(token, 'desktop')).hasExpertManagementRole).toBe(true);
+  Object.assign(f.user, { memberships: [] });
+  expect((await f.service.me(token, 'desktop')).hasExpertManagementRole).toBe(false);
+});

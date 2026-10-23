@@ -201,7 +201,7 @@ ALTER ROLE tyde_outside_dev LOGIN CREATEDB;
 
 组织注册在原验证码/注册凭证、用户及营业执照事务中增加`UserOrgRel`创建；沿用提交的orgPosition，默认OWNER，初始ACTIVE。新增组织查询/编辑接口按关系表授权。`20261019020000_organization_memberships`已由用户应用专用测试库；2026-10-19 13:23:17复测45项集成全部通过（测试8.63秒、总17.37秒），此前缺列/表阻塞解除；155项单测通过。开发/部署库尚未应用本次迁移，部署新代码前须迁移目标库。
 
-03成员管理批次已将`publicUser`、API-002/008及资料更新响应切到有效多组织关系：OWNER优先，其次最早入组（null排后），排除已删除组织，读取实际position/joinStatus/组织状态；不从单组织兼容字段授权或展示。`hasExpertManagementRole`按旧SQL先接实OWNER分支，ADMIN本身不等于该职责，组织项目负责人分支归07。营业执照鉴权也读取指定组织参与状态的OWNER/ADMIN关系，离组/降权立即失效；注册成功的组织关系仍在原事务内创建。
+03成员管理批次已将`publicUser`、API-002/008及资料更新响应切到有效多组织关系：OWNER优先，其次最早入组（null排后），排除已删除组织，读取实际position/joinStatus/组织状态；不从单组织兼容字段授权或展示。`hasExpertManagementRole`按旧SQL接实OWNER及已接单组织现任负责人分支；当前会话须EXPERT，负责人须仍有对应组织有效成员关系，有任何历史禁用旧单值回退，删除项目不计入。ADMIN本身不等于该职责；07已实现，本批3项数据库集成用户2026-10-23 11:50:17全部通过，真实HTTP/部署/完整兼容仍待验收。营业执照鉴权也读取指定组织参与状态的OWNER/ADMIN关系，离组/降权立即失效；注册成功的组织关系仍在原事务内创建。
 
 本批180项单测及52项专用PostgreSQL+内存存储集成通过，无新增schema/迁移。审批/退出已接入组织关系状态（项目清退仍待补偿），首次登录激活/导入仍归03后续批次；开发/部署及兼容验收未执行。详细验证及恢复入口见[03记录](../../backend-migration/03-organizations/todoTask.md)。
 

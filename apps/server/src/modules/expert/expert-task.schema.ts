@@ -135,12 +135,12 @@ export const expertTaskExample = {
     acceptedOrganizationOwner: false,
     canViewOrganizationData: false,
   },
-  operations: { canAccept: false, canReject: false, canReportOutput: false },
+  operations: { canAccept: true, canReject: true, canReportOutput: false },
 };
 export const expertTasksResponse = {
   type: 'array',
   description:
-    '本人待办，分配创建时间/ID倒序；无结果空数组。组织有效身份优先个人，结项及拒绝/取消/替换不推送。部分迁移：生产/审批/转项待10—12接回，067未接入前不开放接单按钮。',
+    '本人待办，分配创建时间/ID倒序；无结果空数组。组织有效身份优先个人，结项及拒绝/取消/替换不推送。部分迁移：生产/审批/转项待10—12接回，067已接入待响应个人/组织主管/普通成员接单按钮。',
   items: object('本人一条分配待办。', {
     assignmentId: id,
     basicInfo: basic,
@@ -163,8 +163,8 @@ export const expertTasksResponse = {
       canViewOrganizationData: flag('是否负责人或已接单组织主管，仅表示数据范围身份。'),
     }),
     operations: object('当前操作；未迁移入口不开放。', {
-      canAccept: flag('能否接单；067未接入，本批false。'),
-      canReject: flag('能否拒单；067未接入，本批false。'),
+      canAccept: flag('能否接单；有效待响应个人/组织主体或普通成员为true，其他false。'),
+      canReject: flag('能否拒单；与canAccept相同，拒绝须填写原因。'),
       canReportOutput: flag('能否报量；11未接入，本批false。'),
     }),
   }),

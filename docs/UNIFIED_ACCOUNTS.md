@@ -9,7 +9,7 @@
 - 登录可省略role，默认EXPERT；可提交客户端记住的NAVIGATOR/PM/EXPERT。OPS返回403。服务端只接受经密码/短信验证的会话角色，不接受请求头伪造角色。
 - `POST /auth/switch-role`（API-121）提交`{"role":"PM"}`；返回`{"code":200,"message":"操作成功","data":{"selectedRole":"PM","roles":["NAVIGATOR","PM","EXPERT"]}}`。只变更当前会话，不更换令牌，不影响其他会话；刷新令牌保留角色。角色切换、组织创建与认证改密共用本人认证锁。
 - 同一会话的浏览器页签共享角色；不同会话分别切换。服务端不根据全账号最后角色影响其他设备。跨退出/重新登录记住角色由客户端本机存储并在登录时提交role；本轮未实现前端保存或切换UI。
-- 注册、本人资料及资料更新的`roles`返回三角色；`role`为当前会话角色，无会话的注册响应默认EXPERT；`selectedRole`注册为null，查询/更新为实际会话角色。`hasExpertManagementRole`仅当前EXPERT且有有效OWNER关系时为true，仍不作为鉴权凭据，项目负责人补充分支归07。
+- 注册、本人资料及资料更新的`roles`返回三角色；`role`为当前会话角色，无会话的注册响应默认EXPERT；`selectedRole`注册为null，查询/更新为实际会话角色。`hasExpertManagementRole`仅当前EXPERT且有有效OWNER关系或已接单组织现任项目负责人关系时为true；负责人须仍在对应组织，任何负责人历史阻止旧单值回退，删除项目不授予管理职责。065/066及该分支已由07接入待验收，仍不作为鉴权凭据。
 - `accountType`保留兼容字段：注册可省略，仅接受INDIVIDUAL；输出固定INDIVIDUAL。`roles`注册/资料更新输入仅兼容忽略，不减少三角色、不授予OPS。注册不再接受organization/orgPosition；组织身份通过UserOrgRel表达。
 - `GET /users/me`及资料更新新增`organizations`数组，返回全部可参与关系的组织摘要（id/name/position/joinStatus/status/verifyStatus），无组织为空数组；按组织ID排序。原单数organization保留OWNER优先、最早加入的展示摘要，不是当前操作组织，不能用其自动授权别的组织。
 

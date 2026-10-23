@@ -1,8 +1,14 @@
 import {
+  respondBody,
+  respondResponse,
+  respondExample,
+} from '../src/modules/expert/expert-respond.schema.js';
+import {
   expertTaskExample,
   expertTasksBody,
   expertTasksResponse,
 } from '../src/modules/expert/expert-task.schema.js';
+import { ownerChangeBody, ownerChangeResponse } from '../src/modules/expert/expert-owner.schema.js';
 import { afterEach, expect, test, vi } from 'vitest';
 import {
   PrismaClient,
@@ -410,6 +416,8 @@ test('new routes preserve envelope, schemas/examples, credentials, malformed inp
   vi.spyOn(ExpertAssignmentService.prototype, 'projectOwnerCandidates').mockResolvedValue(
     projectOwnerCandidatesExample,
   );
+  vi.spyOn(ExpertAssignmentService.prototype, 'respond').mockResolvedValue(respondExample);
+  vi.spyOn(ExpertAssignmentService.prototype, 'setProjectOwners').mockResolvedValue(null);
   try {
     const spec = (await app.inject('/api/v1/docs/json')).json();
     for (const [schema, examples] of [
@@ -426,6 +434,10 @@ test('new routes preserve envelope, schemas/examples, credentials, malformed inp
       [expertTasksResponse, expertTasksResponse.examples],
       [assignmentDetailResponse, assignmentDetailResponse.examples],
       [projectOwnerCandidatesResponse, projectOwnerCandidatesResponse.examples],
+      [respondBody, respondBody.examples],
+      [respondResponse, respondResponse.examples],
+      [ownerChangeBody, ownerChangeBody.examples],
+      [ownerChangeResponse, ownerChangeResponse.examples],
     ] as const) {
       const validate = app.validatorCompiler!({
         schema,
@@ -433,7 +445,10 @@ test('new routes preserve envelope, schemas/examples, credentials, malformed inp
         url: '/example',
         httpPart: 'body',
       });
-      for (const example of examples) expect(validate(example)).toBe(true);
+      for (const example of examples) {
+        const valid = validate(example);
+        expect(valid, JSON.stringify(validate.errors)).toBe(true);
+      }
     }
     expect(spec.paths['/api/v1/users/me/applications'].post.security).toHaveLength(2);
     for (const [method, url, payload, expected] of [
@@ -446,6 +461,14 @@ test('new routes preserve envelope, schemas/examples, credentials, malformed inp
       ],
       ['GET', '/api/v1/expert-assignments/my-projects', undefined, [myProjectExample]],
       ['POST', '/api/v1/expert-assignments/my-tasks', {}, [expertTaskExample]],
+      ['POST', '/api/v1/expert-assignments/respond', respondBody.examples[0], respondExample],
+      ['POST', '/api/v1/expert-assignments/set-project-owners', ownerChangeBody.examples[0], null],
+      [
+        'POST',
+        '/api/v1/expert-assignments/change-project-owner',
+        ownerChangeBody.examples[1],
+        null,
+      ],
       [
         'GET',
         '/api/v1/expert-assignments/project-owner-candidates?assignmentId=1',

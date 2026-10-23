@@ -1,5 +1,9 @@
+import type { RespondInput } from './expert-respond-command.js';
+import { respondBody, respondResponse } from './expert-respond.schema.js';
 import { expertTasksBody, expertTasksResponse } from './expert-task.schema.js';
 import type { ExpertTaskQuery } from './expert-task-query.js';
+import type { OwnerChangeInput } from './expert-owner-command.js';
+import { ownerChangeBody, ownerChangeResponse } from './expert-owner.schema.js';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { API_PREFIX } from '@tyde/shared';
 import type { Config } from '../../config/index.js';
@@ -47,6 +51,47 @@ export async function expertAssignmentRoutes(
           : req.cookies[config.cookieSecure ? '__Host-tyde_session' : 'tyde_session'];
       identities.set(req, await auth.authenticate(token, client));
     });
+    app.post<{ Body: RespondInput }>(
+      `${API_PREFIX}/expert-assignments/respond`,
+      {
+        schema: {
+          ...expertSchema(
+            'respondExpertAssignment',
+            '个人、组织主管或成员接单与拒绝',
+            '当前EXPERT会话与分配个人/组织关系鉴权；分配、负责人、成员、考试培训轮次及补招来源/PENDING事件同事务。主体重复409，普通成员同决定幂等；转项尚未接入返回503。',
+            respondResponse,
+          ),
+          body: respondBody,
+        },
+      },
+      async (req) => ({
+        code: 200,
+        message: '操作成功',
+        data: await service.respond(req.body, identities.get(req)!),
+      }),
+    );
+    for (const legacy of [false, true]) {
+      app.post<{ Body: OwnerChangeInput }>(
+        `${API_PREFIX}/expert-assignments/${legacy ? 'change-project-owner' : 'set-project-owners'}`,
+        {
+          schema: {
+            ...expertSchema(
+              legacy ? 'changeExpertProjectOwner' : 'setExpertProjectOwners',
+              legacy ? '更换组织项目负责人（兼容接口）' : '设置组织项目负责人集合',
+              '完整集合替换；当前EXPERT且为分配所属组织有效主管，分配须ACCEPTED。新增负责人参与/免试待入项、负责人历史、考试培训轮次及PENDING事件同事务；409表示状态冲突。其他支线真值归10—12回补，实际投递归14。',
+              ownerChangeResponse,
+            ),
+            deprecated: legacy,
+            body: ownerChangeBody,
+          },
+        },
+        async (req) => ({
+          code: 200,
+          message: '操作成功',
+          data: await service.setProjectOwners(req.body, identities.get(req)!, legacy),
+        }),
+      );
+    }
     app.post<{ Body: ExpertTaskQuery }>(
       `${API_PREFIX}/expert-assignments/my-tasks`,
       {

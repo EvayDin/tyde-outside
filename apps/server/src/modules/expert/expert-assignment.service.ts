@@ -1,4 +1,6 @@
+import { respondToAssignment, type RespondInput } from './expert-respond-command.js';
 import { queryExpertTasks, validateTaskQuery, type ExpertTaskQuery } from './expert-task-query.js';
+import { replaceProjectOwners, type OwnerChangeInput } from './expert-owner-command.js';
 import {
   Prisma,
   type PrismaClient,
@@ -63,6 +65,17 @@ export const expertNodeNames: Record<string, string> = {
 };
 export class ExpertAssignmentService {
   constructor(readonly db: PrismaClient) {}
+  setProjectOwners(input: OwnerChangeInput, principal: AuthPrincipal, legacy = false) {
+    return replaceProjectOwners(
+      this.db,
+      input,
+      principal,
+      legacy ? 'expert.change-project-owner' : 'expert.set-project-owners',
+    );
+  }
+  respond(input: RespondInput, principal: AuthPrincipal) {
+    return respondToAssignment(this.db, input, principal);
+  }
   private requireExpert(principal: AuthPrincipal) {
     if (principal.role !== 'EXPERT') throw new AuthError(403, 'FORBIDDEN', '仅执行专家可访问');
   }
