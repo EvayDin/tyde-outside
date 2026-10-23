@@ -1,4 +1,4 @@
-import { createContext, useContext, useRef, type PropsWithChildren } from 'react';
+import { createContext, useContext, useRef, type Context, type PropsWithChildren } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ApiError, type AuthUser } from '@tyde/shared';
 import { SESSION_KEY } from '@/hooks/useSession';
@@ -12,12 +12,18 @@ export const workspaceViewOptions = [
 ] as const;
 export type WorkspaceView = (typeof workspaceViewOptions)[number]['value'];
 
-const WorkspaceViewContext = createContext<{
+type WorkspaceViewState = {
   view: WorkspaceView;
   setView: (view: WorkspaceView) => void;
   isPending: boolean;
   error: unknown;
-} | null>(null);
+};
+
+// 热更新只复用 Context 身份，避免新 hook 读取旧 Provider 时短暂失联。
+// 角色值仍由真实会话提供；生产环境和缺失 Provider 的校验不变。
+const WorkspaceViewContext: Context<WorkspaceViewState | null> =
+  import.meta.hot?.data.workspaceViewContext ?? createContext<WorkspaceViewState | null>(null);
+if (import.meta.hot) import.meta.hot.data.workspaceViewContext = WorkspaceViewContext;
 
 /** 真实切换当前会话角色；服务端确认前保留当前界面，失败不重放写请求。 */
 export function WorkspaceViewProvider({ user, children }: PropsWithChildren<{ user: AuthUser }>) {
