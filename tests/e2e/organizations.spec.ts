@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import type {
@@ -104,6 +105,22 @@ interface RecordedRequest {
   form: Record<string, string>;
   fileName?: string;
 }
+
+const logoBytes = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAJ0lEQVR4nGNQXLr9PyWYYXAZQCwYxAbgM4zkQBw1YDAYQFZSHhADAOlp0x+yOzC+AAAAAElFTkSuQmCC',
+  'base64',
+);
+const logoReceipt = {
+  objectKey: 'org-logo/2026/10/23/0123456789abcdef0123456789abcdef.png',
+  uploadToken: 'l'.repeat(43),
+  url: 'https://logos.example.test/local-logo.png',
+  sensitive: false,
+  fileName: 'organization-logo.png',
+  extension: 'png',
+  size: logoBytes.length,
+  contentType: 'image/png',
+  fileHash: createHash('sha256').update(logoBytes).digest('hex'),
+};
 
 /** 仅检验下载字节与浏览器下载行为，工作簿格式由服务端测试覆盖。 */
 const templateBytes = Buffer.from('PK\u0003\u0004organization-template-byte-fixture');
@@ -227,6 +244,10 @@ async function organizationBackend(
       route.fulfill({ status, json: { code: status, message, data } });
     if (!authenticated) return reply(null, 401, '请先登录');
     if (url.pathname === '/api/v1/users/me') return reply(state.user);
+    if (url.pathname === '/api/v1/files/upload') {
+      expect(record.form.bizType).toBe('ORG_LOGO');
+      return reply(logoReceipt);
+    }
     if (url.pathname === '/api/v1/organizations') {
       expect(url.searchParams.get('orgId')).toBe(orgId);
       return reply(
@@ -240,6 +261,10 @@ async function organizationBackend(
         return reply(null, state.organizationUpdateStatus, '组织资料服务暂不可用');
       for (const key of ['description', 'logoUrl'] as const)
         if (typeof body?.[key] === 'string') state.organization[key] = body[key] as string;
+      if (body?.logoUrl === logoReceipt.objectKey) {
+        expect(body.logoUploadToken).toBe(logoReceipt.uploadToken);
+        state.organization.logoUrl = logoReceipt.url;
+      }
       state.user.organization = { ...state.user.organization, ...state.organization };
       return reply({
         id: orgId,
@@ -459,10 +484,14 @@ for (const [mode, origin, desktop] of [
     await openOrganization(page, origin, desktop);
     await page.getByRole('button', { name: '编辑组织资料', exact: true }).click();
     const edit = page.getByRole('dialog', { name: '编辑组织资料', exact: true });
+    await expect(edit.getByLabel('Logo 地址', { exact: true })).not.toBeVisible();
+    await edit.getByRole('button', { name: '使用图片链接', exact: true }).click();
     await edit.getByLabel('Logo 地址', { exact: true }).fill('javascript:alert(1)');
     await edit.getByRole('button', { name: '保存组织资料', exact: true }).click();
     await expect(
-      edit.getByText('请输入不含用户名和密码的 HTTPS 图片地址', { exact: true }),
+      edit
+        .getByRole('region', { name: '组织 Logo', exact: true })
+        .getByText(/请输入不含用户名和密码的 HTTPS 图片地址/),
     ).toBeVisible();
     expect(calls(requests, writePaths.organization)).toHaveLength(0);
     await edit.getByLabel('Logo 地址', { exact: true }).fill('https://logos.example.test/team.png');
@@ -487,7 +516,7 @@ for (const [mode, origin, desktop] of [
       page.getByLabel('组织基本信息').getByText('双端保存的组织简介', { exact: true }),
     ).toBeVisible();
     await page.getByRole('button', { name: '编辑组织资料', exact: true }).click();
-    await edit.getByLabel('Logo 地址', { exact: true }).fill('');
+    await edit.getByRole('button', { name: '清除图片', exact: true }).click();
     await edit.getByRole('button', { name: '保存组织资料', exact: true }).click();
     await expect(edit).not.toBeVisible();
     expect(calls(requests, writePaths.organization).at(-1)?.body).toEqual({ orgId, logoUrl: '' });
@@ -934,6 +963,118 @@ test('组织管理375px列表与弹窗不撑出页面，无组织不查询组织
   expect(
     requests.slice(before).some((request) => request.path.startsWith('/api/v1/organizations')),
   ).toBe(false);
+});
+
+test('组织 Logo 本地预览在保存时上传，资料失败重试复用凭证，清除提交空值', async ({ page }) => {
+  const origin = 'http://127.0.0.1:5176';
+  const { state, requests } = await organizationBackend(page, origin);
+  await page.setViewportSize({ width: 375, height: 812 });
+  await openOrganization(page, origin);
+  await page.getByRole('button', { name: '编辑组织资料', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '编辑组织资料', exact: true });
+  const logo = dialog.getByRole('region', { name: '组织 Logo', exact: true });
+  const input = logo.getByLabel('选择组织 Logo 图片', { exact: true });
+  await expect(input).toHaveClass(/sr-only/);
+  await expect(logo.getByRole('button', { name: '使用图片链接', exact: true })).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  );
+  const choosing = page.waitForEvent('filechooser');
+  await logo.getByText('上传图片', { exact: true }).click();
+  await (
+    await choosing
+  ).setFiles({ name: logoReceipt.fileName, mimeType: 'image/png', buffer: logoBytes });
+  const preview = logo.getByRole('img', { name: '组织 Logo 预览', exact: true });
+  await expect(preview).toHaveAttribute('src', /^blob:/);
+  const previewUrl = (await preview.getAttribute('src'))!;
+  expect(calls(requests, '/api/v1/files/upload')).toHaveLength(0);
+  expect(calls(requests, writePaths.organization)).toHaveLength(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(
+    true,
+  );
+  await page.screenshot({ path: 'artifacts/organization-logo-edit-mobile.png', fullPage: false });
+  state.organizationUpdateStatus = 503;
+  await dialog.getByRole('button', { name: '保存组织资料', exact: true }).click();
+  await expect(dialog.getByText('组织资料服务暂不可用', { exact: true })).toBeVisible();
+  await expect(preview).toHaveAttribute('src', previewUrl);
+  expect(calls(requests, '/api/v1/files/upload')).toHaveLength(1);
+  const upload = calls(requests, '/api/v1/files/upload')[0]!;
+  expect(upload.form).toMatchObject({ bizType: 'ORG_LOGO', category: 'IMAGE' });
+  expect(upload.fileName).toBe(logoReceipt.fileName);
+  expect(upload.authenticated).toBe(true);
+  expect(upload.headers['x-tyde-client']).toBe('web');
+  expect(upload.headers.authorization).toBeUndefined();
+  expect(calls(requests, writePaths.organization)[0]?.body).toEqual({
+    orgId,
+    logoUrl: logoReceipt.objectKey,
+    logoUploadToken: logoReceipt.uploadToken,
+  });
+  state.organizationUpdateStatus = 200;
+  await dialog.getByRole('button', { name: '保存组织资料', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(calls(requests, '/api/v1/files/upload')).toHaveLength(1);
+  expect(calls(requests, writePaths.organization)).toHaveLength(2);
+  expect(calls(requests, writePaths.organization)[1]?.body).toEqual(
+    calls(requests, writePaths.organization)[0]?.body,
+  );
+  expect(state.organization.logoUrl).toBe(logoReceipt.url);
+  await page.getByRole('button', { name: '编辑组织资料', exact: true }).click();
+  await logo.getByRole('button', { name: '清除图片', exact: true }).click();
+  await dialog.getByRole('button', { name: '保存组织资料', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(calls(requests, writePaths.organization).at(-1)?.body).toEqual({ orgId, logoUrl: '' });
+  expect(calls(requests, '/api/v1/files/upload')).toHaveLength(1);
+});
+
+test('组织 Logo 不支持的类型、空文件及超限图片本地拦截，取消不上传', async ({ page }) => {
+  const origin = 'http://127.0.0.1:5176';
+  const { requests } = await organizationBackend(page, origin);
+  await openOrganization(page, origin);
+  await page.getByRole('button', { name: '编辑组织资料', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '编辑组织资料', exact: true });
+  const logo = dialog.getByRole('region', { name: '组织 Logo', exact: true });
+  const input = logo.getByLabel('选择组织 Logo 图片', { exact: true });
+  for (const file of [
+    {
+      name: 'invalid.svg',
+      mimeType: 'image/svg+xml',
+      buffer: Buffer.from('<svg/>'),
+      message: '请选择非空的 JPG、PNG、GIF、BMP 或 WebP 图片',
+    },
+    {
+      name: 'empty.png',
+      mimeType: 'image/png',
+      buffer: Buffer.alloc(0),
+      message: '请选择非空的 JPG、PNG、GIF、BMP 或 WebP 图片',
+    },
+    {
+      name: 'too-large.png',
+      mimeType: 'image/png',
+      buffer: Buffer.alloc(10 * 1024 * 1024 + 1),
+      message: 'Logo 图片最大 10 MiB',
+    },
+  ]) {
+    await input.setInputFiles(file);
+    await expect(logo.getByText(file.message, { exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: '保存组织资料', exact: true }).click();
+    await expect(dialog.getByRole('button', { name: '保存组织资料', exact: true })).toBeEnabled();
+    expect(calls(requests, '/api/v1/files/upload')).toHaveLength(0);
+    expect(calls(requests, writePaths.organization)).toHaveLength(0);
+    await logo.getByRole('button', { name: '清除图片', exact: true }).click();
+    await expect(dialog.getByText(file.message, { exact: true })).toHaveCount(0);
+  }
+  await input.setInputFiles({
+    name: logoReceipt.fileName,
+    mimeType: 'image/png',
+    buffer: logoBytes,
+  });
+  await expect(logo.getByRole('img', { name: '组织 Logo 预览', exact: true })).toHaveAttribute(
+    'src',
+    /^blob:/,
+  );
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  expect(calls(requests, '/api/v1/files/upload')).toHaveLength(0);
+  expect(calls(requests, writePaths.organization)).toHaveLength(0);
 });
 
 test('组织导入表格从Excel粘贴表头与多行，逐格修改增删并在错误行保留草稿', async ({ page }) => {

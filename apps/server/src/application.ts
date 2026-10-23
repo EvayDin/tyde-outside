@@ -61,6 +61,7 @@ export function fastifyOptions(config: Config): FastifyServerOptions {
         '*.refreshToken',
         '*.uploadToken',
         '*.avatarUploadToken',
+        '*.logoUploadToken',
         '*.claimTokenHash',
       ],
     },
@@ -148,7 +149,7 @@ export async function createApp(
     new ExamAutoService(db),
   );
   await fileRoutes(app, new FileService(files), auth, config);
-  await organizationRoutes(app, new OrganizationService(db), auth, config);
+  await organizationRoutes(app, new OrganizationService(db, files), auth, config);
   await projectFoundationRoutes(
     app,
     new ProjectFoundationService(db),

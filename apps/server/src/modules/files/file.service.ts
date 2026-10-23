@@ -20,10 +20,12 @@ export class FileService {
   ): Promise<FileUploadResponse> {
     const policy = uploadPolicy(bizType, category);
     if (
-      ['AVATAR', 'PROJECT_ATTACHMENT', 'ENTRANCE_EXAM_ATTACHMENT'].includes(policy.bizType) &&
+      ['AVATAR', 'ORG_LOGO', 'PROJECT_ATTACHMENT', 'ENTRANCE_EXAM_ATTACHMENT'].includes(
+        policy.bizType,
+      ) &&
       !ownerUid
     )
-      throw new AuthError(401, 'UNAUTHORIZED', '头像及业务附件必须登录后上传');
+      throw new AuthError(401, 'UNAUTHORIZED', '头像、组织Logo及业务附件必须登录后上传');
     const metadata = validateUpload(file, policy.category, this.registry.config.maxSize);
     const dateParts = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Asia/Shanghai',

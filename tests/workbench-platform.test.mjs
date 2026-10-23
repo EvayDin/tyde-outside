@@ -1,7 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHttpAuth } from '../packages/platform/src/web.ts';
-import { AVATAR_MAX_BYTES, AVATAR_ACCEPT } from '../packages/shared/dist/index.js';
+import {
+  AVATAR_MAX_BYTES,
+  AVATAR_ACCEPT,
+  ORG_LOGO_MAX_BYTES,
+  ORG_LOGO_ACCEPT,
+} from '../packages/shared/dist/index.js';
 
 const orgId = '00000000-0000-4000-8000-000000000002';
 const userId = '00000000-0000-4000-8000-000000000001';
@@ -227,6 +232,11 @@ const avatarResult = (file) => ({
   contentType: 'image/png',
   fileHash: 'c'.repeat(64),
 });
+const logoResult = (file) => ({
+  ...avatarResult(file),
+  objectKey: 'org-logo/2026/10/23/0123456789abcdef0123456789abcdef.png',
+  url: 'https://images.example.test/logo.png',
+});
 const result = (data, status = 200) =>
   new Response(
     JSON.stringify({ code: status, message: status === 200 ? '操作成功' : '真实服务端错误', data }),
@@ -370,6 +380,93 @@ for (const desktop of [false, true]) {
       ),
     );
   });
+  test(`${mode} organization Logo upload uses its own image scope and validates size and format before sending`, async (t) => {
+    const { api, calls } = adapter(t, desktop, ({ data }) => result(logoResult(data.get('file'))));
+    const file = new File(['image'], 'logo.png', { type: 'image/png' });
+    assert.deepEqual(await api.uploadOrganizationLogo(file), logoResult(file));
+    const call = calls[0];
+    assert.equal(call.path, '/api/v1/files/upload');
+    assert.equal(call.method, 'POST');
+    assert.equal(call.credentials, desktop ? 'include' : 'same-origin');
+    assert.deepEqual(call.headers, { 'X-Tyde-Client': 'web' });
+    assert.deepEqual([...call.data.keys()], ['bizType', 'category', 'file']);
+    assert.equal(call.data.get('bizType'), 'ORG_LOGO');
+    assert.equal(call.data.get('category'), 'IMAGE');
+    assert.equal(call.data.get('file'), file);
+    assert.ok(ORG_LOGO_ACCEPT.includes('.webp'));
+    const boundary = new File([new Uint8Array(ORG_LOGO_MAX_BYTES)], 'boundary.png', {
+      type: 'image/png',
+    });
+    assert.equal((await api.uploadOrganizationLogo(boundary)).size, ORG_LOGO_MAX_BYTES);
+    const before = calls.length;
+    for (const [invalidFile, status] of [
+      [new File([new Uint8Array(ORG_LOGO_MAX_BYTES + 1)], 'too-large.png'), 413],
+      [new File([], 'empty.png'), 400],
+      [new File(['<svg/>'], 'logo.svg', { type: 'image/svg+xml' }), 400],
+      [new File(['image'], 'wrong.png', { type: 'text/plain' }), 400],
+    ])
+      await assert.rejects(
+        api.uploadOrganizationLogo(invalidFile),
+        (error) => error.status === status,
+      );
+    assert.equal(calls.length, before);
+  });
+
+  test(`${mode} organization Logo upload rejects unrelated upload credentials and never replays failed writes`, async (t) => {
+    const file = new File(['image'], 'logo.png', { type: 'image/png' });
+    let payload = logoResult(file);
+    let status = 503;
+    const { api, calls } = adapter(t, desktop, () => result(payload, status));
+    await assert.rejects(api.uploadOrganizationLogo(file), (error) => error.status === 503);
+    assert.equal(calls.length, 1);
+    status = 200;
+    for (const patch of [
+      { objectKey: avatarResult(file).objectKey },
+      { uploadToken: 'invalid' },
+      { sensitive: true },
+      { size: file.size + 1 },
+      { contentType: 'text/plain' },
+    ]) {
+      payload = { ...logoResult(file), ...patch };
+      await assert.rejects(
+        api.uploadOrganizationLogo(file),
+        (error) => error.status === 502 && error.code === 'INVALID_RESPONSE',
+      );
+    }
+    assert.equal(calls.length, 6);
+  });
+
+  test(`${mode} organization create and edit submit the uploaded Logo key and claim token together`, async (t) => {
+    const upload = logoResult(new File(['image'], 'logo.png', { type: 'image/png' }));
+    const created = {
+      id: orgId,
+      name: '测试组织',
+      unifiedCreditCode: null,
+      description: null,
+      businessLicenseUrl: null,
+      logoUrl: upload.url,
+      expertiseTags: [],
+      verifyStatus: 'APPROVED',
+      status: 'ACTIVE',
+      position: 'OWNER',
+      createdAt: wallTime,
+    };
+    const updated = { id: orgId, description: null, logoUrl: upload.url, updatedAt: wallTime };
+    const { api, calls } = adapter(t, desktop, ({ path }) =>
+      result(path.endsWith('/update') ? updated : created),
+    );
+    const logo = { logoUrl: upload.objectKey, logoUploadToken: upload.uploadToken };
+    assert.deepEqual(await api.createOrganization({ name: '测试组织', ...logo }), created);
+    assert.deepEqual(await api.updateOrganization({ orgId, ...logo }), updated);
+    assert.deepEqual(
+      calls.map(({ path, data }) => ({ path, data })),
+      [
+        { path: '/api/v1/organizations', data: { name: '测试组织', ...logo } },
+        { path: '/api/v1/organizations/update', data: { orgId, ...logo } },
+      ],
+    );
+  });
+
   test(`${mode} personal reads preserve endpoint scope, wall clock, nullable fields and query defaults`, async (t) => {
     const { api, calls } = adapter(t, desktop, ({ path }) => {
       if (path.includes('/my-projects')) return result([project]);

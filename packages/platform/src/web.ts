@@ -28,7 +28,7 @@ import {
   type WorkbenchAttendanceDay,
   type WorkbenchAttendanceMonth,
   type WorkbenchHolidayMonth,
-  type AvatarUploadResult,
+  type ImageUploadResult,
   type BusinessLicenseUploadResult,
   type BusinessRole,
   type UserProfileUpdateInput,
@@ -763,7 +763,12 @@ export function createHttpAuth(
     bmp: 'image/bmp',
     webp: 'image/webp',
   };
-  function avatarUploaded(value: unknown, file: File, extension: string): AvatarUploadResult {
+  function imageUploaded(
+    value: unknown,
+    file: File,
+    extension: string,
+    directory: 'avatar' | 'org-logo',
+  ): ImageUploadResult {
     if (
       !record(value) ||
       !strings(value, [
@@ -779,7 +784,8 @@ export function createHttpAuth(
       value.extension !== extension ||
       value.size !== file.size ||
       value.contentType !== avatarMime[extension] ||
-      !/^avatar\/\d{4}\/\d{2}\/\d{2}\/[a-f0-9]{32}\.(jpg|jpeg|png|gif|bmp|webp)$/.test(
+      !(value.objectKey as string).startsWith(`${directory}/`) ||
+      !/^(avatar|org-logo)\/\d{4}\/\d{2}\/\d{2}\/[a-f0-9]{32}\.(jpg|jpeg|png|gif|bmp|webp)$/.test(
         value.objectKey as string,
       ) ||
       !(value.objectKey as string).endsWith(`.${extension}`) ||
@@ -787,7 +793,41 @@ export function createHttpAuth(
       !/^[a-f0-9]{64}$/.test(value.fileHash as string)
     )
       invalidResponse();
-    return value as unknown as AvatarUploadResult;
+    return value as unknown as ImageUploadResult;
+  }
+  async function uploadPublicImage(
+    file: File,
+    bizType: 'AVATAR' | 'ORG_LOGO',
+  ): Promise<ImageUploadResult> {
+    const fileName = file.name.replaceAll('\\', '/').split('/').at(-1)?.trim() ?? '';
+    const extension = fileName.includes('.') ? fileName.split('.').at(-1)!.toLowerCase() : '';
+    if (!(AVATAR_EXTENSIONS as readonly string[]).includes(extension) || !file.size)
+      throw new ApiError(400, {
+        code: 'VALIDATION_ERROR',
+        message: '请选择 JPG、JPEG、PNG、GIF、BMP 或 WebP 图片',
+      });
+    if (file.size > AVATAR_MAX_BYTES)
+      throw new ApiError(413, {
+        code: 'PAYLOAD_TOO_LARGE',
+        message: `${bizType === 'AVATAR' ? '头像' : 'Logo'}图片最大 10 MiB`,
+      });
+    const declaredType = file.type.split(';')[0]?.trim().toLowerCase();
+    if (
+      declaredType &&
+      declaredType !== 'application/octet-stream' &&
+      declaredType !== avatarMime[extension]
+    )
+      throw new ApiError(400, { code: 'VALIDATION_ERROR', message: '图片类型与扩展名不匹配' });
+    const body = new FormData();
+    body.append('bizType', bizType);
+    body.append('category', 'IMAGE');
+    body.append('file', file);
+    return imageUploaded(
+      await request('/files/upload', body, 'POST', true, { timeoutMs: 60_000 }),
+      file,
+      extension,
+      bizType === 'AVATAR' ? 'avatar' : 'org-logo',
+    );
   }
   function businessLicenseUploaded(
     value: unknown,
@@ -1036,33 +1076,8 @@ export function createHttpAuth(
         ),
         input.month,
       ),
-    uploadAvatar: async (file) => {
-      const fileName = file.name.replaceAll('\\', '/').split('/').at(-1)?.trim() ?? '';
-      const extension = fileName.includes('.') ? fileName.split('.').at(-1)!.toLowerCase() : '';
-      if (!(AVATAR_EXTENSIONS as readonly string[]).includes(extension) || !file.size)
-        throw new ApiError(400, {
-          code: 'VALIDATION_ERROR',
-          message: '请选择 JPG、JPEG、PNG、GIF、BMP 或 WebP 图片',
-        });
-      if (file.size > AVATAR_MAX_BYTES)
-        throw new ApiError(413, { code: 'PAYLOAD_TOO_LARGE', message: '头像图片最大 10 MiB' });
-      const declaredType = file.type.split(';')[0]?.trim().toLowerCase();
-      if (
-        declaredType &&
-        declaredType !== 'application/octet-stream' &&
-        declaredType !== avatarMime[extension]
-      )
-        throw new ApiError(400, { code: 'VALIDATION_ERROR', message: '图片类型与扩展名不匹配' });
-      const body = new FormData();
-      body.append('bizType', 'AVATAR');
-      body.append('category', 'IMAGE');
-      body.append('file', file);
-      return avatarUploaded(
-        await request('/files/upload', body, 'POST', true, { timeoutMs: 60_000 }),
-        file,
-        extension,
-      );
-    },
+    uploadAvatar: (file) => uploadPublicImage(file, 'AVATAR'),
+    uploadOrganizationLogo: (file) => uploadPublicImage(file, 'ORG_LOGO'),
     uploadBusinessLicense: async (file) => {
       const fileName = file.name.replaceAll('\\', '/').split('/').at(-1)?.trim() ?? '';
       const extension = fileName.includes('.') ? fileName.split('.').at(-1)!.toLowerCase() : '';
