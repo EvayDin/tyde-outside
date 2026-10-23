@@ -228,7 +228,7 @@ async function backend(page: Page, desktop: boolean) {
       sameSite: 'Lax',
     },
   ]);
-  await page.route('**/api/v1/**', async (route) => {
+  await page.context().route('**/api/v1/**', async (route) => {
     const request = route.request();
     const headers = await request.allHeaders();
     const url = new URL(request.url());
@@ -873,6 +873,168 @@ test('selectedRole 为空时读取后端 role，切回专家后重读项目以�
   expect(
     requests.filter((request) => request.path === '/api/v1/expert-assignments/my-projects'),
   ).toHaveLength(2);
+});
+
+for (const channelMode of ['BroadcastChannel', 'storage 回退', '发送失败回退'] as const) {
+  test(`同账号双标签通过${channelMode}重读真实角色，保留资料草稿`, async ({ page }) => {
+    if (channelMode === 'storage 回退')
+      await page.context().addInitScript(() => {
+        Object.defineProperty(window, 'BroadcastChannel', { value: undefined });
+      });
+    if (channelMode === '发送失败回退')
+      await page.addInitScript(() => {
+        const NativeChannel = window.BroadcastChannel;
+        Object.defineProperty(window, 'BroadcastChannel', {
+          value: class extends NativeChannel {
+            postMessage() {
+              throw new Error('频道发送失败');
+            }
+          },
+        });
+      });
+    const { requests, state } = await backend(page, false);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${origin}/#/profile`);
+    const other = await page.context().newPage();
+    await other.setViewportSize({ width: 1280, height: 800 });
+    await other.goto(`${origin}/#/profile`);
+    await other.getByRole('button', { name: '编辑资料', exact: true }).click();
+    await other.getByLabel('个人简介', { exact: true }).fill('跨标签同步后仍保留的资料草稿');
+    const sessionReads = requests.filter((request) => request.path === '/api/v1/users/me').length;
+    await chooseDesktop(page, '领航员');
+    await expect(other.getByRole('combobox', { name: '当前角色', exact: true })).toContainText(
+      '领航员',
+    );
+    await expect(other.getByRole('tab', { name: '概览', exact: true })).toHaveCount(0);
+    await expect(other.getByLabel('个人简介', { exact: true })).toHaveValue(
+      '跨标签同步后仍保留的资料草稿',
+    );
+    await expect(other.getByLabel('组织身份', { exact: true })).toHaveText('视图联调组织 · 成员');
+    expect(state.user.selectedRole).toBe('NAVIGATOR');
+    expect(requests.filter((request) => request.path === '/api/v1/auth/switch-role')).toHaveLength(
+      1,
+    );
+    // 发送方主动重读一次、接收方收到信号重读一次；不因发送方自接收重复读取。
+    expect(requests.filter((request) => request.path === '/api/v1/users/me').length).toBe(
+      sessionReads + 2,
+    );
+    await expectNoPersistedView(page);
+    await expectNoPersistedView(other);
+    await other.close();
+  });
+}
+
+test('跨标签信号只使同账号会话失效，不使用外部角色数据，也不广播循环', async ({ page }) => {
+  const { state, requests } = await backend(page, false);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(`${origin}/#/profile`);
+  await expect(page.getByRole('combobox', { name: '当前角色', exact: true })).toContainText(
+    '执行专家',
+  );
+  const sender = await page.context().newPage();
+  await sender.setViewportSize({ width: 1280, height: 800 });
+  await sender.goto(origin);
+  await expect(sender.getByRole('combobox', { name: '当前角色', exact: true })).toContainText(
+    '执行专家',
+  );
+  const changes: unknown[] = [];
+  await sender.exposeFunction('recordRoleSignal', (value: unknown) => changes.push(value));
+  await sender.evaluate(() => {
+    const observer = new BroadcastChannel('tyde-session-role');
+    observer.onmessage = (event) => {
+      void (
+        window as unknown as { recordRoleSignal: (value: unknown) => Promise<void> }
+      ).recordRoleSignal(event.data);
+    };
+  });
+
+  state.user.role = 'PM';
+  state.user.selectedRole = 'PM';
+  const before = requests.filter((request) => request.path === '/api/v1/users/me').length;
+  await sender.evaluate((accountId) => {
+    const channel = new BroadcastChannel('tyde-session-role');
+    channel.postMessage({
+      type: 'SESSION_ROLE_INVALIDATED',
+      accountId,
+      selectedRole: 'NAVIGATOR',
+      roles: ['NAVIGATOR'],
+    });
+    channel.close();
+  }, state.user.id);
+  await expect(page.getByRole('combobox', { name: '当前角色', exact: true })).toContainText(
+    '策略官',
+  );
+  await expect
+    .poll(() => requests.filter((request) => request.path === '/api/v1/users/me').length)
+    .toBe(before + 2);
+  expect(requests.filter((request) => request.path === '/api/v1/auth/switch-role')).toHaveLength(0);
+  // sender 也挂载会话，但接收方只重读，不再向频道发送第二次角色变化。
+  expect(changes).toHaveLength(1);
+
+  await chooseDesktop(page, '执行专家');
+  await expect.poll(() => changes.length).toBe(2);
+  expect(changes[1]).toEqual({ type: 'SESSION_ROLE_INVALIDATED', accountId: state.user.id });
+  await expectNoPersistedView(page);
+  await sender.close();
+});
+
+test('跨标签消息的账号不匹配时保留当前身份，广播设施失败不重放成功的切换', async ({ page }) => {
+  const { requests, state } = await backend(page, false);
+  await page.context().addInitScript(() => {
+    Object.defineProperty(window, 'BroadcastChannel', {
+      value: class {
+        constructor() {
+          throw new Error('频道已禁用');
+        }
+      },
+    });
+  });
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(`${origin}/#/profile`);
+  await expect(page.getByRole('combobox', { name: '当前角色', exact: true })).toContainText(
+    '执行专家',
+  );
+  const before = requests.filter((request) => request.path === '/api/v1/users/me').length;
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'tyde:session-role-sync',
+        storageArea: localStorage,
+        newValue: JSON.stringify({
+          type: 'SESSION_ROLE_INVALIDATED',
+          accountId: '00000000-0000-4000-8000-000000000099',
+          selectedRole: 'PM',
+        }),
+      }),
+    );
+  });
+  // 有效账号信号作为同步屏障，确保之前账号不匹配的消息已经处理。
+  state.user.role = 'NAVIGATOR';
+  state.user.selectedRole = 'NAVIGATOR';
+  await page.evaluate((accountId) => {
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'tyde:session-role-sync',
+        storageArea: localStorage,
+        newValue: JSON.stringify({ type: 'SESSION_ROLE_INVALIDATED', accountId }),
+      }),
+    );
+  }, state.user.id);
+  await expect(page.getByRole('combobox', { name: '当前角色', exact: true })).toContainText(
+    '领航员',
+  );
+  expect(requests.filter((request) => request.path === '/api/v1/users/me').length).toBe(before + 1);
+  await page.evaluate(() => {
+    Object.defineProperty(Storage.prototype, 'setItem', {
+      value: () => {
+        throw new Error('存储已禁用');
+      },
+    });
+  });
+  await chooseDesktop(page, '策略官');
+  expect(requests.filter((request) => request.path === '/api/v1/auth/switch-role')).toHaveLength(1);
+  expect(state.user.selectedRole).toBe('PM');
+  await expectNoPersistedView(page);
 });
 
 test('个人中心顶层业务入口在窄屏可用键盘直达，并与概览共用单一页签导航', async ({ page }) => {

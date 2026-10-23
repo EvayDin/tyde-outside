@@ -1,8 +1,16 @@
-import { createContext, useContext, useRef, type Context, type PropsWithChildren } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  type Context,
+  type PropsWithChildren,
+} from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ApiError, type AuthUser } from '@tyde/shared';
 import { SESSION_KEY } from '@/hooks/useSession';
 import { api } from '@/services/api';
+import { broadcastWorkspaceRoleChange, subscribeWorkspaceRoleChanges } from './workspace-role-sync';
 
 /** 可展示的业务角色，当前选择由服务端会话提供。 */
 export const workspaceViewOptions = [
@@ -30,9 +38,27 @@ export function WorkspaceViewProvider({ user, children }: PropsWithChildren<{ us
   const cache = useQueryClient();
   const switching = useRef(false);
   const view = user.selectedRole ?? user.role;
+  useEffect(() => {
+    let active = true;
+    const unsubscribe = subscribeWorkspaceRoleChanges(user.id, () => {
+      void (async () => {
+        if (!active || cache.getQueryData<AuthUser | null>(SESSION_KEY)?.id !== user.id) return;
+        await cache.cancelQueries();
+        if (!active || cache.getQueryData<AuthUser | null>(SESSION_KEY)?.id !== user.id) return;
+        cache.removeQueries({ predicate: (query) => query.queryKey[0] !== SESSION_KEY[0] });
+        // 频道消息只使缓存失效，角色和组织身份始终取 users/me 的真实返回。
+        await cache.invalidateQueries({ queryKey: SESSION_KEY });
+      })();
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [cache, user.id]);
   const switchRole = useMutation({
     mutationFn: (role: WorkspaceView) => api.switchRole(role),
     onSuccess: async (result) => {
+      if (cache.getQueryData<AuthUser | null>(SESSION_KEY)?.id !== user.id) return;
       await cache.cancelQueries();
       if (cache.getQueryData<AuthUser | null>(SESSION_KEY)?.id !== user.id) return;
       cache.removeQueries({ predicate: (query) => query.queryKey[0] !== SESSION_KEY[0] });
@@ -46,6 +72,7 @@ export function WorkspaceViewProvider({ user, children }: PropsWithChildren<{ us
             roles: result.roles,
           },
       );
+      broadcastWorkspaceRoleChange(user.id);
       // 读取完整资料同步角色相关摘要；读取失败不重复已成功的角色切换。
       void cache.invalidateQueries({ queryKey: SESSION_KEY });
     },
