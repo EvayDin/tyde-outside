@@ -14,7 +14,7 @@ import { appendFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 const job = process.argv[2];
 const record = (event) => appendFileSync(process.env.FIXTURE_EVENTS,
-  JSON.stringify({ event, pid: process.pid }) + '\n');
+  JSON.stringify({ event, pid: process.pid, memory: process.env.TYDE_MEMORY_DIAGNOSTICS }) + '\n');
 if (job === 'electron') {
   record('electron:start');
   process.exit(Number(process.env.FIXTURE_ELECTRON_EXIT));
@@ -119,8 +119,8 @@ async function fixture(t, external) {
   return {
     url,
     events,
-    launch(exitCode) {
-      child = spawn(process.execPath, ['scripts/dev-electron.mjs'], {
+    launch(exitCode, args = []) {
+      child = spawn(process.execPath, ['scripts/dev-electron.mjs', ...args], {
         cwd: root,
         env: {
           ...process.env,
@@ -186,4 +186,16 @@ test('reusing a web service leaves it running after the second desktop exits', a
     (await local.events()).map((row) => row.event),
     ['electron:start'],
   );
+});
+
+test('the memory flag reaches the desktop process without enabling inspector', async (t) => {
+  const external = createServer((request, response) => {
+    response.setHeader('X-Tyde-Dev-Server', 'web');
+    response.end('existing web');
+  });
+  const local = await fixture(t, external);
+  const result = await local.launch(0, ['--memory']).finish();
+  assert.equal(result.code, 0, result.output);
+  const desktop = (await local.events()).find((row) => row.event === 'electron:start');
+  assert.equal(desktop?.memory, '1');
 });

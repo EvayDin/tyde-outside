@@ -75,6 +75,8 @@ Web 与 Electron 共用一份 React 前端，连接 Fastify 后端；后端是�
 
 当前角色由 GET `/users/me` 的 `selectedRole ?? role` 提供，`WorkspaceViewProvider` 不再保存本地模拟角色。公共顶栏及窄屏账户菜单按后端 `roles` 提供执行专家/领航员/策略官，通过现有 POST `/auth/switch-role` 切换当前会话；成功后取消旧查询并清除业务缓存，按响应同步会话角色，再读取完整本人资料。切换处理中禁用选择，失败显示错误、保留原角色，不自动重放写入；读取完整资料失败也不重复已成功的切换。刷新恢复服务端当前会话角色，跨工作台与个人中心导航保留，共用个人资料草稿及内存上传凭证不因角色切换丢失。组织管理、我的组织及创建入口和页面仅当前 EXPERT 可见，组织页切到其他角色返回工作台。领航员/策略官工作台未接入，明确展示空状态；业务权限仍由服务端按真实会话及业务关系校验，不使用角色请求头。
 
+Electron 开发内存诊断：`pnpm dev:electron:memory` / `pnpm dev:electron:test:memory` 显式开启，每 10 秒记录进程指标与主进程内存到 userData，最多保留两份各 1 MiB 日志。普通开发默认关闭，安装包不启用。原 20 GB 报告尚未现场复现，短时验证不能视为泄漏修复；详见 [排查记录](docs/ELECTRON_MEMORY_INVESTIGATION.md)。
+
 ## 模块边界与入口
 
 组织管理界面由 `OrganizationPage.tsx` 提供横向组织摘要与全宽工作区；`OrganizationMembers.tsx` 使用常用筛选工具栏、可折叠高级筛选和七列表格，成员身份/联系方式与入离组时间聚合，右侧操作列固定。`OrganizationApprovals.tsx` 使用同一面板风格和结构化审批卡片。筛选仍使用后端既有参数并在服务端分页，折叠后保留已应用数量；不引入当前页过滤或推造统计。
