@@ -92,7 +92,7 @@ test('expert tasks retain pending main node, alias filtering and unimplemented o
     currentNodeCode: 'PERSONNEL_MANAGEMENT',
     branchNodeCode: null,
     acceptanceStatus: 'PENDING_ACCEPTANCE',
-    operations: { canAccept: false, canReject: false, canReportOutput: false },
+    operations: { canAccept: true, canReject: true, canReportOutput: false },
   });
   expect(f.tx.projectExpertAssignment.findMany.mock.calls[0][0].where.project.OR).toEqual([
     { projectName: { contains: '历史' } },

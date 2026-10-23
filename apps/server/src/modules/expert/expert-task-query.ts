@@ -28,6 +28,7 @@ export async function queryExpertTasks(
   query: ExpertTaskQuery,
   principal: AuthPrincipal,
   now = new Date(),
+  projectId?: number,
 ) {
   const rels = await tx.userOrgRel.findMany({
     where: {
@@ -40,6 +41,7 @@ export async function queryExpertTasks(
   const rows = await tx.projectExpertAssignment.findMany({
     where: {
       project: {
+        ...(projectId === undefined ? {} : { id: projectId }),
         deleted: false,
         ...(keyword
           ? {
@@ -251,8 +253,12 @@ export async function queryExpertTasks(
         acceptedOrganizationOwner,
         canViewOrganizationData: projectOwner || acceptedOrganizationOwner,
       },
-      // 067和11尚未接入，展示待办不开放不存在的写接口。
-      operations: { canAccept: false, canReject: false, canReportOutput: false },
+      // 仅待响应分配/普通成员开放067，报量能力由11接回。
+      operations: {
+        canAccept: acceptanceStatus === 'PENDING_ACCEPTANCE',
+        canReject: acceptanceStatus === 'PENDING_ACCEPTANCE',
+        canReportOutput: false,
+      },
     });
   }
   return cards;

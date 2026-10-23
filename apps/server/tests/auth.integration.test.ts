@@ -8485,7 +8485,7 @@ test('expert task cards isolate real recruitment sources, organization membershi
     acceptanceStatus: 'PENDING_ACCEPTANCE',
     currentNodeCode: 'PERSONNEL_MANAGEMENT',
     basicInfo: { subjectType: 'INDIVIDUAL', productionRequirement: 3.1234 },
-    operations: { canAccept: false, canReject: false, canReportOutput: false },
+    operations: { canAccept: true, canReject: true, canReportOutput: false },
   });
   expect((await read(f.owner.headers)).json().data[0].basicInfo.organizationId).toBe(
     f.organization.id,
@@ -8630,4 +8630,606 @@ test('expert task cards read latest membership progress and owner history withou
   expect(await db.project.findUniqueOrThrow({ where: { id: f.projectId } })).toEqual(before);
   expect(await db.projectTaskRound.count()).toBe(rounds);
   expect(await db.projectEventOutbox.count()).toBe(events);
+});
+
+async function ownerReplacementFixture() {
+  const f = await expertRecruitmentFixture();
+  for (const account of [f.owner, f.individual])
+    expect((await post('/auth/switch-role', { role: 'EXPERT' }, account.headers)).statusCode).toBe(
+      200,
+    );
+  const rel = await db.userOrgRel.create({
+    data: {
+      userId: f.individual.user.id,
+      uid: f.individual.user.uid,
+      orgId: f.organization.id,
+      joinStatus: 'EXIT_APPROVING',
+    },
+  });
+  // 067尚未接入；显式准备已接单读取/交接前置，不当作067写验收。
+  const assignment = await db.projectExpertAssignment.create({
+    data: {
+      assignmentNo: `owner-replace-${f.projectId}`,
+      projectId: f.projectId,
+      organizationId: f.organization.id,
+      subjectType: 'ORGANIZATION',
+      status: 'ACCEPTED',
+      projectOwnerUserId: f.owner.user.id,
+      createdBy: f.user.uid,
+    },
+  });
+  const replace = (body: object, legacy = false, headers = f.owner.headers) =>
+    post(
+      `/expert-assignments/${legacy ? 'change-project-owner' : 'set-project-owners'}`,
+      { assignmentId: assignment.id, ...body },
+      headers,
+    );
+  const me = (headers = f.individual.headers) => app.inject({ url: '/api/v1/users/me', headers });
+  return { ...f, rel, assignment, replace, me };
+}
+test('expert owner replacement preserves participants, creates exempt pending entries and serializes idempotent sets', async () => {
+  const f = await ownerReplacementFixture();
+  // 显式创建免试计划，避免依赖fixture未创建的计划。
+  await db.projectProductionPlan.create({
+    data: {
+      projectId: f.projectId,
+      operatorHeadcount: 2,
+      operatorCpd: 1,
+      totalExpectedOutput: 10,
+      needWrittenExam: false,
+      confirmedBy: f.manager.user.uid,
+      confirmedAt: new Date(),
+      createdBy: f.user.uid,
+    },
+  });
+  const project = await db.project.findUniqueOrThrow({ where: { id: f.projectId } });
+  expect((await f.me()).json().data.hasExpertManagementRole).toBe(false);
+  const body = {
+    projectOwnerUserIds: [f.owner.user.id, f.individual.user.id, f.individual.user.id],
+  };
+  const responses = await Promise.all([f.replace(body), f.replace(body)]);
+  for (const r of responses) expect(r.statusCode, r.body).toBe(200);
+  const assigned = await db.projectExpertAssignment.findUniqueOrThrow({
+    where: { id: f.assignment.id },
+    include: { owners: true, memberResponses: true, members: true },
+  });
+  expect(assigned.projectOwnerUserId).toBe(null);
+  expect(assigned.owners.filter((o) => o.status === 'ACTIVE')).toHaveLength(2);
+  expect(assigned.memberResponses).toEqual([
+    expect.objectContaining({
+      userId: f.individual.user.id,
+      status: 'SELECTED',
+      userOrgRelId: f.rel.id,
+    }),
+  ]);
+  expect(assigned.members).toEqual([
+    expect.objectContaining({
+      userId: f.individual.user.id,
+      status: 'PENDING_CONFIRM',
+      joinedAt: null,
+    }),
+  ]);
+  const events = await db.projectEventOutbox.count({ where: { projectId: f.projectId } });
+  expect((await f.me()).json().data.hasExpertManagementRole).toBe(true);
+  const noChange = await f.replace({
+    projectOwnerUserIds: [f.individual.user.id, f.owner.user.id],
+  });
+  expect(noChange.statusCode, noChange.body).toBe(200);
+  expect(await db.projectEventOutbox.count({ where: { projectId: f.projectId } })).toBe(events);
+  const removed = await f.replace({ projectOwnerUserId: f.owner.user.id }, true);
+  expect(removed.statusCode, removed.body).toBe(200);
+  expect((await f.me()).json().data.hasExpertManagementRole).toBe(false);
+  expect(await db.projectMember.findMany({ where: { projectId: f.projectId } })).toEqual(
+    assigned.members,
+  );
+  expect(
+    await db.projectExpertAssignmentMember.findMany({ where: { assignmentId: f.assignment.id } }),
+  ).toEqual(assigned.memberResponses);
+  const memberRow = await db.projectExpertAssignmentOwner.findUniqueOrThrow({
+    where: { assignmentId_userId: { assignmentId: f.assignment.id, userId: f.individual.user.id } },
+  });
+  expect(memberRow).toMatchObject({ status: 'REMOVED', removedAt: expect.any(Date) });
+  expect(await db.project.findUnique({ where: { id: f.projectId } })).toEqual(project);
+  expect(
+    await db.projectTaskRound.count({
+      where: { projectId: f.projectId, role: 'EXPERT', status: 'COMPLETED' },
+    }),
+  ).toBe(0);
+});
+
+test('expert owner replacement rejects unauthorized targets and rolls all writes back when outbox fails', async () => {
+  const f = await ownerReplacementFixture();
+  expect(
+    (await f.replace({ projectOwnerUserIds: [f.individual.user.id] }, false, f.individual.headers))
+      .statusCode,
+  ).toBe(403);
+  expect((await f.replace({ projectOwnerUserIds: [f.manager.user.id] })).statusCode).toBe(400);
+  expect((await f.replace({ projectOwnerUserIds: [], projectOwnerUserId: null })).statusCode).toBe(
+    400,
+  );
+  await db.projectExpertAssignment.update({
+    where: { id: f.assignment.id },
+    data: { status: 'PENDING_ACCEPTANCE' },
+  });
+  expect((await f.replace({ projectOwnerUserId: f.individual.user.id })).statusCode).toBe(400);
+  await db.projectExpertAssignment.update({
+    where: { id: f.assignment.id },
+    data: { status: 'ACCEPTED' },
+  });
+  const before = await db.projectExpertAssignment.findUniqueOrThrow({
+    where: { id: f.assignment.id },
+  });
+  const { ExpertAssignmentService } =
+    await import('../src/modules/expert/expert-assignment.service.js');
+  const failing = new Proxy(db, {
+    get(target, property) {
+      if (property === '$transaction')
+        return (run: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+          target.$transaction((tx) =>
+            run(
+              new Proxy(tx, {
+                get(inner, key) {
+                  if (key === 'projectEventOutbox')
+                    return {
+                      create: async () => {
+                        throw new Error('owner outbox failure');
+                      },
+                    };
+                  return Reflect.get(inner, key);
+                },
+              }),
+            ),
+          );
+      return Reflect.get(target, property);
+    },
+  });
+  await expect(
+    new ExpertAssignmentService(failing).setProjectOwners(
+      { assignmentId: f.assignment.id, projectOwnerUserId: f.individual.user.id },
+      {
+        userId: f.owner.user.id,
+        uid: f.owner.user.uid,
+        role: 'EXPERT',
+        clientType: 'desktop',
+        sessionId: 'fixture',
+      },
+    ),
+  ).rejects.toThrow('owner outbox failure');
+  expect(await db.projectExpertAssignment.findUnique({ where: { id: f.assignment.id } })).toEqual(
+    before,
+  );
+  expect(await db.projectExpertAssignmentOwner.count()).toBe(0);
+  expect(await db.projectExpertAssignmentMember.count()).toBe(0);
+  expect(await db.projectMember.count()).toBe(0);
+  expect(
+    await db.projectTaskRound.count({ where: { projectId: f.projectId, role: 'EXPERT' } }),
+  ).toBe(0);
+  await db.userOrgRel.update({ where: { id: f.rel.id }, data: { joinStatus: 'LEFT' } });
+  expect((await f.replace({ projectOwnerUserId: f.individual.user.id })).statusCode).toBe(400);
+});
+
+test('expert owner replacement restores selected responses, reconciles exam rounds and revokes management after departure', async () => {
+  const f = await ownerReplacementFixture();
+  await db.projectProductionPlan.create({
+    data: {
+      projectId: f.projectId,
+      operatorHeadcount: 2,
+      operatorCpd: 1,
+      totalExpectedOutput: 10,
+      needWrittenExam: true,
+      confirmedBy: f.manager.user.uid,
+      confirmedAt: new Date(),
+      createdBy: f.user.uid,
+    },
+  });
+  const exam = await db.projectEntranceExam.create({
+    data: {
+      projectId: f.projectId,
+      examNo: 'owner-exam',
+      examName: '负责人考试',
+      createdBy: f.user.uid,
+    },
+  });
+  const version = await db.entranceExamVersion.create({
+    data: {
+      examId: exam.id,
+      versionNo: 1,
+      examNameSnapshot: exam.examName,
+      durationMinutes: 60,
+      registrationDeadline: new Date('2099-01-01T00:00:00Z'),
+      fullScore: 20,
+      passScore: 12,
+      publishedBy: f.user.uid,
+      publishedAt: new Date(),
+      createdBy: f.user.uid,
+    },
+  });
+  await db.projectEntranceExam.update({
+    where: { id: exam.id },
+    data: { currentVersionId: version.id },
+  });
+  const old = await db.projectExpertAssignmentMember.create({
+    data: {
+      assignmentId: f.assignment.id,
+      userId: f.individual.user.id,
+      userOrgRelId: f.rel.id,
+      status: 'REJECTED',
+      rejectReason: '旧拒绝',
+      createdBy: f.user.uid,
+    },
+  });
+  const result = await f.replace({ projectOwnerUserId: f.individual.user.id });
+  expect(result.statusCode, result.body).toBe(200);
+  expect(
+    await db.projectExpertAssignmentMember.findUnique({ where: { id: old.id } }),
+  ).toMatchObject({ status: 'SELECTED', rejectReason: null });
+  expect(await db.projectMember.count({ where: { projectId: f.projectId } })).toBe(0);
+  expect(
+    await db.projectTaskRound.findMany({
+      where: {
+        projectId: f.projectId,
+        userId: f.individual.user.id,
+        role: 'EXPERT',
+        status: 'OPEN',
+      },
+    }),
+  ).toEqual([expect.objectContaining({ taskType: 'ENTRANCE_EXAM', participated: false })]);
+  expect((await f.me()).json().data.hasExpertManagementRole).toBe(true);
+  expect((await post('/auth/switch-role', { role: 'PM' }, f.individual.headers)).statusCode).toBe(
+    200,
+  );
+  expect((await f.me()).json().data.hasExpertManagementRole).toBe(false);
+  expect(
+    (await post('/auth/switch-role', { role: 'EXPERT' }, f.individual.headers)).statusCode,
+  ).toBe(200);
+  await db.userOrgRel.update({ where: { id: f.rel.id }, data: { joinStatus: 'LEFT' } });
+  expect((await f.me()).json().data.hasExpertManagementRole).toBe(false);
+  await db.userOrgRel.update({ where: { id: f.rel.id }, data: { joinStatus: 'ACTIVE' } });
+  await db.project.update({ where: { id: f.projectId }, data: { deleted: true } });
+  expect((await f.me()).json().data.hasExpertManagementRole).toBe(false);
+  expect((await f.replace({ projectOwnerUserId: f.individual.user.id })).statusCode).toBe(404);
+});
+
+async function expertResponseFixture(needWrittenExam = false) {
+  const f = await expertRecruitmentFixture();
+  for (const account of [f.individual, f.owner])
+    expect((await post('/auth/switch-role', { role: 'EXPERT' }, account.headers)).statusCode).toBe(
+      200,
+    );
+  const rel = await db.userOrgRel.create({
+    data: {
+      orgId: f.organization.id,
+      userId: f.individual.user.id,
+      uid: f.individual.user.uid,
+      joinStatus: 'PENDING_LEAVE',
+    },
+  });
+  await db.projectProductionPlan.create({
+    data: {
+      projectId: f.projectId,
+      operatorHeadcount: 2,
+      operatorCpd: 1,
+      totalExpectedOutput: 10,
+      needWrittenExam,
+      confirmedBy: f.manager.user.uid,
+      confirmedAt: new Date(),
+      createdBy: f.user.uid,
+    },
+  });
+  expect(
+    (
+      await f.submit([
+        f.item,
+        { ...f.item, subjectType: 'ORGANIZATION', subjectId: f.organization.id },
+      ])
+    ).statusCode,
+  ).toBe(200);
+  const assignments = await db.projectExpertAssignment.findMany({
+    where: { projectId: f.projectId },
+  });
+  const personal = assignments.find((a) => a.subjectType === 'INDIVIDUAL')!;
+  const organization = assignments.find((a) => a.subjectType === 'ORGANIZATION')!;
+  const respond = (
+    assignmentId: number,
+    body: object = { decision: 'ACCEPT' },
+    headers = f.individual.headers,
+  ) => post('/expert-assignments/respond', { assignmentId, ...body }, headers);
+  return { ...f, rel, personal, orgAssignment: organization, respond };
+}
+
+test('expert response personal acceptance serializes concurrent decisions and creates exempt pending entry without changing project', async () => {
+  const f = await expertResponseFixture();
+  const before = await db.project.findUniqueOrThrow({ where: { id: f.projectId } });
+  expect((await f.respond(f.personal.id, { decision: 'ACCEPT' }, f.owner.headers)).statusCode).toBe(
+    403,
+  );
+  expect(
+    (
+      await f.respond(f.personal.id, {
+        decision: 'ACCEPT',
+        projectOwnerUserId: f.individual.user.id,
+      })
+    ).statusCode,
+  ).toBe(400);
+  const responses = await Promise.all([f.respond(f.personal.id), f.respond(f.personal.id)]);
+  expect(responses.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+  expect(responses.find((r) => r.statusCode === 200)!.json().data).toMatchObject({
+    status: 'ACCEPTED',
+    memberStatus: null,
+    movementId: null,
+    nextAction: 'WAIT_ENTRY_CONFIRMATION',
+  });
+  expect(await db.projectMember.findMany({ where: { expertAssignmentId: f.personal.id } })).toEqual(
+    [
+      expect.objectContaining({
+        userId: f.individual.user.id,
+        status: 'PENDING_CONFIRM',
+        joinedAt: null,
+        userOrgRelId: null,
+      }),
+    ],
+  );
+  expect(await db.project.findUnique({ where: { id: f.projectId } })).toEqual(before);
+  expect(
+    (
+      await post(
+        '/expert-assignments/respond',
+        { movementId: 1, decision: 'ACCEPT' },
+        f.individual.headers,
+      )
+    ).statusCode,
+  ).toBe(503);
+  expect((await f.respond(f.personal.id, { movementId: 1, decision: 'ACCEPT' })).statusCode).toBe(
+    400,
+  );
+  await db.project.update({ where: { id: f.projectId }, data: { deleted: true } });
+  expect((await f.respond(f.personal.id)).statusCode).toBe(404);
+});
+
+test('expert response organization initializes owners and dynamic member responses are idempotent with no organization retry', async () => {
+  const f = await expertResponseFixture();
+  expect((await f.respond(f.orgAssignment.id)).statusCode).toBe(403);
+  expect(
+    (await f.respond(f.orgAssignment.id, { decision: 'ACCEPT' }, f.owner.headers)).statusCode,
+  ).toBe(400);
+  expect(
+    (
+      await f.respond(
+        f.orgAssignment.id,
+        { decision: 'ACCEPT', projectOwnerUserId: f.manager.user.id },
+        f.owner.headers,
+      )
+    ).statusCode,
+  ).toBe(400);
+  const accepted = await f.respond(
+    f.orgAssignment.id,
+    { decision: 'ACCEPT', projectOwnerUserId: f.owner.user.id },
+    f.owner.headers,
+  );
+  expect(accepted.statusCode, accepted.body).toBe(200);
+  expect(accepted.json().data).toMatchObject({
+    nextAction: 'MANAGE_PROJECT_MEMBERS',
+    notifiedMemberCount: 2,
+  });
+  expect(
+    await db.projectExpertAssignmentMember.findMany({
+      where: { assignmentId: f.orgAssignment.id },
+    }),
+  ).toEqual([expect.objectContaining({ userId: f.owner.user.id, status: 'SELECTED' })]);
+  expect(
+    (await f.respond(f.orgAssignment.id, { decision: 'ACCEPT' }, f.owner.headers)).statusCode,
+  ).toBe(409);
+  const cards = await post('/expert-assignments/my-tasks', {}, f.individual.headers);
+  expect(cards.json().data).toEqual([
+    expect.objectContaining({
+      assignmentId: f.orgAssignment.id,
+      operations: { canAccept: true, canReject: true, canReportOutput: false },
+    }),
+  ]);
+  const responses = await Promise.all([
+    f.respond(f.orgAssignment.id),
+    f.respond(f.orgAssignment.id),
+  ]);
+  for (const r of responses) expect(r.statusCode, r.body).toBe(200);
+  expect(responses[0]!.json().data).toMatchObject({ status: 'ACCEPTED', memberStatus: 'ACCEPTED' });
+  expect(
+    await db.projectMember.count({
+      where: { expertAssignmentId: f.orgAssignment.id, userId: f.individual.user.id },
+    }),
+  ).toBe(1);
+  expect(
+    await db.projectEventOutbox.count({
+      where: { projectId: f.projectId, eventType: 'EXPERT_ASSIGNMENT_RESPONDED' },
+    }),
+  ).toBe(2);
+  expect(
+    (await f.respond(f.orgAssignment.id, { decision: 'REJECT', rejectReason: '不参与' }))
+      .statusCode,
+  ).toBe(409);
+  await db.userOrgRel.update({ where: { id: f.rel.id }, data: { joinStatus: 'LEFT' } });
+  expect((await f.respond(f.orgAssignment.id)).statusCode).toBe(403);
+  expect(
+    await db.projectTaskRound.count({
+      where: { projectId: f.projectId, taskType: 'EXPERT_RECRUITMENT_RETRY' },
+    }),
+  ).toBe(0);
+});
+
+test('expert response subject rejection opens retry sources consumed once by recruitment while member rejection preserves organization', async () => {
+  const f = await expertResponseFixture(true);
+  expect(
+    (await f.respond(f.personal.id, { decision: 'REJECT', rejectReason: '  ' })).statusCode,
+  ).toBe(400);
+  const rejected = await f.respond(f.personal.id, {
+    decision: 'REJECT',
+    rejectReason: '  暂无时间  ',
+  });
+  expect(rejected.statusCode, rejected.body).toBe(200);
+  expect(
+    await db.projectExpertAssignment.findUnique({ where: { id: f.personal.id } }),
+  ).toMatchObject({ status: 'REJECTED', rejectReason: '暂无时间', rejectedAt: expect.any(Date) });
+  expect(
+    await db.projectTaskRound.findMany({
+      where: { projectId: f.projectId, taskType: 'EXPERT_RECRUITMENT_RETRY', status: 'OPEN' },
+    }),
+  ).toEqual([expect.objectContaining({ userId: f.handler.user.id, participated: false })]);
+  expect(
+    await db.projectRoleNodeSnapshot.count({
+      where: { projectId: f.projectId, branchNodeCode: 'EXPERT_RECRUITMENT_RETRY' },
+    }),
+  ).toBe(1);
+  expect(
+    (await f.submit([{ ...f.item, sourceRejectedAssignmentId: f.personal.id }], f.handler.headers))
+      .statusCode,
+  ).toBe(200);
+  expect(
+    await db.projectTaskRound.count({
+      where: { projectId: f.projectId, taskType: 'EXPERT_RECRUITMENT_RETRY', status: 'OPEN' },
+    }),
+  ).toBe(0);
+  expect(
+    (
+      await f.respond(
+        f.orgAssignment.id,
+        { decision: 'ACCEPT', projectOwnerUserId: f.owner.user.id },
+        f.owner.headers,
+      )
+    ).statusCode,
+  ).toBe(200);
+  const memberRejected = await f.respond(f.orgAssignment.id, {
+    decision: 'REJECT',
+    rejectReason: '不参与',
+  });
+  expect(memberRejected.statusCode, memberRejected.body).toBe(200);
+  expect(memberRejected.json().data).toMatchObject({
+    status: 'ACCEPTED',
+    memberStatus: 'REJECTED',
+    nextAction: 'VIEW_RESULT',
+  });
+  const events = await db.projectEventOutbox.count();
+  expect(
+    (await f.respond(f.orgAssignment.id, { decision: 'REJECT', rejectReason: '重复原因' }))
+      .statusCode,
+  ).toBe(200);
+  expect(await db.projectEventOutbox.count()).toBe(events);
+  expect(await db.projectMember.count({ where: { projectId: f.projectId } })).toBe(0);
+  expect(
+    await db.projectTaskRound.count({
+      where: { projectId: f.projectId, taskType: 'EXPERT_RECRUITMENT_RETRY', status: 'OPEN' },
+    }),
+  ).toBe(0);
+});
+
+test('expert response rolls organization acceptance, selected owners, entries and rounds back on outbox failure', async () => {
+  const f = await expertResponseFixture();
+  const before = await db.projectExpertAssignment.findUnique({ where: { id: f.orgAssignment.id } });
+  const { ExpertAssignmentService } =
+    await import('../src/modules/expert/expert-assignment.service.js');
+  const failing = new Proxy(db, {
+    get(target, property) {
+      if (property === '$transaction')
+        return (run: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+          target.$transaction((tx) =>
+            run(
+              new Proxy(tx, {
+                get(inner, key) {
+                  if (key === 'projectEventOutbox')
+                    return {
+                      create: async () => {
+                        throw new Error('response outbox failure');
+                      },
+                    };
+                  return Reflect.get(inner, key);
+                },
+              }),
+            ),
+          );
+      return Reflect.get(target, property);
+    },
+  });
+  await expect(
+    new ExpertAssignmentService(failing).respond(
+      {
+        assignmentId: f.orgAssignment.id,
+        decision: 'ACCEPT',
+        projectOwnerUserIds: [f.owner.user.id, f.individual.user.id],
+      },
+      {
+        userId: f.owner.user.id,
+        uid: f.owner.user.uid,
+        role: 'EXPERT',
+        clientType: 'desktop',
+        sessionId: 'fixture',
+      },
+    ),
+  ).rejects.toThrow('response outbox failure');
+  expect(
+    await db.projectExpertAssignment.findUnique({ where: { id: f.orgAssignment.id } }),
+  ).toEqual(before);
+  expect(await db.projectExpertAssignmentOwner.count()).toBe(0);
+  expect(await db.projectExpertAssignmentMember.count()).toBe(0);
+  expect(await db.projectMember.count()).toBe(0);
+  expect(
+    await db.projectTaskRound.count({ where: { projectId: f.projectId, role: 'EXPERT' } }),
+  ).toBe(0);
+});
+
+test('expert response written exam opens expert rounds without creating attempts or admitting members', async () => {
+  const f = await expertResponseFixture(true);
+  const exam = await db.projectEntranceExam.create({
+    data: {
+      projectId: f.projectId,
+      examNo: 'response-exam',
+      examName: '接单考试',
+      createdBy: f.user.uid,
+    },
+  });
+  const version = await db.entranceExamVersion.create({
+    data: {
+      examId: exam.id,
+      versionNo: 1,
+      examNameSnapshot: exam.examName,
+      durationMinutes: 60,
+      registrationDeadline: new Date('2099-01-01T00:00:00Z'),
+      fullScore: 20,
+      passScore: 12,
+      publishedBy: f.user.uid,
+      publishedAt: new Date(),
+      createdBy: f.user.uid,
+    },
+  });
+  await db.projectEntranceExam.update({
+    where: { id: exam.id },
+    data: { currentVersionId: version.id },
+  });
+  const personal = await f.respond(f.personal.id);
+  expect(personal.statusCode, personal.body).toBe(200);
+  expect(personal.json().data.nextAction).toBe('TAKE_ENTRANCE_EXAM');
+  const organization = await f.respond(
+    f.orgAssignment.id,
+    { decision: 'ACCEPT', projectOwnerUserIds: [f.owner.user.id] },
+    f.owner.headers,
+  );
+  expect(organization.statusCode, organization.body).toBe(200);
+  // 组织待响应身份覆盖个人已接单身份，先撤旧考试轮次；成员实际接单后再开新轮次。
+  expect(
+    await db.projectTaskRound.count({
+      where: {
+        projectId: f.projectId,
+        userId: f.individual.user.id,
+        taskType: 'ENTRANCE_EXAM',
+        status: 'OPEN',
+      },
+    }),
+  ).toBe(0);
+  expect((await f.respond(f.orgAssignment.id)).statusCode).toBe(200);
+  expect(await db.projectMember.count({ where: { projectId: f.projectId } })).toBe(0);
+  expect(await db.entranceExamAttempt.count({ where: { examId: exam.id } })).toBe(0);
+  const rounds = await db.projectTaskRound.findMany({
+    where: { projectId: f.projectId, role: 'EXPERT', taskType: 'ENTRANCE_EXAM', status: 'OPEN' },
+  });
+  expect(rounds.map((r) => r.userId).sort()).toEqual(
+    [f.owner.user.id, f.individual.user.id].sort(),
+  );
+  expect(rounds.every((r) => r.participated === false)).toBe(true);
 });

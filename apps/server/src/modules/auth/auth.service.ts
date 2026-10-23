@@ -37,8 +37,28 @@ import { FileRegistryService } from '../files/file-registry.service.js';
 import { lockOrganization, participatingStatuses } from '../organizations/organization.service.js';
 import { createObjectStorage } from '../files/object-storage.js';
 type Tx = Prisma.TransactionClient;
-type Profile = User & { memberships?: (UserOrgRel & { organization: Organization })[] };
+type Profile = User & {
+  memberships?: (UserOrgRel & { organization: Organization })[];
+  assignmentOwners?: { assignment: { organizationId: string | null } }[];
+  legacyOwnerAssignments?: { organizationId: string | null }[];
+};
 const profileInclude = {
+  assignmentOwners: {
+    where: {
+      status: 'ACTIVE',
+      assignment: { subjectType: 'ORGANIZATION', status: 'ACCEPTED', project: { deleted: false } },
+    },
+    select: { assignment: { select: { organizationId: true } } },
+  },
+  legacyOwnerAssignments: {
+    where: {
+      subjectType: 'ORGANIZATION',
+      status: 'ACCEPTED',
+      owners: { none: {} },
+      project: { deleted: false },
+    },
+    select: { organizationId: true },
+  },
   memberships: {
     where: { joinStatus: { in: participatingStatuses }, organization: { deleted: false } },
     include: { organization: true },
@@ -90,7 +110,12 @@ function publicUser(user: Profile, selectedRole: BusinessRole | null = null): Au
     roles: [...BUSINESS_ROLES],
     selectedRole,
     hasExpertManagementRole: Boolean(
-      selectedRole === 'EXPERT' && memberships.some((rel) => rel.position === 'OWNER'),
+      selectedRole === 'EXPERT' &&
+      (memberships.some((rel) => rel.position === 'OWNER') ||
+        [
+          ...(user.assignmentOwners ?? []).map((o) => o.assignment),
+          ...(user.legacyOwnerAssignments ?? []),
+        ].some((a) => memberships.some((r) => r.orgId === a.organizationId))),
     ),
     status: user.status,
     creditScore: 100,
