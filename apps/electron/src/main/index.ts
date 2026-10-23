@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { loadRuntime } from './config.js';
 import { registerIpc } from './ipc/index.js';
 import { createWindow, iconPath } from './windows.js';
+import { startMemoryDiagnostics } from './memory-diagnostics.js';
 protocol.registerSchemesAsPrivileged([
   {
     scheme: 'tyde-app',
@@ -27,6 +28,7 @@ if (!app.requestSingleInstanceLock()) {
     .whenReady()
     .then(async () => {
       app.setAppUserModelId('app.tydeoutside.desktop');
+      startMemoryDiagnostics(app);
       if (!app.isPackaged) app.dock?.setIcon(iconPath);
       const config = await loadRuntime();
       const partition = `persist:tyde-${createHash('sha256').update(config.apiBaseUrl).digest('hex').slice(0, 16)}`;
