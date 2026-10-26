@@ -25,6 +25,8 @@
     "dev:server": "npm --prefix apps/server run dev",
     "dev:electron": "node scripts/dev-electron.mjs",
     "dev:electron:test": "node --env-file=apps/electron/config/test.env scripts/dev-electron.mjs",
+    "dev:electron:memory": "node scripts/dev-electron.mjs --memory",
+    "dev:electron:test:memory": "node --env-file=apps/electron/config/test.env scripts/dev-electron.mjs --memory",
     "dev:electron:inspect": "node scripts/dev-electron.mjs --inspect",
     "dev:electron:test:inspect": "node --env-file=apps/electron/config/test.env scripts/dev-electron.mjs --inspect",
     "build:packages": "pnpm --filter @tyde/shared build && pnpm --filter @tyde/platform build",

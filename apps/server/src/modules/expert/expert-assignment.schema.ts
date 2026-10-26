@@ -140,6 +140,44 @@ export const assignmentDetailQuery = {
     },
   },
 };
+export const projectOwnerCandidatesExample = [
+  {
+    userId: '11111111-1111-4111-8111-111111111111',
+    uid: '22222222-2222-4222-8222-222222222222',
+    name: '小明(王小明)',
+    avatarUrl: null,
+    position: 'OWNER',
+    projectOwner: false,
+  },
+];
+const ownerCandidateFields = {
+  userId: { ...text('成员用户ID，新库UUID；后续负责人写接口使用该值。'), format: 'uuid' },
+  uid: text('平台用户唯一标识UID。'),
+  name: text('昵称(真实姓名)；缺少姓名时仅昵称，均缺少时回退UID。'),
+  avatarUrl: { type: ['string', 'null'], description: '成员头像地址，未设置为null。' },
+  position: {
+    ...text('当前组织身份：OWNER=主管、ADMIN=管理员、MEMBER=普通成员。'),
+    enum: ['OWNER', 'ADMIN', 'MEMBER'],
+  },
+  projectOwner: {
+    type: 'boolean',
+    description:
+      '是否为该已接单任务的当前负责人。优先ACTIVE负责人关系；关系表无任何历史时才回退旧单值。未接单/拒绝/取消均false。',
+  },
+};
+export const projectOwnerCandidatesResponse = {
+  type: 'array',
+  description:
+    '仅分配所属组织有效主管可查；候选含本人，账号ACTIVE且关系为ACTIVE/EXIT_APPROVING/PENDING_LEAVE。按组织身份、关系ID升序；无候选为空数组。查询不设置负责人，不限制分配接单状态。',
+  items: {
+    type: 'object',
+    description: '该组织的一名有效项目负责人候选。',
+    additionalProperties: false,
+    required: Object.keys(ownerCandidateFields),
+    properties: ownerCandidateFields,
+  },
+  examples: [projectOwnerCandidatesExample],
+};
 export const expertSchema = (
   operationId: string,
   summary: string,
@@ -150,5 +188,5 @@ export const expertSchema = (
   tags: ['ExpertAssignment'],
   description:
     description +
-    ' 固定EXPERT不代替实际分配/组织成员关系校验。支持受信Cookie或无浏览器头的Bearer客户端；400参数错误、401失效会话、403无权访问、404分配或已发布项目不存在。接单/考试写入口尚未接入，返回真实存量关系，不生成测试分配或伪造已接单事实。',
+    ' 当前会话须为EXPERT，另按实际分配/多组织成员关系校验。支持受信Cookie或无浏览器头的Bearer客户端；400参数错误、401失效会话、403无权访问、404分配或已发布项目不存在。负责人集合及招募接单写入口已接入，考试写入口归08、转项响应归12尚未接入。',
 });

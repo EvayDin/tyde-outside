@@ -81,7 +81,14 @@ try {
   }
   const devScript = process.argv.includes('--inspect') ? 'dev:inspect' : 'dev';
   if (!stopping)
-    start(['--prefix', 'apps/electron', 'run', devScript], { TYDE_API_BASE_URL: apiBaseUrl }, true);
+    start(
+      ['--prefix', 'apps/electron', 'run', devScript],
+      {
+        TYDE_API_BASE_URL: apiBaseUrl,
+        ...(process.argv.includes('--memory') ? { TYDE_MEMORY_DIAGNOSTICS: '1' } : {}),
+      },
+      true,
+    );
 } catch (error) {
   console.error(error.message);
   stop(1);

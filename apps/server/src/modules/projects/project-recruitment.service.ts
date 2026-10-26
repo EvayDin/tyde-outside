@@ -1,15 +1,13 @@
-import { syncRecruitmentRetrySnapshot } from './project-recruitment-snapshot.js';
+import {
+  syncRecruitmentRetrySnapshot,
+  collectRecruitmentTasks,
+} from './project-recruitment-snapshot.js';
 import { randomUUID } from 'node:crypto';
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { AuthError } from '../auth/auth.error.js';
 import type { AuthPrincipal } from '../auth/auth.service.js';
 import { displayName } from './project-detail.js';
-import {
-  collectManagementTasks,
-  managementTaskTypes,
-  reconcileTaskRounds,
-  taskEventFacts,
-} from './project-task-rounds.js';
+import { managementTaskTypes, reconcileTaskRounds, taskEventFacts } from './project-task-rounds.js';
 import {
   candidateSql,
   candidateAssignmentSql,
@@ -147,23 +145,9 @@ export class ProjectRecruitmentService {
     tx: Prisma.TransactionClient,
     ctx: Awaited<ReturnType<ProjectRecruitmentService['context']>>,
   ) {
-    const snapshot = await collectManagementTasks(tx, ctx.project);
-    if (ctx.project.currentNodeCode === 'COMPLETED') return snapshot;
-    const owner = ctx.relation.expertRecruitmentHandlerUserId ?? ctx.relation.candidateUserId;
-    if (!snapshot.scopes.some((s) => s.userId === owner && s.role === 'PM')) return snapshot;
-    const rejected = await tx.projectExpertAssignment.findMany({
-      where: { projectId: ctx.project.id, status: 'REJECTED', replacements: { none: {} } },
-      select: { id: true },
-    });
-    if (rejected.length)
-      snapshot.sources.push({
-        userId: owner,
-        role: 'PM',
-        taskType: 'EXPERT_RECRUITMENT_RETRY',
-        sources: rejected.map((a) => `EXPERT_ASSIGNMENT:${a.id}`),
-      });
-    return snapshot;
+    return collectRecruitmentTasks(tx, ctx.project);
   }
+
   async submit(input: RecruitmentInput, p: AuthPrincipal) {
     if (p.role !== 'PM') throw new AuthError(403, 'FORBIDDEN', '当前会话必须为策略官');
     if (!input.assignments.length || input.assignments.length > 100) throw bad('单次须下发1—100项');

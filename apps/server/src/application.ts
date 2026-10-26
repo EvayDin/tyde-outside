@@ -1,3 +1,5 @@
+import { ExamCandidateCommandService } from './modules/entrance-exams/exam-candidate-command.service.js';
+import { ExamCandidateService } from './modules/entrance-exams/exam-candidate.service.js';
 import { ProjectRecruitmentService } from './modules/projects/project-recruitment.service.js';
 import { ProjectRecruitmentHandlerService } from './modules/projects/project-recruitment-handler.service.js';
 import { ProjectMaterialsService } from './modules/projects/project-materials.service.js';
@@ -147,6 +149,8 @@ export async function createApp(
     new ExamQueryService(db),
     gradings,
     new ExamAutoService(db),
+    new ExamCandidateService(db),
+    new ExamCandidateCommandService(db, files),
   );
   await fileRoutes(app, new FileService(files), auth, config);
   await organizationRoutes(app, new OrganizationService(db, files), auth, config);

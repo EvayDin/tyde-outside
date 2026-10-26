@@ -1,3 +1,14 @@
+import {
+  respondBody,
+  respondResponse,
+  respondExample,
+} from '../src/modules/expert/expert-respond.schema.js';
+import {
+  expertTaskExample,
+  expertTasksBody,
+  expertTasksResponse,
+} from '../src/modules/expert/expert-task.schema.js';
+import { ownerChangeBody, ownerChangeResponse } from '../src/modules/expert/expert-owner.schema.js';
 import { afterEach, expect, test, vi } from 'vitest';
 import {
   PrismaClient,
@@ -35,6 +46,8 @@ import {
   assignmentDetailExample,
   myProjectsResponse,
   assignmentDetailResponse,
+  projectOwnerCandidatesExample,
+  projectOwnerCandidatesResponse,
 } from '../src/modules/expert/expert-assignment.schema.js';
 const config = readConfig({
   APP_ENV: 'test',
@@ -396,7 +409,15 @@ test('new routes preserve envelope, schemas/examples, credentials, malformed inp
   vi.spyOn(ExpertAssignmentService.prototype, 'myProjects').mockResolvedValue([
     myProjectExample,
   ] as never);
+  vi.spyOn(ExpertAssignmentService.prototype, 'myTasks').mockResolvedValue([
+    expertTaskExample,
+  ] as never);
   vi.spyOn(ExpertAssignmentService.prototype, 'detail').mockResolvedValue(assignmentDetailExample);
+  vi.spyOn(ExpertAssignmentService.prototype, 'projectOwnerCandidates').mockResolvedValue(
+    projectOwnerCandidatesExample,
+  );
+  vi.spyOn(ExpertAssignmentService.prototype, 'respond').mockResolvedValue(respondExample);
+  vi.spyOn(ExpertAssignmentService.prototype, 'setProjectOwners').mockResolvedValue(null);
   try {
     const spec = (await app.inject('/api/v1/docs/json')).json();
     for (const [schema, examples] of [
@@ -409,7 +430,14 @@ test('new routes preserve envelope, schemas/examples, credentials, malformed inp
       [schemas.scheduleResponse, schemas.scheduleResponse.examples],
       [schemas.attendanceUpdateResponse, schemas.attendanceUpdateResponse.examples],
       [myProjectsResponse, myProjectsResponse.examples],
+      [expertTasksBody, expertTasksBody.examples],
+      [expertTasksResponse, expertTasksResponse.examples],
       [assignmentDetailResponse, assignmentDetailResponse.examples],
+      [projectOwnerCandidatesResponse, projectOwnerCandidatesResponse.examples],
+      [respondBody, respondBody.examples],
+      [respondResponse, respondResponse.examples],
+      [ownerChangeBody, ownerChangeBody.examples],
+      [ownerChangeResponse, ownerChangeResponse.examples],
     ] as const) {
       const validate = app.validatorCompiler!({
         schema,
@@ -417,7 +445,10 @@ test('new routes preserve envelope, schemas/examples, credentials, malformed inp
         url: '/example',
         httpPart: 'body',
       });
-      for (const example of examples) expect(validate(example)).toBe(true);
+      for (const example of examples) {
+        const valid = validate(example);
+        expect(valid, JSON.stringify(validate.errors)).toBe(true);
+      }
     }
     expect(spec.paths['/api/v1/users/me/applications'].post.security).toHaveLength(2);
     for (const [method, url, payload, expected] of [
@@ -429,6 +460,21 @@ test('new routes preserve envelope, schemas/examples, credentials, malformed inp
         schemas.attendanceResponse.examples[0],
       ],
       ['GET', '/api/v1/expert-assignments/my-projects', undefined, [myProjectExample]],
+      ['POST', '/api/v1/expert-assignments/my-tasks', {}, [expertTaskExample]],
+      ['POST', '/api/v1/expert-assignments/respond', respondBody.examples[0], respondExample],
+      ['POST', '/api/v1/expert-assignments/set-project-owners', ownerChangeBody.examples[0], null],
+      [
+        'POST',
+        '/api/v1/expert-assignments/change-project-owner',
+        ownerChangeBody.examples[1],
+        null,
+      ],
+      [
+        'GET',
+        '/api/v1/expert-assignments/project-owner-candidates?assignmentId=1',
+        undefined,
+        projectOwnerCandidatesExample,
+      ],
       [
         'GET',
         '/api/v1/expert-assignments/detail?assignmentId=1',
@@ -459,9 +505,28 @@ test('new routes preserve envelope, schemas/examples, credentials, malformed inp
       headers: { origin: 'https://evil.example' },
     });
     expect(evil.statusCode).toBe(403);
+    for (const payload of [{ userId: 'other' }, { status: 'BAD' }, { keyword: 'x'.repeat(101) }]) {
+      expect(
+        (await app.inject({ method: 'POST', url: '/api/v1/expert-assignments/my-tasks', payload }))
+          .statusCode,
+      ).toBe(400);
+    }
     const overflow = await app.inject('/api/v1/expert-assignments/detail?assignmentId=2147483648');
     expect(overflow.statusCode).toBe(400);
     expect(overflow.json()).toMatchObject({ code: 400, data: null });
+    expect(
+      spec.paths['/api/v1/expert-assignments/project-owner-candidates'].get.parameters[0]
+        .description,
+    ).toContain('分配ID');
+    for (const value of ['', '0', '-1', '1.2', '1e2', 'abc']) {
+      expect(
+        (
+          await app.inject(
+            `/api/v1/expert-assignments/project-owner-candidates?assignmentId=${value}`,
+          )
+        ).statusCode,
+      ).toBe(400);
+    }
   } finally {
     await app.close();
   }
